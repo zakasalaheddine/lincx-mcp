@@ -7,12 +7,15 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Session } from "../types.js";
 import { REDIS_URL, SESSION_TTL_SECONDS } from "../constants.js";
 
 const KEY_PREFIX = "lincx:session:";
-const DEV_SESSION_DIR = join(process.cwd(), ".sessions");
+// Resolve project root from this file's location (src/services/sessionStore.ts → project root)
+const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DEV_SESSION_DIR = join(PROJECT_ROOT, ".sessions");
 const DEV_SESSION_FILE = join(DEV_SESSION_DIR, "store.json");
 
 export interface SessionStore {

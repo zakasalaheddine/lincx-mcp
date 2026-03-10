@@ -32,9 +32,13 @@ import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const SESSION_ID_FILE = join(process.cwd(), ".sessions", "session_id");
+// Resolve project root from this file's location (src/index.ts → project root)
+const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const SESSION_DIR = join(PROJECT_ROOT, ".sessions");
+const SESSION_ID_FILE = join(SESSION_DIR, "session_id");
 
 function loadSessionId(): string | null {
   try { return readFileSync(SESSION_ID_FILE, "utf-8").trim() || null; } catch { return null; }
@@ -42,7 +46,7 @@ function loadSessionId(): string | null {
 
 function persistSessionId(id: string | null): void {
   try {
-    mkdirSync(join(process.cwd(), ".sessions"), { recursive: true });
+    mkdirSync(SESSION_DIR, { recursive: true });
     writeFileSync(SESSION_ID_FILE, id ?? "");
   } catch { /* best-effort */ }
 }
@@ -165,10 +169,18 @@ app.post("/mcp", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // Always start HTTP server so the login page is reachable
-  app.listen(SERVER_PORT, () => {
+  // Start HTTP server for login UI — non-fatal if port is busy
+  const httpServer = app.listen(SERVER_PORT);
+  httpServer.on("listening", () => {
     console.error(`[HTTP]   Login UI → http://localhost:${SERVER_PORT}/login`);
     console.error(`[HTTP]   Health   → http://localhost:${SERVER_PORT}/health`);
+  });
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`[HTTP]   Port ${SERVER_PORT} in use — login UI unavailable. MCP tools still work.`);
+    } else {
+      console.error("[HTTP]   Server error:", err.message);
+    }
   });
 
   if (TRANSPORT === "http") {
