@@ -1,15 +1,15 @@
 /**
  * services/sessionStore.ts
  *
- * Redis or in-memory session persistence.
- * When REDIS_URL is set, uses Redis with TTL; otherwise uses an in-memory Map.
+ * Thin key-value store for sessions.
+ * Uses Redis when REDIS_URL is set, otherwise falls back to an
+ * in-memory Map with TTL — good for local dev, NOT for production.
  */
 
-import { Redis } from "ioredis";
 import type { Session } from "../types.js";
 import { REDIS_URL, SESSION_TTL_SECONDS } from "../constants.js";
 
-const KEY_PREFIX = "mcp:session:";
+const KEY_PREFIX = "lincx:session:";
 
 export interface SessionStore {
   get(sessionId: string): Promise<Session | null>;
@@ -17,58 +17,52 @@ export interface SessionStore {
   delete(sessionId: string): Promise<void>;
 }
 
-let storeInstance: SessionStore | null = null;
+// Lazily-initialized singleton
+let _store: SessionStore | null = null;
 
 export async function getSessionStore(): Promise<SessionStore> {
-  if (storeInstance) return storeInstance;
+  if (_store) return _store;
 
   if (REDIS_URL) {
+    const { Redis } = await import("ioredis");
     const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
-    storeInstance = {
-      async get(sessionId: string): Promise<Session | null> {
-        const raw = await redis.get(KEY_PREFIX + sessionId);
+
+    _store = {
+      async get(id) {
+        const raw = await redis.get(KEY_PREFIX + id);
         if (!raw) return null;
-        try {
-          return JSON.parse(raw) as Session;
-        } catch {
-          return null;
-        }
+        try { return JSON.parse(raw) as Session; } catch { return null; }
       },
-      async set(sessionId: string, session: Session): Promise<void> {
-        await redis.setex(
-          KEY_PREFIX + sessionId,
-          SESSION_TTL_SECONDS,
-          JSON.stringify(session)
-        );
+      async set(id, session) {
+        await redis.setex(KEY_PREFIX + id, SESSION_TTL_SECONDS, JSON.stringify(session));
       },
-      async delete(sessionId: string): Promise<void> {
-        await redis.del(KEY_PREFIX + sessionId);
+      async delete(id) {
+        await redis.del(KEY_PREFIX + id);
       },
     };
+
+    console.log("[SessionStore] Using Redis:", REDIS_URL);
   } else {
-    const memory = new Map<string, { session: Session; expiresAt: number }>();
     const ttlMs = SESSION_TTL_SECONDS * 1000;
-    storeInstance = {
-      async get(sessionId: string): Promise<Session | null> {
-        const entry = memory.get(sessionId);
+    const map = new Map<string, { session: Session; expiresAt: number }>();
+
+    _store = {
+      async get(id) {
+        const entry = map.get(id);
         if (!entry) return null;
-        if (Date.now() > entry.expiresAt) {
-          memory.delete(sessionId);
-          return null;
-        }
+        if (Date.now() > entry.expiresAt) { map.delete(id); return null; }
         return entry.session;
       },
-      async set(sessionId: string, session: Session): Promise<void> {
-        memory.set(sessionId, {
-          session,
-          expiresAt: Date.now() + ttlMs,
-        });
+      async set(id, session) {
+        map.set(id, { session, expiresAt: Date.now() + ttlMs });
       },
-      async delete(sessionId: string): Promise<void> {
-        memory.delete(sessionId);
+      async delete(id) {
+        map.delete(id);
       },
     };
+
+    console.warn("[SessionStore] No REDIS_URL — using in-memory store (not for production)");
   }
 
-  return storeInstance;
+  return _store;
 }

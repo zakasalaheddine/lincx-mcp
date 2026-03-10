@@ -1,13 +1,13 @@
 /**
  * services/auth.ts
  *
- * Authenticates against the Lincx identity server (authentic-server).
+ * Handles login against the Lincx authentic-server identity service.
  *
  * Flow:
- *  1. User opens browser login page served by MCP server (localhost:3000)
- *  2. Submits email + password via the web form
- *  3. MCP server POSTs to ix-id.lincx.la/auth/login
- *  4. Stores returned authToken in session — never touches the LLM
+ *   1. User opens http://localhost:PORT/login in browser
+ *   2. Submits email + password via the web form
+ *   3. Express POST /api/login calls loginWithCredentials()
+ *   4. Returns authToken which is stored in session — never seen by Claude
  */
 
 import axios, { AxiosError } from "axios";
@@ -17,10 +17,6 @@ export interface LoginResult {
   authToken: string;
   email: string;
 }
-
-// ─────────────────────────────────────────────
-// LOGIN  (called by the web form POST handler)
-// ─────────────────────────────────────────────
 
 export async function loginWithCredentials(
   email: string,
@@ -41,25 +37,26 @@ export async function loginWithCredentials(
       throw new Error(res.data.message ?? "Login failed — no token returned");
     }
 
-    return { authToken: res.data.data.authToken, email: email.toLowerCase().trim() };
+    return {
+      authToken: res.data.data.authToken,
+      email: email.toLowerCase().trim(),
+    };
   } catch (err) {
-    if (err instanceof AxiosError && err.response?.status === 401) {
-      throw new Error("Invalid email or password");
-    }
-    if (err instanceof AxiosError && err.response?.status === 403) {
-      throw new Error("Account not confirmed. Check your email for a confirmation link.");
+    if (err instanceof AxiosError) {
+      if (err.response?.status === 401) throw new Error("Invalid email or password");
+      if (err.response?.status === 403) throw new Error("Account not confirmed. Check your email for a confirmation link.");
+      const msg = (err.response?.data as { message?: string })?.message ?? err.message;
+      throw new Error(msg);
     }
     if (err instanceof Error) throw err;
     throw new Error("Unexpected error during login");
   }
 }
 
-// ─────────────────────────────────────────────
-// LOGOUT  (authentic-server has no revoke endpoint — token is a JWT)
-// Session is destroyed server-side; the JWT simply expires on its own.
-// ─────────────────────────────────────────────
-
+/**
+ * authentic-server has no token revocation endpoint.
+ * Logout is purely session destruction — the JWT expires naturally (default 30d).
+ */
 export async function revokeToken(_token: string): Promise<void> {
-  // No-op: authentic-server does not expose a token revocation endpoint.
-  // Security relies on session destruction + short JWT expiry window.
+  // intentional no-op
 }

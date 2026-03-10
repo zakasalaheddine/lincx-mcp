@@ -1,12 +1,9 @@
 /**
  * tools/authTools.ts
  *
- * auth_login  → tells Claude to direct user to the local login page
- * auth_status → reports session state
- * auth_logout → destroys session
- *
- * Credentials are NEVER passed through Claude.
- * Authentication happens entirely in the browser via the web UI.
+ * auth_login  — returns browser login URL; credentials never touch Claude
+ * auth_status — reports current session state
+ * auth_logout — destroys session
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -19,23 +16,21 @@ export function registerAuthTools(
   server: McpServer,
   getSessionId: () => string | null,
   setSessionId: (id: string | null) => void
-) {
+): void {
 
-  // ── auth_login ──────────────────────────────
+  // ── auth_login ────────────────────────────────────────────────────────────
   server.registerTool(
     "auth_login",
     {
       title: "Login",
-      description: `Direct the user to authenticate via the browser login page.
+      description: `Open the browser login page to authenticate with Interlincx.
 
-Opens a local web UI where the user enters their Interlincx credentials directly.
-Credentials are submitted directly to the identity server — they never pass through Claude.
+Returns a URL the user must open in their browser.
+Credentials are entered there and sent directly to the identity server — Claude never sees them.
 
-After the user logs in successfully in the browser, call 'auth_status' to confirm
-the session is active and see available networks.
+After the user completes login, call 'auth_status' to confirm the session is active.
 
-Returns:
-  - login_url: URL to open in the browser`,
+Returns: { login_url: string, message: string }`,
       inputSchema: z.object({}),
       annotations: {
         readOnlyHint: false,
@@ -44,34 +39,31 @@ Returns:
         openWorldHint: false,
       },
     },
-    async () => {
-      const loginUrl = `http://localhost:${SERVER_PORT}/login`;
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            login_url: loginUrl,
-            message: `Please open ${loginUrl} in your browser to log in. Once done, come back and I'll continue.`,
-          }, null, 2),
-        }],
-      };
-    }
+    async () => ({
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          login_url: `http://localhost:${SERVER_PORT}/login`,
+          message: `Please open http://localhost:${SERVER_PORT}/login in your browser to log in, then come back here.`,
+        }, null, 2),
+      }],
+    })
   );
 
-  // ── auth_status ─────────────────────────────
+  // ── auth_status ───────────────────────────────────────────────────────────
   server.registerTool(
     "auth_status",
     {
       title: "Auth Status",
-      description: `Check whether the user is currently authenticated and view session details.
+      description: `Check current authentication status and session details.
 
 Returns:
   - authenticated (boolean)
   - email (string)
-  - active_network: currently selected network
-  - available_networks: all networks the user has access to
+  - active_network: currently selected network ID
+  - available_networks: all networks accessible to the user
 
-Use after 'auth_login' to confirm the session is ready before making API calls.`,
+Use after 'auth_login' to confirm the session is ready.`,
       inputSchema: z.object({}),
       annotations: {
         readOnlyHint: true,
@@ -89,7 +81,7 @@ Use after 'auth_login' to confirm the session is ready before making API calls.`
             type: "text" as const,
             text: JSON.stringify({
               authenticated: false,
-              message: `Not logged in. Use 'auth_login' — it will give you a URL to open in your browser.`,
+              message: "Not logged in. Use 'auth_login' to get the browser login URL.",
             }),
           }],
         };
@@ -116,7 +108,6 @@ Use after 'auth_login' to confirm the session is ready before making API calls.`
         active_network: session.active_network,
         available_networks: session.networks,
       };
-
       return {
         content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }],
         structuredContent: status,
@@ -124,14 +115,13 @@ Use after 'auth_login' to confirm the session is ready before making API calls.`
     }
   );
 
-  // ── auth_logout ─────────────────────────────
+  // ── auth_logout ───────────────────────────────────────────────────────────
   server.registerTool(
     "auth_logout",
     {
       title: "Logout",
-      description: `Log out the current user by destroying their session.
+      description: `Destroy the current session and clear all auth context.
 
-This clears all network context and the stored token from the session store.
 The user will need to log in again via the browser to continue.`,
       inputSchema: z.object({}),
       annotations: {
@@ -148,7 +138,7 @@ The user will need to log in again via the browser to continue.`,
       }
       await destroySession(sessionId);
       setSessionId(null);
-      return { content: [{ type: "text" as const, text: "Logged out successfully. Session has been cleared." }] };
+      return { content: [{ type: "text" as const, text: "Logged out. Session cleared." }] };
     }
   );
 }

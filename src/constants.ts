@@ -1,18 +1,25 @@
 export const CHARACTER_LIMIT = 25_000;
 
-export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+// 7-day session TTL in Redis / in-memory store
+export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 
-// No token refresh buffer needed — authentic JWTs are long-lived (default 30d)
-// and there's no refresh endpoint. Re-login is required when they expire.
+// Lincx identity server (authentic-server)
+export const IDENTITY_SERVER =
+  process.env.IDENTITY_SERVER ?? "https://ix-id.lincx.la";
 
-export const IDENTITY_SERVER = process.env.IDENTITY_SERVER ?? "https://ix-id.lincx.la";
+// Your internal Work API base URL
+export const WORK_API_BASE_URL =
+  process.env.WORK_API_BASE_URL ?? "https://api.example.com";
 
-export const WORK_API_BASE_URL = process.env.WORK_API_BASE_URL ?? "https://api.example.com";
-export const NETWORK_API_BASE_URL = process.env.NETWORK_API_BASE_URL ?? "https://network.example.com";
+// Network Service base URL (used to fetch user networks after login)
+export const NETWORK_API_BASE_URL =
+  process.env.NETWORK_API_BASE_URL ?? "https://network.example.com";
 
+// Redis connection string — leave empty to use in-memory store (dev only)
 export const REDIS_URL = process.env.REDIS_URL ?? "";
 
+// Port for the Express HTTP server (login UI + health check)
 export const SERVER_PORT = parseInt(process.env.PORT ?? "3000", 10);
 
-// How long the "pending login" state lives before expiring (user opened browser but didn't submit)
-export const LOGIN_STATE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+// Transport: "stdio" (default, Claude Code) or "http" (remote)
+export const TRANSPORT = process.env.TRANSPORT ?? "stdio";

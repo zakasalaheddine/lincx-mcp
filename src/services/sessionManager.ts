@@ -1,16 +1,21 @@
 /**
  * services/sessionManager.ts
  *
- * Session lifecycle for authentic-server JWT auth.
- * No token refresh — authentic JWTs are long-lived (default 30d).
- * Re-login via web UI is required when they expire.
+ * Session lifecycle — the only place session state is mutated.
+ *
+ * Security contract:
+ *   - session_id lives in MCP server process memory only
+ *   - auth_token is injected server-side on every API request
+ *   - Claude (the AI client) never sees either value
  */
 
 import { v4 as uuidv4 } from "uuid";
-import { Session, SessionValidationResult } from "../types.js";
+import type { Session, SessionValidationResult } from "../types.js";
 import { getSessionStore } from "./sessionStore.js";
 import { revokeToken } from "./auth.js";
 import { fetchUserNetworks } from "./networkService.js";
+
+// ── Create ───────────────────────────────────────────────────────────────────
 
 export async function createSession(params: {
   user_id: string;
@@ -30,11 +35,15 @@ export async function createSession(params: {
   };
 
   await store.set(session.session_id, session);
-  console.log(`[Session] Created for ${params.email} (${session.session_id})`);
+  console.log(`[Session] Created for ${params.email} — id: ${session.session_id}`);
   return session;
 }
 
-export async function validateSession(sessionId: string): Promise<SessionValidationResult> {
+// ── Validate (runs on every tool call) ───────────────────────────────────────
+
+export async function validateSession(
+  sessionId: string
+): Promise<SessionValidationResult> {
   const store = await getSessionStore();
   const session = await store.get(sessionId);
 
@@ -48,20 +57,22 @@ export async function validateSession(sessionId: string): Promise<SessionValidat
   if (!session.active_network) {
     return {
       valid: false,
-      error: "No active network. Use 'network_list' then 'network_switch' to select one.",
+      error:
+        "No active network selected. Use 'network_list' to see your networks, then 'network_switch' to select one.",
     };
   }
 
-  const networkExists = session.networks.some((n) => n.id === session.active_network);
-  if (!networkExists) {
+  if (!session.networks.some((n) => n.id === session.active_network)) {
     return {
       valid: false,
-      error: `Active network '${session.active_network}' is no longer available. Use 'network_switch'.`,
+      error: `Active network '${session.active_network}' is no longer available. Use 'network_switch' to select a valid one.`,
     };
   }
 
   return { valid: true, session };
 }
+
+// ── Switch network ────────────────────────────────────────────────────────────
 
 export async function switchNetwork(
   sessionId: string,
@@ -75,15 +86,20 @@ export async function switchNetwork(
   const target = session.networks.find((n) => n.id === networkId);
   if (!target) {
     const available = session.networks.map((n) => `${n.name} (${n.id})`).join(", ");
-    return { success: false, error: `Network '${networkId}' not found. Available: ${available}` };
+    return {
+      success: false,
+      error: `Network '${networkId}' not found. Available: ${available || "none"}`,
+    };
   }
 
   const previousNetwork = session.active_network;
   session.active_network = networkId;
   await store.set(sessionId, session);
-  console.log(`[Session] ${sessionId} switched: ${previousNetwork} → ${networkId}`);
+  console.log(`[Session] ${sessionId}: network ${previousNetwork} → ${networkId}`);
   return { success: true, previousNetwork };
 }
+
+// ── Refresh network list ──────────────────────────────────────────────────────
 
 export async function refreshNetworks(sessionId: string): Promise<boolean> {
   const store = await getSessionStore();
@@ -92,6 +108,8 @@ export async function refreshNetworks(sessionId: string): Promise<boolean> {
 
   const networks = await fetchUserNetworks(session.auth_token);
   session.networks = networks;
+
+  // Keep active_network if it still exists, otherwise reset to first
   if (!networks.some((n) => n.id === session.active_network)) {
     session.active_network = networks[0]?.id ?? null;
   }
@@ -100,11 +118,13 @@ export async function refreshNetworks(sessionId: string): Promise<boolean> {
   return true;
 }
 
+// ── Destroy (logout) ──────────────────────────────────────────────────────────
+
 export async function destroySession(sessionId: string): Promise<void> {
   const store = await getSessionStore();
   const session = await store.get(sessionId);
   if (session) {
-    await revokeToken(session.auth_token);
+    await revokeToken(session.auth_token); // no-op for authentic-server
     await store.delete(sessionId);
     console.log(`[Session] Destroyed ${sessionId}`);
   }
