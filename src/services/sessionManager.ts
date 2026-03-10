@@ -35,7 +35,7 @@ export async function createSession(params: {
   };
 
   await store.set(session.session_id, session);
-  console.log(`[Session] Created for ${params.email} — id: ${session.session_id}`);
+  console.error(`[Session] Created for ${params.email} — id: ${session.session_id}`);
   return session;
 }
 
@@ -95,7 +95,7 @@ export async function switchNetwork(
   const previousNetwork = session.active_network;
   session.active_network = networkId;
   await store.set(sessionId, session);
-  console.log(`[Session] ${sessionId}: network ${previousNetwork} → ${networkId}`);
+  console.error(`[Session] ${sessionId}: network ${previousNetwork} → ${networkId}`);
   return { success: true, previousNetwork };
 }
 
@@ -126,6 +126,6 @@ export async function destroySession(sessionId: string): Promise<void> {
   if (session) {
     await revokeToken(session.auth_token); // no-op for authentic-server
     await store.delete(sessionId);
-    console.log(`[Session] Destroyed ${sessionId}`);
+    console.error(`[Session] Destroyed ${sessionId}`);
   }
 }

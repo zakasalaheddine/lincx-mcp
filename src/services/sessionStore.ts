@@ -41,7 +41,7 @@ export async function getSessionStore(): Promise<SessionStore> {
       },
     };
 
-    console.log("[SessionStore] Using Redis:", REDIS_URL);
+    console.error("[SessionStore] Using Redis:", REDIS_URL);
   } else {
     const ttlMs = SESSION_TTL_SECONDS * 1000;
     const map = new Map<string, { session: Session; expiresAt: number }>();

@@ -3,10 +3,13 @@
  *
  * Authenticated HTTP client for the Work API.
  *
+ * Multi-tenancy is handled via ?networkId=<id> on every request.
+ * networkId is ALWAYS injected from session.active_network server-side —
+ * Claude (the AI client) never passes it directly.
+ *
  * Security contract:
- *   - Authorization header is ALWAYS injected from session.auth_token
- *   - X-Network-ID is ALWAYS injected from session.active_network
- *   - Claude (the AI client) never passes either value directly
+ *   - Authorization header  → from session.auth_token   (never from client)
+ *   - networkId query param → from session.active_network (never from client)
  */
 
 import axios, { AxiosError } from "axios";
@@ -24,10 +27,13 @@ export async function workApiRequest<T>(
     url: `${WORK_API_BASE_URL}${path}`,
     headers: {
       Authorization: `Bearer ${session.auth_token}`,
-      "X-Network-ID": session.active_network!,
       "Content-Type": "application/json",
     },
-    params: options.params,
+    params: {
+      // networkId always injected here — client tools never pass it
+      networkId: session.active_network!,
+      ...options.params,
+    },
     data: options.body,
     timeout: 10_000,
   });
@@ -48,7 +54,7 @@ export function handleWorkApiError(error: unknown): string {
   }
   if (error instanceof AxiosError) {
     if (error.code === "ECONNABORTED") return "Error: Request timed out.";
-    if (error.code === "ECONNREFUSED") return "Error: Cannot reach Work API.";
+    if (error.code === "ECONNREFUSED") return "Error: Cannot reach Work API. Is it running?";
   }
   return `Error: ${error instanceof Error ? error.message : String(error)}`;
 }

@@ -7,13 +7,10 @@ export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 export const IDENTITY_SERVER =
   process.env.IDENTITY_SERVER ?? "https://ix-id.lincx.la";
 
-// Your internal Work API base URL
+// Work API base URL — all requests go here, including network discovery
+// Networks are multi-tenant via ?networkId=<id> query param on every request
 export const WORK_API_BASE_URL =
-  process.env.WORK_API_BASE_URL ?? "https://api.example.com";
-
-// Network Service base URL (used to fetch user networks after login)
-export const NETWORK_API_BASE_URL =
-  process.env.NETWORK_API_BASE_URL ?? "https://network.example.com";
+  process.env.WORK_API_BASE_URL ?? "http://localhost:3050";
 
 // Redis connection string — leave empty to use in-memory store (dev only)
 export const REDIS_URL = process.env.REDIS_URL ?? "";

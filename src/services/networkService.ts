@@ -2,21 +2,21 @@
  * services/networkService.ts
  *
  * Fetches the list of networks the authenticated user belongs to.
- * Called once at session creation; call refreshNetworks() to re-fetch.
+ * Uses the same Work API — no separate Network Service exists.
  *
- * Adjust NETWORKS_PATH if your API uses a different endpoint.
+ * Adjust NETWORKS_PATH if your endpoint differs.
  */
 
 import axios, { AxiosError } from "axios";
-import { NETWORK_API_BASE_URL } from "../constants.js";
+import { WORK_API_BASE_URL } from "../constants.js";
 import type { Network } from "../types.js";
 
-const NETWORKS_PATH = "/v1/networks";
+const NETWORKS_PATH = "/api/networks";
 
 export async function fetchUserNetworks(authToken: string): Promise<Network[]> {
   try {
     const res = await axios.get<unknown>(
-      `${NETWORK_API_BASE_URL}${NETWORKS_PATH}`,
+      `${WORK_API_BASE_URL}${NETWORKS_PATH}`,
       {
         headers: { Authorization: `Bearer ${authToken}` },
         timeout: 10_000,
@@ -25,11 +25,12 @@ export async function fetchUserNetworks(authToken: string): Promise<Network[]> {
 
     // Handle common response shapes: { networks: [] } | { data: [] } | []
     const body = res.data as Record<string, unknown>;
-    const raw =
-      (Array.isArray(body?.networks) ? body.networks :
-       Array.isArray(body?.data)     ? body.data     :
-       Array.isArray(body?.items)    ? body.items    :
-       Array.isArray(body)           ? body           : []) as Array<{ id: string; name?: string }>;
+    const raw = (
+      Array.isArray(body?.networks) ? body.networks :
+      Array.isArray(body?.data)     ? body.data     :
+      Array.isArray(body?.items)    ? body.items    :
+      Array.isArray(body)           ? body           : []
+    ) as Array<{ id: string; name?: string }>;
 
     return raw.map((n) => ({ id: String(n.id), name: String(n.name ?? n.id) }));
   } catch (err) {

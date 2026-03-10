@@ -73,7 +73,7 @@ app.post("/api/login", async (req, res) => {
     const userId = decodeUserIdFromJwt(authToken);
     const session = await createSession({ user_id: userId, email, auth_token: authToken });
     setSessionId(session.session_id);
-    console.log(`[Auth] Login successful: ${email}`);
+    console.error(`[Auth] Login successful: ${email}`);
     res.json({ success: true, email: session.email, networks: session.networks, active_network: session.active_network });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Login failed";
@@ -111,12 +111,12 @@ app.post("/mcp", async (req, res) => {
 async function main(): Promise<void> {
   // Always start HTTP server so the login page is reachable
   app.listen(SERVER_PORT, () => {
-    console.log(`[HTTP]   Login UI → http://localhost:${SERVER_PORT}/login`);
-    console.log(`[HTTP]   Health   → http://localhost:${SERVER_PORT}/health`);
+    console.error(`[HTTP]   Login UI → http://localhost:${SERVER_PORT}/login`);
+    console.error(`[HTTP]   Health   → http://localhost:${SERVER_PORT}/health`);
   });
 
   if (TRANSPORT === "http") {
-    console.log(`[MCP]    HTTP transport → http://localhost:${SERVER_PORT}/mcp`);
+    console.error(`[MCP]    HTTP transport → http://localhost:${SERVER_PORT}/mcp`);
     // transport handled by the /mcp express route above
   } else {
     // stdio — default for Claude Code / local IDE
