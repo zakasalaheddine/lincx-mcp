@@ -140,6 +140,50 @@ Add to your Claude Code MCP config (`~/.claude/mcp_settings.json` or via Claude 
 
 ---
 
+## Register with Claude Desktop
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+**Production mode** (runs compiled JS from `dist/`):
+
+```json
+{
+  "mcpServers": {
+    "lincx": {
+      "command": "node",
+      "args": ["/absolute/path/to/lincx-mcp-server/dist/index.js"],
+      "env": {
+        "WORK_API_BASE_URL": "http://localhost:3050",
+        "PORT": "3000"
+      }
+    }
+  }
+}
+```
+
+**Dev mode** (auto-reloads on source changes — no rebuild needed):
+
+```json
+{
+  "mcpServers": {
+    "lincx": {
+      "command": "npx",
+      "args": ["tsx", "/absolute/path/to/lincx-mcp-server/src/index.ts"],
+      "env": {
+        "WORK_API_BASE_URL": "http://localhost:3050",
+        "PORT": "3000"
+      }
+    }
+  }
+}
+```
+
+> Replace `/absolute/path/to/` with the actual path on your machine.
+> After saving, quit and reopen Claude Desktop to pick up the new server.
+> Dev mode uses `tsx` to run TypeScript directly — changes to `src/` take effect on next MCP call without rebuilding.
+
+---
+
 ## First login
 
 1. In Claude, say **"login"** or ask it to call `auth_login`

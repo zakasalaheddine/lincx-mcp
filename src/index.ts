@@ -28,11 +28,29 @@ import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
 // ─────────────────────────────────────────────────────────────────────────────
 // SESSION CONTEXT
 // session_id lives here — never sent to Claude
+// Persisted to .sessions/session_id so dev restarts don't require re-login
 // ─────────────────────────────────────────────────────────────────────────────
 
-let currentSessionId: string | null = null;
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+const SESSION_ID_FILE = join(process.cwd(), ".sessions", "session_id");
+
+function loadSessionId(): string | null {
+  try { return readFileSync(SESSION_ID_FILE, "utf-8").trim() || null; } catch { return null; }
+}
+
+function persistSessionId(id: string | null): void {
+  try {
+    mkdirSync(join(process.cwd(), ".sessions"), { recursive: true });
+    writeFileSync(SESSION_ID_FILE, id ?? "");
+  } catch { /* best-effort */ }
+}
+
+let currentSessionId: string | null = loadSessionId();
+if (currentSessionId) console.error(`[Session] Restored session: ${currentSessionId}`);
 const getSessionId = (): string | null => currentSessionId;
-const setSessionId = (id: string | null): void => { currentSessionId = id; };
+const setSessionId = (id: string | null): void => { currentSessionId = id; persistSessionId(id); };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP SERVER
@@ -70,8 +88,7 @@ app.post("/api/login", async (req, res) => {
 
   try {
     const { authToken } = await loginWithCredentials(email, password);
-    const userId = decodeUserIdFromJwt(authToken);
-    const session = await createSession({ user_id: userId, email, auth_token: authToken });
+    const session = await createSession({ user_id: email, email, auth_token: authToken });
     setSessionId(session.session_id);
     console.error(`[Auth] Login successful: ${email}`);
     res.json({ success: true, email: session.email, networks: session.networks, active_network: session.active_network });
@@ -91,6 +108,45 @@ app.get("/login/success", (_req, res) => {
 /** Health check */
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", authenticated: currentSessionId !== null });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEV — Test tools without Claude Desktop
+//
+//   GET  /dev/tools                → list all registered tools
+//   POST /dev/tools/:name          → call a tool with JSON body as args
+//
+//   Examples:
+//     curl http://localhost:3000/dev/tools
+//     curl -X POST http://localhost:3000/dev/tools/auth_login
+//     curl -X POST http://localhost:3000/dev/tools/auth_status
+//     curl -X POST http://localhost:3000/dev/tools/network_list
+//     curl -X POST http://localhost:3000/dev/tools/projects_list -H 'Content-Type: application/json' -d '{"limit":5}'
+// ─────────────────────────────────────────────────────────────────────────────
+
+const registeredTools = (server as unknown as { _registeredTools: Record<string, { inputSchema?: unknown; description?: string; handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown> }> })._registeredTools;
+
+app.get("/dev/tools", (_req, res) => {
+  const tools = Object.entries(registeredTools).map(([name, t]) => ({
+    name,
+    description: t.description,
+  }));
+  res.json({ tools, session: currentSessionId ? "active" : "none" });
+});
+
+app.post("/dev/tools/:name", async (req, res) => {
+  const tool = registeredTools[req.params.name];
+  if (!tool) {
+    res.status(404).json({ error: `Tool '${req.params.name}' not found` });
+    return;
+  }
+  try {
+    const result = await tool.handler(req.body ?? {}, {});
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
 });
 
 /** MCP over HTTP (optional — for remote/multi-client use) */
@@ -130,22 +186,6 @@ main().catch((err) => {
   console.error("[FATAL]", err);
   process.exit(1);
 });
-
-// ─────────────────────────────────────────────────────────────────────────────
-// JWT DECODE HELPER
-// Extracts user_id from the authentic-server JWT payload (no verification needed
-// here — the token was just issued by the identity server we trust)
-// ─────────────────────────────────────────────────────────────────────────────
-
-function decodeUserIdFromJwt(token: string): string {
-  try {
-    const payloadB64 = token.split(".")[1];
-    const decoded = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf-8")) as Record<string, unknown>;
-    return String(decoded.sub ?? decoded.user_id ?? decoded.email ?? "unknown");
-  } catch {
-    return "unknown";
-  }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HTML — Login page

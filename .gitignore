@@ -8,4 +8,5 @@ dist/
 .idea/
 .vscode/
 *.tsbuildinfo
+.sessions/
 !CLAUDE.md

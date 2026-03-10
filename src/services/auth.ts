@@ -24,29 +24,31 @@ export async function loginWithCredentials(
 ): Promise<LoginResult> {
   try {
     const res = await axios.post<{
-      success: boolean;
-      message?: string;
-      data?: { authToken: string };
+        success: boolean;
+        message?: string;
+        data?: { authToken: string };
     }>(
       `${IDENTITY_SERVER}/auth/login`,
       { email: email.toLowerCase().trim(), password },
       { headers: { "Content-Type": "application/json" }, timeout: 8_000 }
     );
-
-    if (!res.data.success || !res.data.data?.authToken) {
+    
+    const success = res.data.success
+    const authToken = res.data.data?.authToken
+    if (success === false || authToken === undefined) {
       throw new Error(res.data.message ?? "Login failed — no token returned");
     }
-
     return {
-      authToken: res.data.data.authToken,
+      authToken,
       email: email.toLowerCase().trim(),
     };
   } catch (err) {
     if (err instanceof AxiosError) {
-      if (err.response?.status === 401) throw new Error("Invalid email or password");
-      if (err.response?.status === 403) throw new Error("Account not confirmed. Check your email for a confirmation link.");
-      const msg = (err.response?.data as { message?: string })?.message ?? err.message;
-      throw new Error(msg);
+      const serverError = (err.response?.data as { error?: string; message?: string })?.error
+        ?? (err.response?.data as { message?: string })?.message;
+      if (err.response?.status === 401) throw new Error(serverError ?? "Invalid email or password");
+      if (err.response?.status === 403) throw new Error(serverError ?? "Account not confirmed. Check your email for a confirmation link.");
+      throw new Error(serverError ?? err.message);
     }
     if (err instanceof Error) throw err;
     throw new Error("Unexpected error during login");
