@@ -1,6 +1,13 @@
 export interface Network {
   id: string;
   name: string;
+  owner: string;
+  members: string[];
+  observers: string[];
+  dateCreated: string;
+  dateUpdated: string;
+  userUpdated: string;
+  customDimensions: Array<{ name: string; dateCreated: string }>;
 }
 
 export interface Session {
