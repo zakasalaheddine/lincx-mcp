@@ -104,7 +104,7 @@ Login endpoint: `POST /auth/login` with body `{ email, password }`
 Response shape: `{ success: boolean, data: { authToken: string } }`
 Token type: JWT, ~30 day expiry, no refresh endpoint, no revocation endpoint
 
-**Known open issue:** 401 on login despite correct credentials — suspected cause is either wrong request body field names (`email` vs `username`) or missing headers the identity server requires. Debug by logging the raw axios request/response in `auth.ts` before the catch block.
+**Known open issue:** 401 on login despite correct credentials — suspected cause is either wrong request body field names (`email` vs `username`) or missing headers the identity server requires. Debug by logging the raw fetch request/response in `auth.ts` before the status checks.
 
 ---
 
@@ -133,7 +133,7 @@ TTL: 7 days (configurable in `constants.ts` via `SESSION_TTL_SECONDS`).
 |----------|----------|---------|-------------|
 | `WORK_API_BASE_URL` | Yes | `http://localhost:3050` | Work API — all requests go here |
 | `IDENTITY_SERVER` | No | `https://ix-id.lincx.la` | Lincx auth server |
-| `PORT` | No | `3000` | Express login UI port |
+| `PORT` | No | `5001` | Express login UI port |
 | `TRANSPORT` | No | `stdio` | `stdio` or `http` |
 | `REDIS_URL` | No | `` (empty) | Redis for persistent sessions |
 
@@ -165,7 +165,7 @@ Claude Code runs `dist/index.js` — source changes have no effect until rebuilt
       "args": ["/absolute/path/to/lincx-mcp-server/dist/index.js"],
       "env": {
         "WORK_API_BASE_URL": "http://localhost:3050",
-        "PORT": "3000"
+        "PORT": "5001"
       }
     }
   }

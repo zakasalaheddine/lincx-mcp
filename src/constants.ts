@@ -16,7 +16,7 @@ export const WORK_API_BASE_URL =
 export const REDIS_URL = process.env.REDIS_URL ?? "";
 
 // Port for the Express HTTP server (login UI + health check)
-export const SERVER_PORT = parseInt(process.env.PORT ?? "3000", 10);
+export const SERVER_PORT = parseInt(process.env.PORT ?? "5001", 10);
 
 // Transport: "stdio" (default, Claude Code) or "http" (remote)
 export const TRANSPORT = process.env.TRANSPORT ?? "stdio";
