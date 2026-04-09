@@ -10,7 +10,6 @@
  *   4. Returns authToken which is stored in session — never seen by Claude
  */
 
-import axios, { AxiosError } from "axios";
 import { IDENTITY_SERVER } from "../constants.js";
 
 export interface LoginResult {
@@ -22,37 +21,44 @@ export async function loginWithCredentials(
   email: string,
   password: string
 ): Promise<LoginResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+
+  let res: Response;
   try {
-    const res = await axios.post<{
-        success: boolean;
-        message?: string;
-        data?: { authToken: string };
-    }>(
-      `${IDENTITY_SERVER}/auth/login`,
-      { email: email.toLowerCase().trim(), password },
-      { headers: { "Content-Type": "application/json" }, timeout: 8_000 }
-    );
-    
-    const success = res.data.success
-    const authToken = res.data.data?.authToken
-    if (success === false || authToken === undefined) {
-      throw new Error(res.data.message ?? "Login failed — no token returned");
-    }
-    return {
-      authToken,
-      email: email.toLowerCase().trim(),
-    };
+    res = await fetch(`${IDENTITY_SERVER}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.toLowerCase().trim(), password }),
+      signal: controller.signal,
+    });
   } catch (err) {
-    if (err instanceof AxiosError) {
-      const serverError = (err.response?.data as { error?: string; message?: string })?.error
-        ?? (err.response?.data as { message?: string })?.message;
-      if (err.response?.status === 401) throw new Error(serverError ?? "Invalid email or password");
-      if (err.response?.status === 403) throw new Error(serverError ?? "Account not confirmed. Check your email for a confirmation link.");
-      throw new Error(serverError ?? err.message);
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error("Request timed out");
     }
-    if (err instanceof Error) throw err;
-    throw new Error("Unexpected error during login");
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
+
+  const body = await res.json() as { success: boolean; message?: string; data?: { authToken: string } };
+
+  if (res.status === 401) {
+    throw new Error(body.message ?? "Invalid email or password");
+  }
+  if (res.status === 403) {
+    throw new Error(body.message ?? "Account not confirmed. Check your email for a confirmation link.");
+  }
+  if (!res.ok) {
+    throw new Error(body.message ?? `Login failed with status ${res.status}`);
+  }
+
+  const authToken = body.data?.authToken;
+  if (!body.success || authToken === undefined) {
+    throw new Error(body.message ?? "Login failed — no token returned");
+  }
+
+  return { authToken, email: email.toLowerCase().trim() };
 }
 
 /**

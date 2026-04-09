@@ -12,7 +12,6 @@
  *   - networkId query param → from session.active_network (never from client)
  */
 
-import axios, { AxiosError } from "axios";
 import type { Session } from "../types.js";
 import { WORK_API_BASE_URL, CHARACTER_LIMIT } from "../constants.js";
 
@@ -22,41 +21,67 @@ export async function workApiRequest<T>(
   path: string,
   options: { body?: unknown; params?: Record<string, unknown> } = {}
 ): Promise<T> {
-  const res = await axios<T>({
-    method,
-    url: `${WORK_API_BASE_URL}${path}`,
-    headers: {
-      Authorization: `Bearer ${session.auth_token}`,
-      "Content-Type": "application/json",
-    },
-    params: {
-      // networkId always injected here — client tools never pass it
-      networkId: session.active_network!,
-      ...options.params,
-    },
-    data: options.body,
-    timeout: 10_000,
-  });
-  return res.data;
+  const params = new URLSearchParams();
+  // networkId always injected here — client tools never pass it
+  params.set("networkId", session.active_network!);
+  for (const [k, v] of Object.entries(options.params ?? {})) {
+    if (v !== undefined && v !== null) params.set(k, String(v));
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+
+  let res: Response;
+  try {
+    res = await fetch(`${WORK_API_BASE_URL}${path}?${params}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${session.auth_token}`,
+        "Content-Type": "application/json",
+      },
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw Object.assign(new Error("Request timed out"), { code: "TIMEOUT" });
+    }
+    throw Object.assign(err instanceof Error ? err : new Error(String(err)), { code: "ECONNREFUSED" });
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    const httpError = Object.assign(new Error(`HTTP ${res.status}`), {
+      status: res.status,
+      data,
+    });
+    throw httpError;
+  }
+
+  return res.json() as Promise<T>;
 }
 
 export function handleWorkApiError(error: unknown): string {
-  if (error instanceof AxiosError && error.response) {
-    switch (error.response.status) {
-      case 400: return `Error: Bad request — ${JSON.stringify(error.response.data)}`;
-      case 401: return "Error: Unauthorized. Use 'auth_logout' then 'auth_login' to re-authenticate.";
-      case 403: return "Error: Forbidden — you don't have access to this resource on the active network.";
-      case 404: return "Error: Resource not found. Double-check the ID.";
-      case 429: return "Error: Rate limit hit. Wait a moment then retry.";
-      case 500: return "Error: Work API server error. Try again later.";
-      default:  return `Error: API returned status ${error.response.status}`;
+  if (error instanceof Error) {
+    const e = error as Error & { status?: number; data?: unknown; code?: string };
+    if (e.status !== undefined) {
+      switch (e.status) {
+        case 400: return `Error: Bad request — ${JSON.stringify(e.data)}`;
+        case 401: return "Error: Unauthorized. Use 'auth_logout' then 'auth_login' to re-authenticate.";
+        case 403: return "Error: Forbidden — you don't have access to this resource on the active network.";
+        case 404: return "Error: Resource not found. Double-check the ID.";
+        case 429: return "Error: Rate limit hit. Wait a moment then retry.";
+        case 500: return "Error: Work API server error. Try again later.";
+        default:  return `Error: API returned status ${e.status}`;
+      }
     }
+    if (e.code === "TIMEOUT") return "Error: Request timed out.";
+    if (e.code === "ECONNREFUSED") return "Error: Cannot reach Work API. Is it running?";
+    return `Error: ${e.message}`;
   }
-  if (error instanceof AxiosError) {
-    if (error.code === "ECONNABORTED") return "Error: Request timed out.";
-    if (error.code === "ECONNREFUSED") return "Error: Cannot reach Work API. Is it running?";
-  }
-  return `Error: ${error instanceof Error ? error.message : String(error)}`;
+  return `Error: ${String(error)}`;
 }
 
 export function truncateIfNeeded(text: string, total?: number): string {

@@ -7,24 +7,32 @@
  * Adjust NETWORKS_PATH if your endpoint differs.
  */
 
-import axios, { AxiosError } from "axios";
 import { WORK_API_BASE_URL } from "../constants.js";
 import type { Network } from "../types.js";
 
 const NETWORKS_PATH = "/api/networks";
 
 export async function fetchUserNetworks(authToken: string): Promise<Network[]> {
-  try {
-    const res = await axios.get<unknown>(
-      `${WORK_API_BASE_URL}${NETWORKS_PATH}`,
-      {
-        headers: { Authorization: `Bearer ${authToken}` },
-        timeout: 10_000,
-      }
-    );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
 
-    // Handle common response shapes: { networks: [] } | { data: [] } | []
-    const body = res.data as Record<string, unknown>;
+  try {
+    const res = await fetch(`${WORK_API_BASE_URL}${NETWORKS_PATH}`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+      signal: controller.signal,
+    });
+
+    if (!res.ok) {
+      console.error("[Networks] Failed to fetch:", {
+        url: `${WORK_API_BASE_URL}${NETWORKS_PATH}`,
+        status: res.status,
+      });
+      return [];
+    }
+
+    const body = await res.json() as Record<string, unknown>;
+
+    // Handle common response shapes: { networks: [] } | { data: [] } | { items: [] } | []
     const raw = (
       Array.isArray(body?.networks) ? body.networks :
       Array.isArray(body?.data)     ? body.data     :
@@ -46,17 +54,14 @@ export async function fetchUserNetworks(authToken: string): Promise<Network[]> {
         : [],
     }));
   } catch (err) {
-    if (err instanceof AxiosError) {
-      console.error("[Networks] Failed to fetch:", {
-        url: `${WORK_API_BASE_URL}${NETWORKS_PATH}`,
-        status: err.response?.status,
-        data: JSON.stringify(err.response?.data),
-        code: err.code,
-      });
+    if (err instanceof Error && err.name === "AbortError") {
+      console.error("[Networks] Request timed out");
     } else {
       console.error("[Networks] Unexpected error:", err);
     }
     // Return empty list — login still succeeds, user can call network_refresh later
     return [];
+  } finally {
+    clearTimeout(timer);
   }
 }
