@@ -41,7 +41,7 @@ src/
 └── tools/
     ├── authTools.ts            # auth_login, auth_status, auth_logout
     ├── networkTools.ts         # network_list, network_switch, network_refresh
-    └── projectTools.ts         # projects_list, projects_get  ← extend here
+    └── (add new domain tool files here)
 ```
 
 ---
@@ -213,22 +213,12 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 | `network_switch(network_id)` | Sets active network for all subsequent calls |
 | `network_refresh` | Re-fetches network list from `/api/networks` |
 
-### Business tools (extend these)
-
-| Tool | Description |
-|------|-------------|
-| `projects_list` | Lists projects on the active network |
-| `projects_get(project_id)` | Gets a specific project by ID |
-
----
-
 ## How multi-tenancy works
 
 Every Work API call automatically gets `?networkId=<active_network>` appended:
 
 ```
 GET /api/creative-asset-groups?networkId=svce6t
-GET /api/projects?networkId=svce6t&limit=20
 POST /api/campaigns?networkId=svce6t
 ```
 
@@ -254,7 +244,7 @@ Claude will:
 ## Adding new business tools
 
 1. Create `src/tools/yourDomainTools.ts`
-2. Follow the pattern in `projectTools.ts`:
+2. Follow this pattern:
    - Call `validateSession(sessionId)` first
    - **Never** accept `networkId` as a tool parameter
    - Use `workApiRequest(session, method, path, opts)` — `?networkId` is injected automatically
