@@ -150,15 +150,32 @@ app.post("/dev/tools/:name", async (req, res) => {
   }
 });
 
-/** MCP over HTTP (optional — for remote/multi-client use) */
+/** MCP over HTTP — single shared transport, connected once */
+let httpTransport: StreamableHTTPServerTransport | null = null;
+
 app.post("/mcp", async (req, res) => {
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
-  });
-  res.on("close", () => transport.close());
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+  if (!httpTransport) {
+    httpTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    await server.connect(httpTransport);
+    console.error("[MCP]    HTTP transport connected");
+  }
+  await httpTransport.handleRequest(req, res, req.body);
+});
+
+app.get("/mcp", async (req, res) => {
+  if (!httpTransport) {
+    res.status(503).json({ error: "MCP HTTP transport not yet initialised — send a POST first." });
+    return;
+  }
+  await httpTransport.handleRequest(req, res);
+});
+
+app.delete("/mcp", async (req, res) => {
+  if (!httpTransport) { res.status(404).end(); return; }
+  await httpTransport.handleRequest(req, res);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
