@@ -24,17 +24,3 @@ export interface SessionValidationResult {
   session?: Session;
   error?: string;
 }
-
-export interface ApiProject {
-  id: string;
-  name: string;
-  status: string;
-  created_at: string;
-  [key: string]: unknown;
-}
-
-export interface PaginatedResponse<T> {
-  items: T[];
-  total: number;
-  has_more: boolean;
-}

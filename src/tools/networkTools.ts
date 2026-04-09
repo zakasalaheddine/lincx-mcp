@@ -70,12 +70,6 @@ Returns:
 
 ALWAYS call 'network_list' first to get the correct network_id.
 
-Natural language example:
-  User: "show me projects on Network B"
-  → Call network_list() to get Network B's id
-  → Call network_switch({ network_id: "<id>" })
-  → Call projects_list()
-
 The session stays on the new network until switched again.
 
 Args:

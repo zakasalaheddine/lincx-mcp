@@ -34,7 +34,7 @@ src/
 └── tools/
     ├── authTools.ts          # auth_login, auth_status, auth_logout
     ├── networkTools.ts       # network_list, network_switch, network_refresh
-    └── projectTools.ts       # projects_list, projects_get — template for new business tools
+    └── (add new domain tool files here)
 ```
 
 ---
@@ -179,7 +179,7 @@ Claude Code runs `dist/index.js` — source changes have no effect until rebuilt
 ## How to add a new business tool
 
 1. Create `src/tools/yourDomainTools.ts`
-2. Copy the pattern from `projectTools.ts` exactly:
+2. Follow this pattern:
 
 ```ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -245,10 +245,6 @@ Cross-reference with the actual login request from the Lincx web app (DevTools �
 `networkService.ts` handles four possible shapes from `GET /api/networks`:
 `{ networks: [] }` | `{ data: [] }` | `{ items: [] }` | bare `[]`
 The actual shape from the real endpoint is unknown — confirm and simplify the parsing once known.
-
-### projectTools.ts is a placeholder
-`projects_list` and `projects_get` call `/v1/projects` which likely doesn't exist.
-These are template tools — replace with real Lincx API endpoints (creative-asset-groups, zones, templates, etc.).
 
 ### No token expiry handling
 authentic-server JWTs expire after ~30 days. When they expire, all tool calls will fail with 401.

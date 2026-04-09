@@ -22,7 +22,6 @@ import { loginWithCredentials } from "./services/auth.js";
 import { createSession } from "./services/sessionManager.js";
 import { registerAuthTools } from "./tools/authTools.js";
 import { registerNetworkTools } from "./tools/networkTools.js";
-import { registerProjectTools } from "./tools/projectTools.js";
 import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,7 +63,6 @@ const server = new McpServer({ name: "lincx-mcp-server", version: "1.0.0" });
 
 registerAuthTools(server, getSessionId, setSessionId);
 registerNetworkTools(server, getSessionId);
-registerProjectTools(server, getSessionId);
 // Add more tool groups here: registerCampaignTools(server, getSessionId), etc.
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,7 +123,6 @@ app.get("/health", (_req, res) => {
 //     curl -X POST http://localhost:3000/dev/tools/auth_login
 //     curl -X POST http://localhost:3000/dev/tools/auth_status
 //     curl -X POST http://localhost:3000/dev/tools/network_list
-//     curl -X POST http://localhost:3000/dev/tools/projects_list -H 'Content-Type: application/json' -d '{"limit":5}'
 // ─────────────────────────────────────────────────────────────────────────────
 
 const registeredTools = (server as unknown as { _registeredTools: Record<string, { inputSchema?: unknown; description?: string; handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown> }> })._registeredTools;
