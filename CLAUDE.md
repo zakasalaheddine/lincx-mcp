@@ -290,6 +290,22 @@ registerYourDomainTools(server, getSessionId);
 - `list_publishers` — `GET /api/publishers` (paginated)
 - `get_publisher` — `GET /api/publishers/{id}`
 
+### Dimension Sets (M3)
+- `list_dimension_sets` — `GET /api/dimension-sets` (paginated)
+- `get_dimension_set` — `GET /api/dimension-sets/{id}` — dimensions available for report_query
+
+### Reporting (M3)
+- `get_event_stats_keys` — `GET /api/event-stats` — unique event key-values for last 31 days (use to discover filter dimensions)
+- `report_query` — composite: `GET /api/reports/{dimensionSetId}` with date range, resolution (`day`/`hour`), dimension filters (`d`), optional test-mode
+
+### Advertisers (M3)
+- `list_advertisers` — `GET /api/advertisers` (paginated)
+- `get_advertiser` — `GET /api/advertisers/{id}`
+
+### Experiences (M3)
+- `list_experiences` — `GET /api/experiences` (paginated)
+- `get_experience` — `GET /api/experiences/{id}`
+
 ---
 
 ## Known issues and open work
