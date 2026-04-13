@@ -24,6 +24,7 @@ import { registerAuthTools } from "./tools/authTools.js";
 import { registerNetworkTools } from "./tools/networkTools.js";
 import { registerTemplateTools } from "./tools/templateTools.js";
 import { registerCreativeAssetGroupTools } from "./tools/creativeAssetGroupTools.js";
+import { registerZoneTools } from "./tools/zoneTools.js";
 import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ registerAuthTools(server, getSessionId, setSessionId);
 registerNetworkTools(server, getSessionId);
 registerTemplateTools(server, getSessionId);
 registerCreativeAssetGroupTools(server, getSessionId);
+registerZoneTools(server, getSessionId);
 // Add more tool groups here: registerCampaignTools(server, getSessionId), etc.
 
 // ─────────────────────────────────────────────────────────────────────────────
