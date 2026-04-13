@@ -145,8 +145,10 @@ Use this first when debugging why a zone is or isn't serving ads.`,
       const [zoneResp, parentsResp, adsResp, debugResp] = await Promise.all([
         workApiRequest<Record<string, unknown>>(session, "GET", `/api/zones/${zoneId}`),
         workApiRequest<Record<string, unknown>>(session, "GET", `/api/zones/${zoneId}/parents`),
-        workApiRequest<Record<string, unknown>>(session, "GET", "/api/ads/ad", { params: { zoneId } }),
-        workApiRequest<Record<string, unknown>>(session, "GET", "/api/ads/ad/debug", { params: { zoneId } }),
+        workApiRequest<Record<string, unknown>>(session, "GET", "/api/ads/ad", { params: { zoneId } })
+          .catch((): Record<string, unknown> => ({ error: "ad-serving endpoint unavailable" })),
+        workApiRequest<Record<string, unknown>>(session, "GET", "/api/ads/ad/debug", { params: { zoneId } })
+          .catch((): Record<string, unknown> => ({ error: "debug endpoint unavailable" })),
       ]);
 
       // Extract matched ad IDs from serving response
