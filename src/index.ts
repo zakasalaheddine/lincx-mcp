@@ -32,6 +32,8 @@ import { registerCampaignTools } from "./tools/campaignTools.js";
 import { registerChannelTools } from "./tools/channelTools.js";
 import { registerSiteTools } from "./tools/siteTools.js";
 import { registerPublisherTools } from "./tools/publisherTools.js";
+import { registerAdvertiserTools } from "./tools/advertiserTools.js";
+import { registerExperienceTools } from "./tools/experienceTools.js";
 import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,6 +85,7 @@ registerCampaignTools(server, getSessionId);
 registerChannelTools(server, getSessionId);
 registerSiteTools(server, getSessionId);
 registerPublisherTools(server, getSessionId);
+registerAdvertiserTools(server, getSessionId);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPRESS — Login UI + health check
