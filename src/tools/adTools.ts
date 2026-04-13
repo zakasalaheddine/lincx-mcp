@@ -101,7 +101,7 @@ export function registerAdTools(server: McpServer, getSessionId: () => string | 
       geoCountry: z.string().optional(),
       scoreKey: z.string().optional(),
     }).strict(),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ zoneId, adFeedCount, geoState, geoCity, geoIP, geoPostal, geoCountry, scoreKey }) => {
     const sessionId = getSessionId();
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
