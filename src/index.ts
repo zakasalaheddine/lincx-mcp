@@ -25,6 +25,13 @@ import { registerNetworkTools } from "./tools/networkTools.js";
 import { registerTemplateTools } from "./tools/templateTools.js";
 import { registerCreativeAssetGroupTools } from "./tools/creativeAssetGroupTools.js";
 import { registerZoneTools } from "./tools/zoneTools.js";
+import { registerAdTools } from "./tools/adTools.js";
+import { registerAdGroupTools } from "./tools/adGroupTools.js";
+import { registerCreativeTools } from "./tools/creativeTools.js";
+import { registerCampaignTools } from "./tools/campaignTools.js";
+import { registerChannelTools } from "./tools/channelTools.js";
+import { registerSiteTools } from "./tools/siteTools.js";
+import { registerPublisherTools } from "./tools/publisherTools.js";
 import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +76,13 @@ registerNetworkTools(server, getSessionId);
 registerTemplateTools(server, getSessionId);
 registerCreativeAssetGroupTools(server, getSessionId);
 registerZoneTools(server, getSessionId);
-// Add more tool groups here: registerCampaignTools(server, getSessionId), etc.
+registerAdTools(server, getSessionId);
+registerAdGroupTools(server, getSessionId);
+registerCreativeTools(server, getSessionId);
+registerCampaignTools(server, getSessionId);
+registerChannelTools(server, getSessionId);
+registerSiteTools(server, getSessionId);
+registerPublisherTools(server, getSessionId);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPRESS — Login UI + health check
