@@ -9,4 +9,5 @@ dist/
 .vscode/
 *.tsbuildinfo
 .sessions/
+.worktrees/
 !CLAUDE.md
