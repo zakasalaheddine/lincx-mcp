@@ -84,6 +84,38 @@ export function handleWorkApiError(error: unknown): string {
   return `Error: ${String(error)}`;
 }
 
+/**
+ * Fields that are large content blobs — stripped from list responses to keep
+ * token counts manageable. Full details are available via individual get_* tools.
+ */
+const HEAVY_FIELDS = new Set([
+  "html", "css", "content", "schema", "fields", "config", "settings", "body", "template",
+]);
+
+function stripHeavyFields(item: unknown): unknown {
+  if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
+  return Object.fromEntries(
+    Object.entries(item as Record<string, unknown>).filter(([key]) => !HEAVY_FIELDS.has(key))
+  );
+}
+
+/**
+ * Strip heavy content fields from list responses.
+ * Handles bare arrays and objects that contain one array property (e.g. { templates: [...], total: N }).
+ */
+export function stripListItems(data: unknown): unknown {
+  if (Array.isArray(data)) return data.map(stripHeavyFields);
+  if (typeof data === "object" && data !== null) {
+    const obj = data as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      if (Array.isArray(obj[key])) {
+        return { ...obj, [key]: (obj[key] as unknown[]).map(stripHeavyFields) };
+      }
+    }
+  }
+  return data;
+}
+
 export function truncateIfNeeded(text: string, total?: number): string {
   if (text.length <= CHARACTER_LIMIT) return text;
   const suffix = total

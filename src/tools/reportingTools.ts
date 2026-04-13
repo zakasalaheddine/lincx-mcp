@@ -10,7 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems } from "../services/workApi.js";
 
 export function registerReportingTools(server: McpServer, getSessionId: () => string | null): void {
 
@@ -32,7 +32,7 @@ export function registerReportingTools(server: McpServer, getSessionId: () => st
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", "/api/dimension-sets", { params: { limit, offset } });
-      const text = JSON.stringify(data, null, 2);
+      const text = JSON.stringify(stripListItems(data), null, 2);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
