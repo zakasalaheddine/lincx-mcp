@@ -248,6 +248,48 @@ registerYourDomainTools(server, getSessionId);
 - `list_creative_asset_groups` — `GET /api/creative-asset-groups` (paginated)
 - `get_creative_asset_group` — `GET /api/creative-asset-groups/{id}` — includes field schema defining what data ads must provide
 
+### Zones (M2)
+- `list_zones` — `GET /api/zones` (paginated)
+- `get_zone` — `GET /api/zones/{id}`
+- `get_zone_parents` — `GET /api/zones/{id}/parents`
+- `get_zone_report` — `GET /api/zones/{id}/report` (params: resolution, startDate, endDate)
+- `zone_load_trace` — composite: fan-out across zone + parents + ads/ad + debug + ads details + template → structured diagnostic blob
+
+### Ads (M2)
+- `list_ads` — `GET /api/ads` (paginated)
+- `get_ad` — `GET /api/ads/{id}`
+- `get_ad_parents` — `GET /api/ads/{id}/parents`
+- `get_zone_ads` — `GET /api/ads/ad?zoneId=` — ad-serving endpoint, returns { ads, template }
+
+### Ad Groups (M2)
+- `list_ad_groups` — `GET /api/ad-groups` (paginated)
+- `get_ad_group` — `GET /api/ad-groups/{id}`
+- `get_ad_group_parents` — `GET /api/ad-groups/{id}/parents`
+
+### Creatives (M2)
+- `list_creatives` — `GET /api/creatives` (paginated)
+- `get_creative` — `GET /api/creatives/{id}`
+- `get_creative_parents` — `GET /api/creatives/{id}/parents`
+
+### Campaigns (M2)
+- `list_campaigns` — `GET /api/campaigns` (paginated)
+- `get_campaign` — `GET /api/campaigns/{id}`
+- `get_campaign_parents` — `GET /api/campaigns/{id}/parents`
+
+### Channels (M2)
+- `list_channels` — `GET /api/channels` (paginated)
+- `get_channel` — `GET /api/channels/{id}`
+- `get_channel_parents` — `GET /api/channels/{id}/parents`
+
+### Sites (M2)
+- `list_sites` — `GET /api/sites` (paginated)
+- `get_site` — `GET /api/sites/{id}`
+- `get_site_parents` — `GET /api/sites/{id}/parents`
+
+### Publishers (M2)
+- `list_publishers` — `GET /api/publishers` (paginated)
+- `get_publisher` — `GET /api/publishers/{id}`
+
 ---
 
 ## Known issues and open work
