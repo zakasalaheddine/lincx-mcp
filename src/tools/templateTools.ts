@@ -150,4 +150,114 @@ Use 'get_template_versions' first to see available version numbers.`,
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
   });
+
+  // ── render_template ─────────────────────────────────────────────────────────
+  server.registerTool("render_template", {
+    title: "Render Template",
+    description: `Render a template with mock ad data and return the raw HTML + CSS.
+
+Fetches the template source and its linked creative asset group schema,
+generates placeholder ad data that conforms to the schema, injects it into
+the template, and returns the result.
+
+The engineer can paste the returned HTML into a local browser to preview it.
+No sandbox, no screenshot, no asset fetching.
+
+Params:
+  - templateId: ID of the template to render
+  - version: specific version number to render (omit for latest)
+  - mockAds: optional array of ad objects to inject; if omitted, 2 placeholders are auto-generated from the creative asset group schema`,
+    inputSchema: z.object({
+      templateId: z.string().describe("Template ID"),
+      version: z.number().int().min(1).optional().describe("Version number (omit for latest)"),
+      mockAds: z.array(z.record(z.unknown())).optional().describe("Override auto-generated mock ads"),
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ templateId, version, mockAds }) => {
+    const sessionId = getSessionId();
+    if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
+
+    const v = await validateSession(sessionId);
+    if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
+
+    try {
+      // Step 1: Fetch template (latest or specific version)
+      const templatePath = version
+        ? `/api/templates/${templateId}/versions/${version}`
+        : `/api/templates/${templateId}`;
+      const templateResp = await workApiRequest<Record<string, unknown>>(v.session, "GET", templatePath);
+
+      // Unwrap { data: { ... } } envelope if present
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const templateData = (templateResp as any).data ?? templateResp;
+      const html: string = String(templateData.html ?? templateData.htmlTemplate ?? "");
+      const css: string = String(templateData.css ?? templateData.cssTemplate ?? "");
+      const cagId: string = String(
+        templateData.creativeAssetGroupId ??
+        templateData.creative_asset_group_id ??
+        templateData.assetGroupId ?? ""
+      );
+
+      if (!cagId) {
+        return { content: [{ type: "text" as const, text: "Error: Template has no linked creative asset group. Cannot generate mock data." }] };
+      }
+
+      // Step 2: Fetch creative asset group for schema
+      const cagResp = await workApiRequest<Record<string, unknown>>(v.session, "GET", `/api/creative-asset-groups/${cagId}`);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cagData = (cagResp as any).data ?? cagResp;
+
+      // Step 3: Generate mock ads if not provided
+      const adsToInject = mockAds ?? generateMockAds(cagData, 2);
+
+      // Step 4: Return HTML + CSS + mock data used
+      const result = {
+        templateId,
+        version: version ?? "latest",
+        creativeAssetGroupId: cagId,
+        html,
+        css,
+        mockAdsUsed: adsToInject,
+        note: "Paste the html and css into a local file to preview. The mockAdsUsed shows the data shape your template expects.",
+      };
+
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
+    }
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function generateMockAds(cagData: Record<string, unknown>, count: number): Record<string, unknown>[] {
+  // Creative asset groups may return fields as an array or as a schema object.
+  // Try both shapes.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fields: Array<{ name?: string; type?: string; key?: string }> =
+    Array.isArray(cagData.fields) ? cagData.fields as Array<{ name?: string; type?: string; key?: string }> :
+    Array.isArray(cagData.assets) ? cagData.assets as Array<{ name?: string; type?: string; key?: string }> :
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Array.isArray((cagData.schema as any)?.fields) ? (cagData.schema as any).fields as Array<{ name?: string; type?: string; key?: string }> :
+    [];
+
+  const ads: Record<string, unknown>[] = [];
+  for (let i = 1; i <= count; i++) {
+    const ad: Record<string, unknown> = { id: `mock-ad-${i}` };
+    for (const field of fields) {
+      const key: string = field.name ?? field.key ?? "field";
+      const type: string = (field.type ?? "string").toLowerCase();
+      if (key.toLowerCase().includes("url") || key.toLowerCase().includes("image")) {
+        ad[key] = `https://via.placeholder.com/300x250?text=Ad+${i}`;
+      } else if (key.toLowerCase().includes("click") || key.toLowerCase().includes("link")) {
+        ad[key] = `https://example.com/ad-${i}`;
+      } else if (type === "number" || type === "integer") {
+        ad[key] = i;
+      } else {
+        ad[key] = `Mock ${key} ${i}`;
+      }
+    }
+    ads.push(ad);
+  }
+  return ads;
 }
