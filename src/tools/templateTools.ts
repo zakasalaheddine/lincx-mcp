@@ -68,7 +68,8 @@ Use 'render_template' to preview it with mock ad data.`,
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}`);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const text = JSON.stringify(data, null, 2);
+      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
