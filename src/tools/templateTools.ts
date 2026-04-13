@@ -95,7 +95,8 @@ Use 'get_template_version' to fetch the HTML + CSS of a specific version.`,
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}/versions`);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const text = JSON.stringify(data, null, 2);
+      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
@@ -154,19 +155,14 @@ Use 'get_template_versions' first to see available version numbers.`,
   // ── render_template ─────────────────────────────────────────────────────────
   server.registerTool("render_template", {
     title: "Render Template",
-    description: `Render a template with mock ad data and return the raw HTML + CSS.
+    description: `Fetch a template's HTML + CSS source and return it alongside mock ad data that conforms to the template's creative asset group schema.
 
-Fetches the template source and its linked creative asset group schema,
-generates placeholder ad data that conforms to the schema, injects it into
-the template, and returns the result.
-
-The engineer can paste the returned HTML into a local browser to preview it.
-No sandbox, no screenshot, no asset fetching.
+Does NOT inject mock ads into the HTML — returns the raw HTML + CSS and the mock ad payload separately, so the engineer can wire them together locally.
 
 Params:
   - templateId: ID of the template to render
   - version: specific version number to render (omit for latest)
-  - mockAds: optional array of ad objects to inject; if omitted, 2 placeholders are auto-generated from the creative asset group schema`,
+  - mockAds: optional array of ad objects; if omitted, 2 placeholders are auto-generated from the creative asset group schema`,
     inputSchema: z.object({
       templateId: z.string().describe("Template ID"),
       version: z.number().int().min(1).optional().describe("Version number (omit for latest)"),
@@ -221,7 +217,8 @@ Params:
         note: "Paste the html and css into a local file to preview. The mockAdsUsed shows the data shape your template expects.",
       };
 
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      const text = JSON.stringify(result, null, 2);
+      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
