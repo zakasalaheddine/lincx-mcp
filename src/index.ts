@@ -34,6 +34,7 @@ import { registerSiteTools } from "./tools/siteTools.js";
 import { registerPublisherTools } from "./tools/publisherTools.js";
 import { registerAdvertiserTools } from "./tools/advertiserTools.js";
 import { registerExperienceTools } from "./tools/experienceTools.js";
+import { registerReportingTools } from "./tools/reportingTools.js";
 import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -87,6 +88,7 @@ registerSiteTools(server, getSessionId);
 registerPublisherTools(server, getSessionId);
 registerAdvertiserTools(server, getSessionId);
 registerExperienceTools(server, getSessionId);
+registerReportingTools(server, getSessionId);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPRESS — Login UI + health check
