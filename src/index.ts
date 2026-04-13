@@ -86,6 +86,7 @@ registerChannelTools(server, getSessionId);
 registerSiteTools(server, getSessionId);
 registerPublisherTools(server, getSessionId);
 registerAdvertiserTools(server, getSessionId);
+registerExperienceTools(server, getSessionId);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPRESS — Login UI + health check
