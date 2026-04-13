@@ -224,6 +224,32 @@ registerYourDomainTools(server, getSessionId);
 
 ---
 
+## Implemented Tools
+
+### Auth
+- `auth_login` — returns browser login URL
+- `auth_status` — check session state
+- `auth_logout` — destroy session
+
+### Networks
+- `network_list` — list available networks
+- `network_switch` — change active network
+- `network_refresh` — re-fetch networks from API
+
+### Templates (M1)
+- `list_templates` — `GET /api/templates` (paginated, limit/offset)
+- `get_template` — `GET /api/templates/{id}` — includes HTML + CSS source
+- `get_template_versions` — `GET /api/templates/{id}/versions`
+- `get_template_version` — `GET /api/templates/{id}/versions/{version}`
+- `get_template_parents` — `GET /api/templates/{id}/parents`
+- `render_template` — composite: fetch template + CAG schema → generate mock ads → return HTML + CSS
+
+### Creative Asset Groups (M1)
+- `list_creative_asset_groups` — `GET /api/creative-asset-groups` (paginated)
+- `get_creative_asset_group` — `GET /api/creative-asset-groups/{id}` — includes field schema defining what data ads must provide
+
+---
+
 ## Known issues and open work
 
 ### 401 on login (priority)
