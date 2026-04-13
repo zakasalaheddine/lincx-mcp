@@ -22,6 +22,7 @@ import { loginWithCredentials } from "./services/auth.js";
 import { createSession } from "./services/sessionManager.js";
 import { registerAuthTools } from "./tools/authTools.js";
 import { registerNetworkTools } from "./tools/networkTools.js";
+import { registerTemplateTools } from "./tools/templateTools.js";
 import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ const server = new McpServer({ name: "lincx-mcp-server", version: "1.0.0" });
 
 registerAuthTools(server, getSessionId, setSessionId);
 registerNetworkTools(server, getSessionId);
+registerTemplateTools(server, getSessionId);
 // Add more tool groups here: registerCampaignTools(server, getSessionId), etc.
 
 // ─────────────────────────────────────────────────────────────────────────────
