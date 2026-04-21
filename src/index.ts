@@ -109,9 +109,12 @@ app.post("/api/login", requireAccessKey, loginLimiter, async (req, res) => {
     console.error(`[Auth] Login OK: ${email} → mcp:${mcpSessionId}`);
     res.json({ success: true, email: session.email, networks: session.networks, active_network: session.active_network });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Login failed";
-    console.warn(`[Auth] Login failed for ${email}: ${message}`);
-    res.status(401).json({ success: false, error: message });
+    const upstream = err instanceof Error ? err.message : "Login failed";
+    console.error(`[Auth] Login failed for ${email}: ${upstream}`);
+    res.status(401).json({
+      success: false,
+      error: `${upstream} — this login link is single-use. Return to Claude and run auth_login again for a fresh link.`,
+    });
   }
 });
 
@@ -161,7 +164,12 @@ async function getOrCreateTransport(sessionId: string | undefined): Promise<Stre
       console.error(`[MCP]    session closed: ${transport.sessionId}`);
     }
   };
-  await server.connect(transport);
+  try {
+    await server.connect(transport);
+  } catch (err) {
+    await transport.close().catch(() => {});
+    throw err;
+  }
   return transport;
 }
 
