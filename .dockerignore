@@ -1,0 +1,12 @@
+node_modules
+dist
+.sessions
+.env
+.env.*
+.git
+.gitignore
+.github
+docs
+*.md
+.DS_Store
+coverage
