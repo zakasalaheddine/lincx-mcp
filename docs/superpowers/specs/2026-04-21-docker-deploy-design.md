@@ -63,8 +63,8 @@
 
 | Key | Value | TTL | Purpose |
 |-----|-------|-----|---------|
-| `lincx:sess:<uuid>` | `Session` JSON | 7d | The Lincx session (email, JWT, networks, active network). Unchanged from today. |
-| `mcp:sess:<mcp-session-id>` | `<lincx-sess-uuid>` | 7d sliding | Maps MCP connection identity → Lincx session. New. |
+| `lincx:session:<uuid>` | `Session` JSON | 7d | The Lincx session (email, JWT, networks, active network). Unchanged from today. |
+| `mcp:session:<mcp-session-id>` | `<lincx-sess-uuid>` | 7d sliding | Maps MCP connection identity → Lincx session. New. |
 | `ticket:<ticket-id>` | `<mcp-session-id>` | 10min | Single-use login correlation. New. |
 
 One Fly machine, one Upstash Redis. Node process is stateless — any instance serves any request as long as Redis is shared.
@@ -119,7 +119,7 @@ async ({ limit }, extra) => {
 }
 ```
 
-`resolveLincxSession(mcpSessionId)` — reads `mcp:sess:<mcpSessionId>` from Redis → returns the Lincx session UUID (or null if no login).
+`resolveLincxSession(mcpSessionId)` — reads `mcp:session:<mcpSessionId>` from Redis → returns the Lincx session UUID (or null if no login).
 
 **Signature change:** `registerXxxTools(server, getSessionId)` becomes `registerXxxTools(server)`. All 15 tool files get the same mechanical rewrite.
 
@@ -147,7 +147,7 @@ The handler now:
 
 - Reads `extra.sessionId`.
 - Looks up the Lincx session UUID via `resolveLincxSession`.
-- Deletes `lincx:sess:<uuid>` and `mcp:sess:<mcp-session-id>`.
+- Deletes `lincx:session:<uuid>` and `mcp:session:<mcp-session-id>`.
 
 ### 3.6 Stdio fallback (backward compatibility)
 
@@ -181,7 +181,7 @@ When `TRANSPORT=stdio`, `extra.sessionId` is undefined. The resolver falls back 
    → server loads ticket, gets mcp-session-id "abc-123"
    → loginWithCredentials(email, password)  →  JWT
    → createSession(...)                      →  lincx-session-uuid
-   → Redis SET  mcp:sess:abc-123 = lincx-session-uuid  TTL=7d
+   → Redis SET  mcp:session:abc-123 = lincx-session-uuid  TTL=7d
    → Redis DEL  ticket:tk_xyz   (single-use)
    → respond 200, browser redirects to /login/success
 
@@ -393,7 +393,7 @@ Expect:
 - `fly logs` — stderr from the Node process.
 - Redis inspection from laptop:
   ```bash
-  redis-cli --tls -u $REDIS_URL keys "lincx:sess:*" | wc -l
+  redis-cli --tls -u $REDIS_URL keys "lincx:session:*" | wc -l
   ```
 
 ---
@@ -404,9 +404,9 @@ Expect:
 |------|--------|
 | `src/index.ts` | Remove `currentSessionId` global + file persistence. Replace singleton transport with `Map<sessionId, transport>`. Mount `requireAccessKey` on `/mcp` and `/login*`. Gate `/dev/*` behind `NODE_ENV !== "production"`. |
 | `src/constants.ts` | Add `PUBLIC_BASE_URL` (defaults to `http://localhost:${SERVER_PORT}`). Add `MCP_ACCESS_KEY` (required when `NODE_ENV=production`). |
-| `src/services/sessionManager.ts` | Add `resolveLincxSession(mcpSessionId)` — reads `mcp:sess:<id>` → Lincx session. Add `bindMcpToLincxSession(mcpSessionId, lincxSessionId)`. Add ticket helpers: `mintTicket(mcpSessionId)` and `consumeTicket(ticket)`. |
-| `src/services/sessionStore.ts` | Extend to store ticket and `mcp:sess` keys with their own TTLs. |
-| `src/tools/authTools.ts` | `auth_login`: use `extra.sessionId`, mint ticket, return `PUBLIC_BASE_URL/login?t=...&key=...`. `auth_logout`: look up and delete both `mcp:sess` and `lincx:sess` entries. Drop `setSessionId` param. |
+| `src/services/sessionManager.ts` | Add `resolveLincxSession(mcpSessionId)` — reads `mcp:session:<id>` → Lincx session. Add `bindMcpToLincxSession(mcpSessionId, lincxSessionId)`. Add ticket helpers: `mintTicket(mcpSessionId)` and `consumeTicket(ticket)`. |
+| `src/services/sessionStore.ts` | Extend to store ticket and `mcp:session` keys with their own TTLs. |
+| `src/tools/authTools.ts` | `auth_login`: use `extra.sessionId`, mint ticket, return `PUBLIC_BASE_URL/login?t=...&key=...`. `auth_logout`: look up and delete both `mcp:session` and `lincx:session` entries. Drop `setSessionId` param. |
 | `src/tools/*Tools.ts` (14 files) | Mechanical rewrite: signature drops `getSessionId`, handlers read `extra.sessionId` and call `resolveLincxSession`. |
 | `src/middleware/requireAccessKey.ts` | **New.** Express middleware for key check. |
 | `src/middleware/rateLimit.ts` | **New.** Wraps `express-rate-limit` with our two configs. |
