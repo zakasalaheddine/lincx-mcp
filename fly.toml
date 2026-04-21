@@ -1,0 +1,30 @@
+app = "lincx-mcp"
+primary_region = "cdg"
+
+[build]
+
+[env]
+  PORT = "3000"
+  TRANSPORT = "http"
+  NODE_ENV = "production"
+  WORK_API_BASE_URL = "https://work-api.lincx.la"
+  IDENTITY_SERVER = "https://ix-id.lincx.la"
+  PUBLIC_BASE_URL = "https://lincx-mcp.fly.dev"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "get"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
