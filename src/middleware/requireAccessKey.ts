@@ -9,7 +9,13 @@
  */
 
 import type { Request, Response, NextFunction } from "express";
+import { timingSafeEqual } from "node:crypto";
 import { MCP_ACCESS_KEY } from "../constants.js";
+
+function keyMatches(provided: string, expected: string): boolean {
+  if (provided.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+}
 
 export function requireAccessKey(req: Request, res: Response, next: NextFunction): void {
   if (!MCP_ACCESS_KEY) {
@@ -18,7 +24,7 @@ export function requireAccessKey(req: Request, res: Response, next: NextFunction
     return;
   }
   const provided = typeof req.query.key === "string" ? req.query.key : undefined;
-  if (!provided || provided !== MCP_ACCESS_KEY) {
+  if (!provided || !keyMatches(provided, MCP_ACCESS_KEY)) {
     res.status(401).json({ error: "Invalid or missing access key." });
     return;
   }
