@@ -10,10 +10,10 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { validateSession } from "../services/sessionManager.js";
+import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems } from "../services/workApi.js";
 
-export function registerZoneTools(server: McpServer, getSessionId: () => string | null): void {
+export function registerZoneTools(server: McpServer): void {
 
   // ── list_zones ──────────────────────────────────────────────────────────────
   server.registerTool("list_zones", {
@@ -24,8 +24,8 @@ export function registerZoneTools(server: McpServer, getSessionId: () => string 
       offset: z.number().int().min(0).default(0),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset }) => {
-    const sessionId = getSessionId();
+  }, async ({ limit, offset }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -48,8 +48,8 @@ export function registerZoneTools(server: McpServer, getSessionId: () => string 
       id: z.string().describe("Zone ID"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
+  }, async ({ id }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -72,8 +72,8 @@ export function registerZoneTools(server: McpServer, getSessionId: () => string 
       id: z.string().describe("Zone ID"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
+  }, async ({ id }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -99,8 +99,8 @@ export function registerZoneTools(server: McpServer, getSessionId: () => string 
       endDate: z.string().describe("ISO date e.g. 2026-01-31"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id, resolution, startDate, endDate }) => {
-    const sessionId = getSessionId();
+  }, async ({ id, resolution, startDate, endDate }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -132,8 +132,8 @@ Use this first when debugging why a zone is or isn't serving ads.`,
       zoneId: z.string().describe("Zone ID to trace"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ zoneId }) => {
-    const sessionId = getSessionId();
+  }, async ({ zoneId }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);

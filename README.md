@@ -4,6 +4,30 @@ MCP server for the Lincx / Interlincx platform — browser-based login UI, Redis
 
 ---
 
+## Deployed usage
+
+The hosted server lives at:
+
+```
+https://lincx-mcp.fly.dev/mcp?key=<ACCESS_KEY>
+```
+
+Ask the admin for the access key, then add to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "lincx": {
+      "url": "https://lincx-mcp.fly.dev/mcp?key=<ACCESS_KEY>"
+    }
+  }
+}
+```
+
+Then run `auth_login` from Claude — it returns a browser URL. Open it, sign in with your Lincx credentials, return to Claude, run `auth_status` → `network_list` → `network_switch` to pick a network.
+
+---
+
 ## How it works
 
 ```
@@ -467,3 +491,15 @@ registerYourDomainTools(server, getSessionId);
 
 **Large responses truncated**
 → Expected — `truncateIfNeeded` caps response size to keep MCP messages manageable. Use more specific tools (e.g. `get_zone` instead of `list_zones`) to retrieve targeted data without truncation.
+
+---
+
+## Deployment
+
+See the "Deployment" section in `CLAUDE.md` for the full Fly.io workflow. Short version:
+
+```bash
+fly deploy
+```
+
+The `Dockerfile` and `fly.toml` in this repo are the source of truth.

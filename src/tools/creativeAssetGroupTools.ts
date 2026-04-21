@@ -10,10 +10,10 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { validateSession } from "../services/sessionManager.js";
+import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems } from "../services/workApi.js";
 
-export function registerCreativeAssetGroupTools(server: McpServer, getSessionId: () => string | null): void {
+export function registerCreativeAssetGroupTools(server: McpServer): void {
 
   // ── list_creative_asset_groups ──────────────────────────────────────────────
   server.registerTool("list_creative_asset_groups", {
@@ -33,8 +33,8 @@ Params:
       offset: z.number().int().min(0).default(0),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset }) => {
-    const sessionId = getSessionId();
+  }, async ({ limit, offset }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -62,8 +62,8 @@ Use this before calling 'render_template' to understand what mock ad data to pro
       id: z.string().describe("Creative asset group ID"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
+  }, async ({ id }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);

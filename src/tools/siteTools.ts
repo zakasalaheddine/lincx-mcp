@@ -8,10 +8,10 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { validateSession } from "../services/sessionManager.js";
+import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems } from "../services/workApi.js";
 
-export function registerSiteTools(server: McpServer, getSessionId: () => string | null): void {
+export function registerSiteTools(server: McpServer): void {
 
   // ── list_sites ───────────────────────────────────────────────────────────────
   server.registerTool("list_sites", {
@@ -22,8 +22,8 @@ export function registerSiteTools(server: McpServer, getSessionId: () => string 
       offset: z.number().int().min(0).default(0),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset }) => {
-    const sessionId = getSessionId();
+  }, async ({ limit, offset }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -46,8 +46,8 @@ export function registerSiteTools(server: McpServer, getSessionId: () => string 
       id: z.string().describe("Site ID"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
+  }, async ({ id }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -70,8 +70,8 @@ export function registerSiteTools(server: McpServer, getSessionId: () => string 
       id: z.string().describe("Site ID"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
+  }, async ({ id }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);

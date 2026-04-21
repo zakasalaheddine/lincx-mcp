@@ -8,13 +8,10 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { switchNetwork, refreshNetworks } from "../services/sessionManager.js";
+import { switchNetwork, refreshNetworks, resolveLincxSession } from "../services/sessionManager.js";
 import { getSessionStore } from "../services/sessionStore.js";
 
-export function registerNetworkTools(
-  server: McpServer,
-  getSessionId: () => string | null
-): void {
+export function registerNetworkTools(server: McpServer): void {
 
   // ── network_list ──────────────────────────────────────────────────────────
   server.registerTool(
@@ -34,8 +31,8 @@ Returns:
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async () => {
-      const sessionId = getSessionId();
+    async (_args, extra) => {
+      const sessionId = await resolveLincxSession(extra?.sessionId);
       if (!sessionId) {
         return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
       }
@@ -81,8 +78,8 @@ Returns: { success, active_network, previous_network_id, message }`,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ network_id }) => {
-      const sessionId = getSessionId();
+    async ({ network_id }, extra) => {
+      const sessionId = await resolveLincxSession(extra?.sessionId);
       if (!sessionId) {
         return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
       }
@@ -121,8 +118,8 @@ Preserves the active network if it still exists.`,
       inputSchema: z.object({}),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async () => {
-      const sessionId = getSessionId();
+    async (_args, extra) => {
+      const sessionId = await resolveLincxSession(extra?.sessionId);
       if (!sessionId) {
         return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
       }

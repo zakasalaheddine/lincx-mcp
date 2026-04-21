@@ -12,7 +12,7 @@ It handles authentication, multi-network context, and exposes business tools as 
 
 The server runs locally alongside Claude Code. It has two responsibilities:
 1. **MCP stdio transport** — Claude talks to it over stdin/stdout (JSON-RPC)
-2. **Express HTTP server on port 3000** — serves a browser login UI so credentials never pass through Claude
+2. **Express HTTP server on `PORT`** (5001 dev default, 3000 in production via `fly.toml`) — serves a browser login UI and, when `TRANSPORT=http`, the MCP Streamable HTTP transport. Credentials never pass through Claude.
 
 ---
 
@@ -50,7 +50,7 @@ In stdio MCP mode, **stdout is the wire protocol**. Every byte written to stdout
 ### Claude never controls auth or network context
 - `auth_token` — stored in session server-side only, never returned to Claude
 - `networkId` — always injected from `session.active_network` inside `workApiRequest()`, never accepted as a tool parameter
-- `session_id` — lives in the `currentSessionId` variable in `index.ts` only, never exposed via any tool
+- `session_id` — stored in Redis (keyed by MCP session id), never exposed via any tool. In multi-tenant deploys, session identity comes from `extra.sessionId` (the MCP transport session id) — never from a module-global.
 
 ### Business tools never accept networkId
 Every business tool must get network context from the session, not from Claude.
@@ -89,7 +89,7 @@ POST /api/campaigns?networkId=svce6t
 
 ```
 1. Claude calls auth_login tool
-2. Tool returns { login_url: "http://localhost:3000/login" }
+2. Tool returns { login_url: "http://localhost:5001/login?t=<ticket>" }   # ticket correlates browser login → MCP session
 3. User opens URL in browser → polished login form served by Express
 4. User submits email + password
 5. POST /api/login → loginWithCredentials() → POST ix-id.lincx.la/auth/login
@@ -122,8 +122,9 @@ interface Session {
 ```
 
 Session store: Redis when `REDIS_URL` is set, in-memory Map otherwise.
-In-memory sessions are lost on server restart — use Redis for anything beyond local dev.
-TTL: 7 days (configurable in `constants.ts` via `SESSION_TTL_SECONDS`).
+In-memory sessions are lost on server restart — Redis is required in production.
+TTL: 7 days for Lincx sessions, 7 days for MCP-to-Lincx bindings, 10 minutes for login tickets.
+The previous `.sessions/session_id` on-disk persistence has been removed.
 
 ---
 
@@ -133,9 +134,12 @@ TTL: 7 days (configurable in `constants.ts` via `SESSION_TTL_SECONDS`).
 |----------|----------|---------|-------------|
 | `WORK_API_BASE_URL` | Yes | `http://localhost:3050` | Work API — all requests go here |
 | `IDENTITY_SERVER` | No | `https://ix-id.lincx.la` | Lincx auth server |
-| `PORT` | No | `5001` | Express login UI port |
-| `TRANSPORT` | No | `stdio` | `stdio` or `http` |
-| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions |
+| `PORT` | No | `5001` | Express HTTP port (login UI + MCP over HTTP) |
+| `TRANSPORT` | No | `stdio` | `stdio` (local) or `http` (remote) |
+| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production |
+| `NODE_ENV` | No | `development` | Set to `production` to disable `/dev/*` routes and require `MCP_ACCESS_KEY` |
+| `PUBLIC_BASE_URL` | No | `http://localhost:<PORT>` | Used when building browser login URLs returned to Claude |
+| `MCP_ACCESS_KEY` | Yes in prod | `` (empty) | Shared access key required on `?key=` for `/mcp` and `/login` |
 
 There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api/networks`.
 
@@ -184,10 +188,10 @@ Claude Code runs `dist/index.js` — source changes have no effect until rebuilt
 ```ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { validateSession } from "../services/sessionManager.js";
+import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded } from "../services/workApi.js";
 
-export function registerYourDomainTools(server: McpServer, getSessionId: () => string | null): void {
+export function registerYourDomainTools(server: McpServer): void {
   server.registerTool("your_tool_name", {
     title: "Human Readable Name",
     description: `Clear description of what this does and what it returns.`,
@@ -196,8 +200,8 @@ export function registerYourDomainTools(server: McpServer, getSessionId: () => s
       limit: z.number().int().min(1).max(100).default(20),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit }) => {
-    const sessionId = getSessionId();
+  }, async ({ limit }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -216,7 +220,7 @@ export function registerYourDomainTools(server: McpServer, getSessionId: () => s
 3. Register it in `src/index.ts`:
 ```ts
 import { registerYourDomainTools } from "./tools/yourDomainTools.js";
-registerYourDomainTools(server, getSessionId);
+registerYourDomainTools(server);
 ```
 
 4. Add the type to `src/types.ts` if needed
@@ -305,6 +309,47 @@ registerYourDomainTools(server, getSessionId);
 ### Experiences (M3)
 - `list_experiences` — `GET /api/experiences` (paginated)
 - `get_experience` — `GET /api/experiences/{id}`
+
+---
+
+## Deployment
+
+Deployed via Docker to Fly.io with Upstash Redis. Users get a single URL to paste into their MCP client:
+
+```
+https://<app>.fly.dev/mcp?key=<MCP_ACCESS_KEY>
+```
+
+### One-time setup
+
+```bash
+fly launch --no-deploy
+fly redis create                                           # sets REDIS_URL as a secret
+fly secrets set MCP_ACCESS_KEY=$(openssl rand -hex 32)
+fly deploy
+```
+
+### Subsequent deploys
+
+```bash
+fly deploy
+```
+
+### Rotate the access key
+
+```bash
+fly secrets set MCP_ACCESS_KEY=$(openssl rand -hex 32)
+fly deploy
+# hand the new URL to users
+```
+
+### Inspect sessions
+
+```bash
+fly logs
+# Or, with REDIS_URL exported locally:
+redis-cli --tls -u "$REDIS_URL" keys "lincx:session:*" | wc -l
+```
 
 ---
 

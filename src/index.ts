@@ -1,25 +1,21 @@
 /**
  * index.ts — Lincx MCP Server entry point
  *
- * Starts two things:
- *  1. Express HTTP server (port 3000) — serves the browser login UI
- *  2. MCP Server — connects via stdio (default) or HTTP
+ * Two surfaces on the same Express app:
+ *  1. HTTP login UI (GET /login, POST /api/login, GET /login/success)
+ *  2. MCP Streamable HTTP transport (POST|GET|DELETE /mcp)
  *
- * Auth flow:
- *   Claude calls auth_login  →  returns http://localhost:3000/login
- *   User opens URL           →  fills in email + password
- *   Browser POSTs to         →  POST /api/login
- *   Server calls             →  ix-id.lincx.la/auth/login
- *   On success               →  session created, browser shows /login/success
- *   Claude calls auth_status →  confirms session, sees available networks
+ * In stdio mode, the MCP server is connected over stdin/stdout instead of /mcp;
+ * the Express app still serves the login UI on SERVER_PORT for local dev.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
+import { randomUUID } from "node:crypto";
 import { loginWithCredentials } from "./services/auth.js";
-import { createSession } from "./services/sessionManager.js";
+import { createSession, consumeTicket, peekTicket, bindMcpToLincxSession } from "./services/sessionManager.js";
 import { registerAuthTools } from "./tools/authTools.js";
 import { registerNetworkTools } from "./tools/networkTools.js";
 import { registerTemplateTools } from "./tools/templateTools.js";
@@ -35,38 +31,9 @@ import { registerPublisherTools } from "./tools/publisherTools.js";
 import { registerAdvertiserTools } from "./tools/advertiserTools.js";
 import { registerExperienceTools } from "./tools/experienceTools.js";
 import { registerReportingTools } from "./tools/reportingTools.js";
-import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER } from "./constants.js";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SESSION CONTEXT
-// session_id lives here — never sent to Claude
-// Persisted to .sessions/session_id so dev restarts don't require re-login
-// ─────────────────────────────────────────────────────────────────────────────
-
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-
-// Resolve project root from this file's location (src/index.ts → project root)
-const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SESSION_DIR = join(PROJECT_ROOT, ".sessions");
-const SESSION_ID_FILE = join(SESSION_DIR, "session_id");
-
-function loadSessionId(): string | null {
-  try { return readFileSync(SESSION_ID_FILE, "utf-8").trim() || null; } catch { return null; }
-}
-
-function persistSessionId(id: string | null): void {
-  try {
-    mkdirSync(SESSION_DIR, { recursive: true });
-    writeFileSync(SESSION_ID_FILE, id ?? "");
-  } catch { /* best-effort */ }
-}
-
-let currentSessionId: string | null = loadSessionId();
-if (currentSessionId) console.error(`[Session] Restored session: ${currentSessionId}`);
-const getSessionId = (): string | null => currentSessionId;
-const setSessionId = (id: string | null): void => { currentSessionId = id; persistSessionId(id); };
+import { requireAccessKey } from "./middleware/requireAccessKey.js";
+import { loginLimiter, mcpLimiter } from "./middleware/rateLimit.js";
+import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER, IS_PRODUCTION } from "./constants.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP SERVER
@@ -74,133 +41,160 @@ const setSessionId = (id: string | null): void => { currentSessionId = id; persi
 
 const server = new McpServer({ name: "lincx-mcp-server", version: "1.0.0" });
 
-registerAuthTools(server, getSessionId, setSessionId);
-registerNetworkTools(server, getSessionId);
-registerTemplateTools(server, getSessionId);
-registerCreativeAssetGroupTools(server, getSessionId);
-registerZoneTools(server, getSessionId);
-registerAdTools(server, getSessionId);
-registerAdGroupTools(server, getSessionId);
-registerCreativeTools(server, getSessionId);
-registerCampaignTools(server, getSessionId);
-registerChannelTools(server, getSessionId);
-registerSiteTools(server, getSessionId);
-registerPublisherTools(server, getSessionId);
-registerAdvertiserTools(server, getSessionId);
-registerExperienceTools(server, getSessionId);
-registerReportingTools(server, getSessionId);
+registerAuthTools(server);
+registerNetworkTools(server);
+registerTemplateTools(server);
+registerCreativeAssetGroupTools(server);
+registerZoneTools(server);
+registerAdTools(server);
+registerAdGroupTools(server);
+registerCreativeTools(server);
+registerCampaignTools(server);
+registerChannelTools(server);
+registerSiteTools(server);
+registerPublisherTools(server);
+registerAdvertiserTools(server);
+registerExperienceTools(server);
+registerReportingTools(server);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EXPRESS — Login UI + health check
+// EXPRESS
 // ─────────────────────────────────────────────────────────────────────────────
 
 const app = express();
+app.set("trust proxy", 1);   // behind Fly proxy; needed for correct rate-limit IPs
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-/** Login page — user opens this in their browser */
-app.get("/login", (_req, res) => {
-  res.setHeader("Content-Type", "text/html");
-  res.send(buildLoginPage(currentSessionId !== null));
+// ── /health (no auth) ────────────────────────────────────────────────────────
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
 });
 
-/** Form submission — credentials go directly to ix-id.lincx.la, never to Claude */
-app.post("/api/login", async (req, res) => {
+// ── Login UI (access-key gated) ──────────────────────────────────────────────
+app.get("/login", requireAccessKey, async (req, res) => {
+  const ticket = typeof req.query.t === "string" ? req.query.t : "";
+  const valid = ticket ? await peekTicket(ticket) : false;
+  res.setHeader("Content-Type", "text/html");
+  if (!valid) {
+    res.status(400).send(buildTicketErrorPage());
+    return;
+  }
+  res.send(buildLoginPage(ticket));
+});
+
+app.post("/api/login", requireAccessKey, loginLimiter, async (req, res) => {
+  const ticket = typeof req.query.t === "string" ? req.query.t : "";
   const { email, password } = req.body as { email?: string; password?: string };
 
+  if (!ticket) {
+    res.status(400).json({ success: false, error: "Missing ticket." });
+    return;
+  }
   if (!email || !password) {
     res.status(400).json({ success: false, error: "Email and password are required." });
+    return;
+  }
+
+  const mcpSessionId = await consumeTicket(ticket);
+  if (!mcpSessionId) {
+    res.status(400).json({ success: false, error: "This login link has expired. Return to Claude and run auth_login again." });
     return;
   }
 
   try {
     const { authToken } = await loginWithCredentials(email, password);
     const session = await createSession({ user_id: email, email, auth_token: authToken });
-    setSessionId(session.session_id);
-    console.error(`[Auth] Login successful: ${email}`);
+    await bindMcpToLincxSession(mcpSessionId, session.session_id);
+    console.error(`[Auth] Login OK: ${email} → mcp:${mcpSessionId}`);
     res.json({ success: true, email: session.email, networks: session.networks, active_network: session.active_network });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Login failed";
-    console.warn(`[Auth] Login failed for ${email}: ${message}`);
-    res.status(401).json({ success: false, error: message });
+    const upstream = err instanceof Error ? err.message : "Login failed";
+    console.error(`[Auth] Login failed for ${email}: ${upstream}`);
+    res.status(401).json({
+      success: false,
+      error: `${upstream} — this login link is single-use. Return to Claude and run auth_login again for a fresh link.`,
+    });
   }
 });
 
-/** Post-login success screen */
-app.get("/login/success", (_req, res) => {
+app.get("/login/success", requireAccessKey, (_req, res) => {
   res.setHeader("Content-Type", "text/html");
   res.send(buildSuccessPage());
 });
 
-/** Health check */
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", authenticated: currentSessionId !== null });
-});
+// ── Dev debug routes (non-production only) ───────────────────────────────────
+if (!IS_PRODUCTION) {
+  const registeredTools = (server as unknown as { _registeredTools: Record<string, { description?: string; handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown> }> })._registeredTools;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DEV — Test tools without Claude Desktop
-//
-//   GET  /dev/tools                → list all registered tools
-//   POST /dev/tools/:name          → call a tool with JSON body as args
-//
-//   Examples:
-//     curl http://localhost:3000/dev/tools
-//     curl -X POST http://localhost:3000/dev/tools/auth_login
-//     curl -X POST http://localhost:3000/dev/tools/auth_status
-//     curl -X POST http://localhost:3000/dev/tools/network_list
-// ─────────────────────────────────────────────────────────────────────────────
+  app.get("/dev/tools", (_req, res) => {
+    const tools = Object.entries(registeredTools).map(([name, t]) => ({ name, description: t.description }));
+    res.json({ tools });
+  });
 
-const registeredTools = (server as unknown as { _registeredTools: Record<string, { inputSchema?: unknown; description?: string; handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown> }> })._registeredTools;
+  app.post("/dev/tools/:name", async (req, res) => {
+    const tool = registeredTools[req.params.name];
+    if (!tool) { res.status(404).json({ error: `Tool '${req.params.name}' not found` }); return; }
+    try {
+      const result = await tool.handler(req.body ?? {}, { sessionId: "stdio" });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+}
 
-app.get("/dev/tools", (_req, res) => {
-  const tools = Object.entries(registeredTools).map(([name, t]) => ({
-    name,
-    description: t.description,
-  }));
-  res.json({ tools, session: currentSessionId ? "active" : "none" });
-});
+// ── MCP HTTP transport — per-session ────────────────────────────────────────
+const transports = new Map<string, StreamableHTTPServerTransport>();
 
-app.post("/dev/tools/:name", async (req, res) => {
-  const tool = registeredTools[req.params.name];
-  if (!tool) {
-    res.status(404).json({ error: `Tool '${req.params.name}' not found` });
-    return;
-  }
+async function getOrCreateTransport(sessionId: string | undefined): Promise<StreamableHTTPServerTransport> {
+  if (sessionId && transports.has(sessionId)) return transports.get(sessionId)!;
+
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+    enableJsonResponse: true,
+    onsessioninitialized: (id) => {
+      transports.set(id, transport);
+      console.error(`[MCP]    session initialized: ${id}`);
+    },
+  });
+  transport.onclose = () => {
+    if (transport.sessionId) {
+      transports.delete(transport.sessionId);
+      console.error(`[MCP]    session closed: ${transport.sessionId}`);
+    }
+  };
   try {
-    const result = await tool.handler(req.body ?? {}, {});
-    res.json(result);
+    await server.connect(transport);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: message });
+    await transport.close().catch(() => {});
+    throw err;
   }
+  return transport;
+}
+
+app.post("/mcp", requireAccessKey, mcpLimiter, async (req, res) => {
+  const existingId = req.header("mcp-session-id");
+  const transport = await getOrCreateTransport(existingId);
+  await transport.handleRequest(req, res, req.body);
 });
 
-/** MCP over HTTP — single shared transport, connected once */
-let httpTransport: StreamableHTTPServerTransport | null = null;
-
-app.post("/mcp", async (req, res) => {
-  if (!httpTransport) {
-    httpTransport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-    await server.connect(httpTransport);
-    console.error("[MCP]    HTTP transport connected");
-  }
-  await httpTransport.handleRequest(req, res, req.body);
-});
-
-app.get("/mcp", async (req, res) => {
-  if (!httpTransport) {
-    res.status(503).json({ error: "MCP HTTP transport not yet initialised — send a POST first." });
+app.get("/mcp", requireAccessKey, async (req, res) => {
+  const existingId = req.header("mcp-session-id");
+  if (!existingId || !transports.has(existingId)) {
+    res.status(404).json({ error: "Unknown MCP session." });
     return;
   }
-  await httpTransport.handleRequest(req, res);
+  await transports.get(existingId)!.handleRequest(req, res);
 });
 
-app.delete("/mcp", async (req, res) => {
-  if (!httpTransport) { res.status(404).end(); return; }
-  await httpTransport.handleRequest(req, res);
+app.delete("/mcp", requireAccessKey, async (req, res) => {
+  const existingId = req.header("mcp-session-id");
+  if (!existingId || !transports.has(existingId)) {
+    res.status(404).end();
+    return;
+  }
+  await transports.get(existingId)!.handleRequest(req, res);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,25 +202,24 @@ app.delete("/mcp", async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // Start HTTP server for login UI — non-fatal if port is busy
   const httpServer = app.listen(SERVER_PORT);
   httpServer.on("listening", () => {
-    console.error(`[HTTP]   Login UI → http://localhost:${SERVER_PORT}/login`);
-    console.error(`[HTTP]   Health   → http://localhost:${SERVER_PORT}/health`);
+    console.error(`[HTTP]   Listening on :${SERVER_PORT}`);
+    console.error(`[HTTP]   /health, /login, /mcp`);
   });
   httpServer.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
-      console.error(`[HTTP]   Port ${SERVER_PORT} in use — login UI unavailable. MCP tools still work.`);
+      console.error(`[HTTP]   Port ${SERVER_PORT} in use — aborting.`);
+      process.exit(1);
     } else {
       console.error("[HTTP]   Server error:", err.message);
+      process.exit(1);
     }
   });
 
   if (TRANSPORT === "http") {
-    console.error(`[MCP]    HTTP transport → http://localhost:${SERVER_PORT}/mcp`);
-    // transport handled by the /mcp express route above
+    console.error(`[MCP]    HTTP transport ready`);
   } else {
-    // stdio — default for Claude Code / local IDE
     const stdio = new StdioServerTransport();
     await server.connect(stdio);
     console.error("[MCP]    stdio transport active");
@@ -239,14 +232,11 @@ main().catch((err) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HTML — Login page
+// HTML templates
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildLoginPage(alreadyLoggedIn: boolean): string {
-  const banner = alreadyLoggedIn
-    ? `<div class="already-banner">Already authenticated — log in again to refresh your session</div>`
-    : "";
-
+function buildLoginPage(ticket: string): string {
+  const safeTicket = encodeURIComponent(ticket);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -257,163 +247,85 @@ function buildLoginPage(alreadyLoggedIn: boolean): string {
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    :root{
-      --bg:#0a0a0f;--surface:#111118;--border:#1e1e2e;
-      --text:#e8e8f0;--muted:#6b6b8a;
-      --accent:#6c63ff;--accent-dim:#3d3980;--accent-glow:rgba(108,99,255,.15);
-      --error:#ff6b6b;--success:#63ffb4;
-      --ff:'Syne',sans-serif;--fm:'DM Mono',monospace;
-    }
+    :root{--bg:#0a0a0f;--surface:#111118;--border:#1e1e2e;--text:#e8e8f0;--muted:#6b6b8a;--accent:#6c63ff;--accent-dim:#3d3980;--accent-glow:rgba(108,99,255,.15);--error:#ff6b6b;--success:#63ffb4;--ff:'Syne',sans-serif;--fm:'DM Mono',monospace}
     html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--ff);-webkit-font-smoothing:antialiased}
     body{display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden;position:relative}
-    .orb{position:fixed;border-radius:50%;filter:blur(80px);pointer-events:none;z-index:0}
-    .orb-1{width:500px;height:500px;top:-150px;left:-100px;background:radial-gradient(circle,rgba(108,99,255,.12),transparent 70%);animation:d1 18s ease-in-out infinite alternate}
-    .orb-2{width:400px;height:400px;bottom:-100px;right:-80px;background:radial-gradient(circle,rgba(99,255,180,.07),transparent 70%);animation:d2 22s ease-in-out infinite alternate}
-    .grid{position:fixed;inset:0;z-index:0;background-image:linear-gradient(rgba(255,255,255,.015) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.015) 1px,transparent 1px);background-size:40px 40px;mask-image:radial-gradient(ellipse 80% 80% at 50% 50%,black,transparent)}
-    @keyframes d1{from{transform:translate(0,0) scale(1)}to{transform:translate(40px,30px) scale(1.1)}}
-    @keyframes d2{from{transform:translate(0,0)}to{transform:translate(-30px,-20px) scale(1.05)}}
-    .card{position:relative;z-index:1;width:420px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:48px 44px 44px;box-shadow:0 0 0 1px rgba(108,99,255,.08),0 32px 64px rgba(0,0,0,.5),0 0 80px rgba(108,99,255,.06);animation:ci .5s cubic-bezier(.16,1,.3,1) both}
-    @keyframes ci{from{opacity:0;transform:translateY(24px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
-    .logo-row{display:flex;align-items:center;gap:10px;margin-bottom:32px}
-    .logo-mark{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),#a78bfa);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;flex-shrink:0}
-    .logo-name{font-size:15px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
-    .logo-tag{font-family:var(--fm);font-size:10px;font-weight:300;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-left:auto;border:1px solid var(--border);padding:2px 7px;border-radius:4px}
+    .card{position:relative;z-index:1;width:420px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:48px 44px 44px;box-shadow:0 32px 64px rgba(0,0,0,.5)}
     h1{font-size:26px;font-weight:800;letter-spacing:-.02em;line-height:1.2;margin-bottom:6px}
     .sub{font-family:var(--fm);font-size:12px;font-weight:300;color:var(--muted);letter-spacing:.04em;margin-bottom:36px}
-    .already-banner{background:rgba(99,255,180,.06);border:1px solid rgba(99,255,180,.2);border-radius:8px;padding:14px 16px;font-family:var(--fm);font-size:12px;color:var(--success);margin-bottom:24px;display:flex;align-items:center;gap:8px}
-    .already-banner::before{content:'◉';font-size:10px}
     .field{margin-bottom:18px}
     label{display:block;font-family:var(--fm);font-size:11px;font-weight:500;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
     input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:var(--fm);font-size:14px;padding:13px 16px;outline:none;transition:border-color .15s,box-shadow .15s}
-    input::placeholder{color:var(--muted);opacity:.5}
     input:focus{border-color:var(--accent-dim);box-shadow:0 0 0 3px var(--accent-glow)}
-    input.err{border-color:var(--error)}
-    .btn{width:100%;margin-top:8px;padding:14px;background:var(--accent);color:#fff;font-family:var(--ff);font-size:14px;font-weight:700;letter-spacing:.04em;border:none;border-radius:8px;cursor:pointer;transition:background .15s,transform .1s,box-shadow .15s;position:relative;overflow:hidden}
-    .btn:hover{background:#7c74ff;box-shadow:0 0 24px rgba(108,99,255,.4)}
-    .btn:active{transform:scale(.98)}
+    .btn{width:100%;margin-top:8px;padding:14px;background:var(--accent);color:#fff;font-family:var(--ff);font-size:14px;font-weight:700;letter-spacing:.04em;border:none;border-radius:8px;cursor:pointer}
+    .btn:hover{background:#7c74ff}
     .btn:disabled{opacity:.5;cursor:not-allowed}
-    .btn-inner{position:relative;height:20px}
-    .btn-text,.btn-spin{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;transition:opacity .15s}
-    .btn-spin{opacity:0}
-    .btn.loading .btn-text{opacity:0}
-    .btn.loading .btn-spin{opacity:1}
-    .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
-    @keyframes spin{to{transform:rotate(360deg)}}
-    .errmsg{display:none;background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.25);border-radius:8px;color:var(--error);font-family:var(--fm);font-size:12px;padding:12px 14px;margin-top:16px;align-items:center;gap:8px}
-    .errmsg.show{display:flex}
-    .errmsg::before{content:'✕';font-size:10px;flex-shrink:0}
+    .errmsg{display:none;background:rgba(255,107,107,.08);border:1px solid rgba(255,107,107,.25);border-radius:8px;color:var(--error);font-family:var(--fm);font-size:12px;padding:12px 14px;margin-top:16px}
+    .errmsg.show{display:block}
     hr{border:none;border-top:1px solid var(--border);margin:28px 0 20px}
     .foot{font-family:var(--fm);font-size:11px;color:var(--muted);text-align:center;line-height:1.6}
-    .foot strong{color:rgba(255,255,255,.2);font-weight:400}
   </style>
 </head>
 <body>
-  <div class="orb orb-1"></div>
-  <div class="orb orb-2"></div>
-  <div class="grid"></div>
   <div class="card">
-    <div class="logo-row">
-      <div class="logo-mark">IX</div>
-      <span class="logo-name">Interlincx</span>
-      <span class="logo-tag">MCP Agent</span>
-    </div>
     <h1>Sign in</h1>
-    <p class="sub">// credentials stay local — never sent to Claude</p>
-    ${banner}
+    <p class="sub">// credentials stay server-side — never sent to Claude</p>
     <div class="field">
       <label for="email">Email address</label>
-      <input type="email" id="email" placeholder="you@lincx.la" autocomplete="email" autofocus/>
+      <input type="email" id="email" autocomplete="email" autofocus/>
     </div>
     <div class="field">
       <label for="password">Password</label>
-      <input type="password" id="password" placeholder="••••••••••" autocomplete="current-password"/>
+      <input type="password" id="password" autocomplete="current-password"/>
     </div>
-    <button class="btn" id="btn" onclick="go()">
-      <div class="btn-inner">
-        <span class="btn-text">Sign in</span>
-        <span class="btn-spin"><span class="spinner"></span></span>
-      </div>
-    </button>
+    <button class="btn" id="btn" onclick="go()">Sign in</button>
     <div class="errmsg" id="err"></div>
     <hr/>
-    <p class="foot">Served locally by the MCP server.<br/><strong>POST → ${IDENTITY_SERVER ?? "https://ix-id.lincx.la"}/auth/login</strong></p>
+    <p class="foot">POST → ${IDENTITY_SERVER}/auth/login</p>
   </div>
   <script>
-    document.addEventListener('keydown',e=>{ if(e.key==='Enter') go(); });
-    async function go(){
-      const email=document.getElementById('email').value.trim();
-      const pw=document.getElementById('password').value;
-      const btn=document.getElementById('btn');
-      const err=document.getElementById('err');
+    const TICKET = "${safeTicket}";
+    const KEY = new URLSearchParams(window.location.search).get('key') || '';
+    const POST_URL = '/api/login?t=' + encodeURIComponent(TICKET) + (KEY ? '&key=' + encodeURIComponent(KEY) : '');
+    document.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    async function go() {
+      const email = document.getElementById('email').value.trim();
+      const pw = document.getElementById('password').value;
+      const btn = document.getElementById('btn');
+      const err = document.getElementById('err');
       err.classList.remove('show');
-      document.getElementById('email').classList.remove('err');
-      document.getElementById('password').classList.remove('err');
-      if(!email||!pw){
-        showErr('Please enter your email and password.');
-        if(!email) document.getElementById('email').classList.add('err');
-        if(!pw) document.getElementById('password').classList.add('err');
-        return;
-      }
-      btn.disabled=true; btn.classList.add('loading');
-      try{
-        const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pw})});
-        const d=await r.json();
-        if(d.success){ window.location.href='/login/success'; }
-        else{ showErr(d.error||'Login failed. Please try again.'); document.getElementById('password').value=''; document.getElementById('password').focus(); }
-      }catch(e){ showErr('Cannot reach MCP server. Is it still running?'); }
-      finally{ btn.disabled=false; btn.classList.remove('loading'); }
+      if (!email || !pw) { showErr('Please enter email and password.'); return; }
+      btn.disabled = true;
+      try {
+        const r = await fetch(POST_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password: pw }) });
+        const d = await r.json();
+        if (d.success) { window.location.href = '/login/success' + (KEY ? '?key=' + encodeURIComponent(KEY) : ''); }
+        else { showErr(d.error || 'Login failed.'); document.getElementById('password').value = ''; }
+      } catch (e) { showErr('Cannot reach server.'); }
+      finally { btn.disabled = false; }
     }
-    function showErr(msg){ const el=document.getElementById('err'); el.textContent=msg; el.classList.add('show'); }
+    function showErr(msg) { const el = document.getElementById('err'); el.textContent = msg; el.classList.add('show'); }
   </script>
 </body>
 </html>`;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HTML — Success page
-// ─────────────────────────────────────────────────────────────────────────────
+function buildTicketErrorPage(): string {
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"/><title>Link expired</title>
+<style>body{font-family:system-ui,sans-serif;background:#0a0a0f;color:#e8e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{max-width:440px;padding:40px;background:#111118;border:1px solid #1e1e2e;border-radius:12px;text-align:center}
+h1{color:#ff6b6b;margin:0 0 12px;font-size:22px}p{color:#6b6b8a;line-height:1.6;margin:0}</style></head>
+<body><div class="card"><h1>This login link has expired</h1>
+<p>Return to Claude and run <code>auth_login</code> again to get a fresh URL.</p></div></body></html>`;
+}
 
 function buildSuccessPage(): string {
   return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Interlincx — Authenticated</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet"/>
-  <style>
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    :root{--bg:#0a0a0f;--surface:#111118;--border:#1e1e2e;--text:#e8e8f0;--muted:#6b6b8a;--success:#63ffb4;--accent:#6c63ff}
-    html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Syne',sans-serif;-webkit-font-smoothing:antialiased}
-    body{display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden}
-    .orb{position:fixed;border-radius:50%;filter:blur(80px);pointer-events:none;z-index:0;width:500px;height:500px;top:-150px;left:-100px;background:radial-gradient(circle,rgba(99,255,180,.08),transparent 70%);animation:d 20s ease-in-out infinite alternate}
-    @keyframes d{from{transform:translate(0,0)}to{transform:translate(30px,20px)}}
-    .card{position:relative;z-index:1;width:400px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:48px 44px;box-shadow:0 32px 64px rgba(0,0,0,.5);text-align:center;animation:ci .5s cubic-bezier(.16,1,.3,1) both}
-    @keyframes ci{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
-    .ring{width:72px;height:72px;border-radius:50%;background:rgba(99,255,180,.08);border:1px solid rgba(99,255,180,.3);display:flex;align-items:center;justify-content:center;margin:0 auto 28px;animation:pop .4s .1s cubic-bezier(.16,1,.3,1) both}
-    @keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
-    .check{font-size:28px;color:var(--success)}
-    h1{font-size:24px;font-weight:800;letter-spacing:-.02em;margin-bottom:10px}
-    .body{font-family:'DM Mono',monospace;font-size:13px;font-weight:300;color:var(--muted);line-height:1.7;margin-bottom:32px}
-    .body strong{color:rgba(255,255,255,.35);font-weight:400}
-    .box{background:rgba(108,99,255,.06);border:1px solid rgba(108,99,255,.2);border-radius:10px;padding:16px 18px;font-family:'DM Mono',monospace;font-size:12px;color:rgba(255,255,255,.5);line-height:1.7;text-align:left}
-    .cmd{color:#a78bfa;font-weight:500}
-  </style>
-</head>
-<body>
-  <div class="orb"></div>
-  <div class="card">
-    <div class="ring"><span class="check">✓</span></div>
-    <h1>You're signed in</h1>
-    <p class="body">Session established.<br/><strong>Close this tab</strong> and return to Claude.</p>
-    <div class="box">
-      Back in Claude, run:<br/>
-      <span class="cmd">auth_status</span> → confirm session is active<br/>
-      <span class="cmd">network_list</span> → see your networks<br/>
-      <span class="cmd">network_switch</span> → select one to start
-    </div>
-  </div>
-</body>
-</html>`;
+<html><head><meta charset="UTF-8"/><title>Signed in</title>
+<style>body{font-family:system-ui,sans-serif;background:#0a0a0f;color:#e8e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{max-width:440px;padding:40px;background:#111118;border:1px solid #1e1e2e;border-radius:12px;text-align:center}
+h1{color:#63ffb4;margin:0 0 12px;font-size:22px}p{color:#6b6b8a;line-height:1.6;margin:0}</style></head>
+<body><div class="card"><h1>You're signed in</h1>
+<p>Close this tab and return to Claude. Run <code>auth_status</code> to confirm, then <code>network_list</code>.</p></div></body></html>`;
 }
