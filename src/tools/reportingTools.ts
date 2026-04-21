@@ -9,10 +9,10 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { validateSession } from "../services/sessionManager.js";
+import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems } from "../services/workApi.js";
 
-export function registerReportingTools(server: McpServer, getSessionId: () => string | null): void {
+export function registerReportingTools(server: McpServer): void {
 
   // ── list_dimension_sets ──────────────────────────────────────────────────────
   server.registerTool("list_dimension_sets", {
@@ -23,8 +23,8 @@ export function registerReportingTools(server: McpServer, getSessionId: () => st
       offset: z.number().int().min(0).default(0),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset }) => {
-    const sessionId = getSessionId();
+  }, async ({ limit, offset }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -47,8 +47,8 @@ export function registerReportingTools(server: McpServer, getSessionId: () => st
       id: z.string().describe("Dimension set ID"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
+  }, async ({ id }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -69,8 +69,8 @@ export function registerReportingTools(server: McpServer, getSessionId: () => st
     description: `Fetch unique event key-value pairs collected by the active network over the last 31 days. Useful for understanding what filter keys are available when running report_query.`,
     inputSchema: z.object({}).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async () => {
-    const sessionId = getSessionId();
+  }, async (_args, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -98,8 +98,8 @@ export function registerReportingTools(server: McpServer, getSessionId: () => st
       testMode: z.boolean().optional().describe("Enable test mode (maps to query param 'test-mode')"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ dimensionSetId, startDate, endDate, resolution, dimensions, testMode }) => {
-    const sessionId = getSessionId();
+  }, async ({ dimensionSetId, startDate, endDate, resolution, dimensions, testMode }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);

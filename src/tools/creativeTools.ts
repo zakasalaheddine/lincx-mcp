@@ -8,10 +8,10 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { validateSession } from "../services/sessionManager.js";
+import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems } from "../services/workApi.js";
 
-export function registerCreativeTools(server: McpServer, getSessionId: () => string | null): void {
+export function registerCreativeTools(server: McpServer): void {
 
   // ── list_creatives ───────────────────────────────────────────────────────────
   server.registerTool("list_creatives", {
@@ -22,8 +22,8 @@ export function registerCreativeTools(server: McpServer, getSessionId: () => str
       offset: z.number().int().min(0).default(0),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset }) => {
-    const sessionId = getSessionId();
+  }, async ({ limit, offset }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -46,8 +46,8 @@ export function registerCreativeTools(server: McpServer, getSessionId: () => str
       id: z.string().describe("Creative ID"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
+  }, async ({ id }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
@@ -70,8 +70,8 @@ export function registerCreativeTools(server: McpServer, getSessionId: () => str
       id: z.string().describe("Creative ID"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
+  }, async ({ id }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
