@@ -10,3 +10,5 @@ docs
 *.md
 .DS_Store
 coverage
+swagger.json
+.env.example
