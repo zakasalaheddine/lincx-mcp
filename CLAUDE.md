@@ -12,7 +12,7 @@ It handles authentication, multi-network context, and exposes business tools as 
 
 The server runs locally alongside Claude Code. It has two responsibilities:
 1. **MCP stdio transport** — Claude talks to it over stdin/stdout (JSON-RPC)
-2. **Express HTTP server on port 3000** — serves a browser login UI so credentials never pass through Claude
+2. **Express HTTP server on `PORT`** (5001 dev default, 3000 in production via `fly.toml`) — serves a browser login UI and, when `TRANSPORT=http`, the MCP Streamable HTTP transport. Credentials never pass through Claude.
 
 ---
 
@@ -89,7 +89,7 @@ POST /api/campaigns?networkId=svce6t
 
 ```
 1. Claude calls auth_login tool
-2. Tool returns { login_url: "http://localhost:3000/login" }
+2. Tool returns { login_url: "http://localhost:5001/login?t=<ticket>" }   # ticket correlates browser login → MCP session
 3. User opens URL in browser → polished login form served by Express
 4. User submits email + password
 5. POST /api/login → loginWithCredentials() → POST ix-id.lincx.la/auth/login
