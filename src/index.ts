@@ -31,7 +31,11 @@ import { registerExperienceTools } from "./tools/experienceTools.js";
 import { registerReportingTools } from "./tools/reportingTools.js";
 import { requireAccessKey } from "./middleware/requireAccessKey.js";
 import { mcpLimiter } from "./middleware/rateLimit.js";
-import { SERVER_PORT, TRANSPORT, IS_PRODUCTION } from "./constants.js";
+import { SERVER_PORT, TRANSPORT, IS_PRODUCTION, PUBLIC_BASE_URL } from "./constants.js";
+import {
+  resolveLincxSessionFromBearer,
+  bindMcpToLincxSession,
+} from "./services/sessionManager.js";
 import { wellKnownRouter } from "./routes/wellKnown.js";
 import { oauthRegisterRouter } from "./routes/oauthRegister.js";
 import { oauthTokenRouter } from "./routes/oauthToken.js";
@@ -131,13 +135,37 @@ async function getOrCreateTransport(sessionId: string | undefined): Promise<Stre
   return transport;
 }
 
+function bearerChallengeHeader(): string {
+  return `Bearer resource_metadata="${PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"`;
+}
+
 app.post("/mcp", requireAccessKey, mcpLimiter, async (req, res) => {
+  const lincxSessionId = await resolveLincxSessionFromBearer(req.header("authorization"));
+  if (!lincxSessionId) {
+    res.setHeader("WWW-Authenticate", bearerChallengeHeader());
+    res.status(401).json({ error: "unauthorized", error_description: "Bearer token required." });
+    return;
+  }
+
   const existingId = req.header("mcp-session-id");
   const transport = await getOrCreateTransport(existingId);
+
+  // Refresh the transport→Lincx binding on every request so reconnects (new
+  // transport id) inherit the OAuth-resolved Lincx session immediately.
+  if (transport.sessionId) {
+    await bindMcpToLincxSession(transport.sessionId, lincxSessionId);
+  }
+
   await transport.handleRequest(req, res, req.body);
 });
 
 app.get("/mcp", requireAccessKey, async (req, res) => {
+  const lincxSessionId = await resolveLincxSessionFromBearer(req.header("authorization"));
+  if (!lincxSessionId) {
+    res.setHeader("WWW-Authenticate", bearerChallengeHeader());
+    res.status(401).end();
+    return;
+  }
   const existingId = req.header("mcp-session-id");
   if (!existingId || !transports.has(existingId)) {
     res.status(404).json({ error: "Unknown MCP session." });
@@ -147,6 +175,12 @@ app.get("/mcp", requireAccessKey, async (req, res) => {
 });
 
 app.delete("/mcp", requireAccessKey, async (req, res) => {
+  const lincxSessionId = await resolveLincxSessionFromBearer(req.header("authorization"));
+  if (!lincxSessionId) {
+    res.setHeader("WWW-Authenticate", bearerChallengeHeader());
+    res.status(401).end();
+    return;
+  }
   const existingId = req.header("mcp-session-id");
   if (!existingId || !transports.has(existingId)) {
     res.status(404).end();
