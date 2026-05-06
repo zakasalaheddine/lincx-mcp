@@ -35,6 +35,7 @@ import { requireAccessKey } from "./middleware/requireAccessKey.js";
 import { loginLimiter, mcpLimiter } from "./middleware/rateLimit.js";
 import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER, IS_PRODUCTION } from "./constants.js";
 import { wellKnownRouter } from "./routes/wellKnown.js";
+import { oauthRegisterRouter } from "./routes/oauthRegister.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP SERVER
@@ -72,8 +73,9 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// ── OAuth discovery (public, no access-key gate) ─────────────────────────────
+// ── OAuth discovery + registration (public, no access-key gate) ──────────────
 app.use("/.well-known", wellKnownRouter);
+app.use("/oauth", oauthRegisterRouter);
 
 // ── Login UI (access-key gated) ──────────────────────────────────────────────
 app.get("/login", requireAccessKey, async (req, res) => {
