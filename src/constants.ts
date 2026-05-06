@@ -38,3 +38,9 @@ if (IS_PRODUCTION && !MCP_ACCESS_KEY) {
   console.error("[FATAL] MCP_ACCESS_KEY is required when NODE_ENV=production");
   process.exit(1);
 }
+
+// ── OAuth TTLs ───────────────────────────────────────────────────────────────
+export const OAUTH_AUTH_CODE_TTL_SECONDS = 60;
+export const OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
+export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
+export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 90;
