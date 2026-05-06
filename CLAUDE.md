@@ -67,6 +67,11 @@ const data = await workApiRequest(session, "GET", "/api/your-endpoint", { params
 Every business tool must call `validateSession(sessionId)` before touching the Work API.
 It checks: session exists → active_network is set → active_network is in session.networks.
 
+### Never log OAuth tokens
+Access tokens, refresh tokens, and auth codes are bearer credentials. Never log
+them in full — at most log the first 8 chars or a SHA hash. Same applies to the
+Lincx JWT (`auth_token`).
+
 ---
 
 ## Multi-tenancy model
@@ -85,26 +90,46 @@ POST /api/campaigns?networkId=svce6t
 
 ---
 
-## Authentication flow
+## Authentication flow (OAuth 2.1 + PKCE)
+
+The MCP client (Claude desktop, claude.ai, Claude Code) drives authentication.
+The user logs in once in a browser; the client stores the resulting tokens and
+sends `Authorization: Bearer <access_token>` on every `/mcp` request.
 
 ```
-1. Claude calls auth_login tool
-2. Tool returns { login_url: "http://localhost:5001/login?t=<ticket>" }   # ticket correlates browser login → MCP session
-3. User opens URL in browser → polished login form served by Express
-4. User submits email + password
-5. POST /api/login → loginWithCredentials() → POST ix-id.lincx.la/auth/login
-6. Identity server returns { success: true, data: { authToken: "..." } }
-7. Server calls createSession() → fetchUserNetworks() → stores session
-8. Browser redirects to /login/success → user closes tab
-9. Claude calls auth_status → confirms session, lists networks
+1. Client → POST /mcp without Authorization
+   ← 401 + WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource"
+
+2. Client fetches /.well-known/oauth-protected-resource → /.well-known/oauth-authorization-server
+3. Client → POST /oauth/register { redirect_uris: [...] }  ← { client_id }
+
+4. Client opens browser → GET /oauth/authorize?response_type=code&client_id=...
+   &redirect_uri=...&state=...&code_challenge=...&code_challenge_method=S256
+
+5. Server stores pending auth-request, redirects browser to /login?req=<request_id>
+6. User submits email+password to POST /api/login?req=<request_id>
+7. Server: loginWithCredentials() → createSession() → issueAuthCode()
+   → JSON { success: true, redirect: "<redirect_uri>?code=...&state=..." }
+   Browser navigates to redirect.
+
+8. Client → POST /oauth/token { grant_type: "authorization_code", code, code_verifier, ... }
+   ← { access_token, refresh_token, token_type: "Bearer", expires_in: 3600 }
+
+9. Client → POST /mcp with Authorization: Bearer <access_token> → resolves to Lincx session
+10. After expiry: POST /oauth/token { grant_type: "refresh_token", refresh_token, client_id }
+    Refresh tokens rotate — old refresh becomes invalid.
 ```
 
-Identity server: `https://ix-id.lincx.la` (authentic-server)
-Login endpoint: `POST /auth/login` with body `{ email, password }`
-Response shape: `{ success: boolean, data: { authToken: string } }`
-Token type: JWT, ~30 day expiry, no refresh endpoint, no revocation endpoint
+Identity server: `https://ix-id.lincx.la` (authentic-server) — unchanged.
+Login endpoint: `POST /auth/login` with body `{ email, password }`.
+Response shape: `{ success: boolean, data: { authToken: string } }`.
+Token type: JWT (Lincx), ~30 day expiry. The OAuth access token is opaque
+(32-byte hex), 1 hour TTL. The Lincx JWT lives only in `Session.auth_token`
+server-side; clients only ever see the OAuth tokens.
 
-**Known open issue:** 401 on login despite correct credentials — suspected cause is either wrong request body field names (`email` vs `username`) or missing headers the identity server requires. Debug by logging the raw fetch request/response in `auth.ts` before the status checks.
+**Two-token architecture:** OAuth tokens identify the MCP session; the Lincx
+JWT authorizes Work API calls. They meet in Redis: `oauth:access:<token>` →
+`{ lincx_session_id }` → `lincx:session:<id>` → `{ auth_token, ... }`.
 
 ---
 
@@ -123,8 +148,15 @@ interface Session {
 
 Session store: Redis when `REDIS_URL` is set, in-memory Map otherwise.
 In-memory sessions are lost on server restart — Redis is required in production.
-TTL: 7 days for Lincx sessions, 7 days for MCP-to-Lincx bindings, 10 minutes for login tickets.
-The previous `.sessions/session_id` on-disk persistence has been removed.
+
+TTLs:
+- `lincx:session:<uuid>` — 7 days (Lincx session, holds the JWT)
+- `mcp:session:<id>` — 7 days (transport-id → lincx-session-id, refreshed on each authenticated request)
+- `oauth:client:<id>` — 90 days (DCR-registered MCP clients)
+- `oauth:pending:<request_id>` — 10 min (in-flight authorize requests)
+- `oauth:code:<code>` — 60 sec (single-use auth codes)
+- `oauth:access:<token>` — 1 hour
+- `oauth:refresh:<token>` — 30 days (rotated on every refresh)
 
 ---
 
@@ -139,7 +171,7 @@ The previous `.sessions/session_id` on-disk persistence has been removed.
 | `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production |
 | `NODE_ENV` | No | `development` | Set to `production` to disable `/dev/*` routes and require `MCP_ACCESS_KEY` |
 | `PUBLIC_BASE_URL` | No | `http://localhost:<PORT>` | Used when building browser login URLs returned to Claude |
-| `MCP_ACCESS_KEY` | Yes in prod | `` (empty) | Shared access key required on `?key=` for `/mcp` and `/login` |
+| `MCP_ACCESS_KEY` | Yes in prod | `` (empty) | Shared access key required on `?key=` for `/mcp`. OAuth endpoints (`/oauth/*`, `/.well-known/*`, `/login`) are always public so client discovery can work. |
 
 There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api/networks`.
 
@@ -314,11 +346,16 @@ registerYourDomainTools(server);
 
 ## Deployment
 
-Deployed via Docker to Fly.io with Upstash Redis. Users get a single URL to paste into their MCP client:
+Deployed via Docker to Fly.io with Upstash Redis. Users get a single URL to paste into their MCP client; the client handles the OAuth dance and stores tokens itself:
 
 ```
-https://<app>.fly.dev/mcp?key=<MCP_ACCESS_KEY>
+https://<app>.fly.dev/mcp                                    # OAuth-only deployment
+https://<app>.fly.dev/mcp?key=<MCP_ACCESS_KEY>               # OAuth + access-key gate
 ```
+
+Without `MCP_ACCESS_KEY`, OAuth alone is the identity layer. With it, both must
+pass — useful as a deploy-wide kill-switch. OAuth discovery (`/.well-known/*`)
+and the OAuth endpoints (`/oauth/*`, `/login`) are always public regardless.
 
 ### One-time setup
 

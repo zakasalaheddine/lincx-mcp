@@ -1,45 +1,56 @@
 # lincx-mcp-server
 
-MCP server for the Lincx / Interlincx platform — browser-based login UI, Redis-backed sessions, and multi-network support. Credentials never pass through Claude. Authentication happens entirely in a local browser window.
+MCP server for the Lincx / Interlincx platform — OAuth 2.1 + PKCE authentication, Redis-backed sessions, and multi-network support. Credentials never pass through Claude.
 
 ---
 
-## Deployed usage
+## Connecting from an MCP client
 
-The hosted server lives at:
-
-```
-https://lincx-mcp.fly.dev/mcp?key=<ACCESS_KEY>
-```
-
-Ask the admin for the access key, then add to your MCP client config:
+Add the server URL to your MCP client config:
 
 ```json
 {
   "mcpServers": {
     "lincx": {
-      "url": "https://lincx-mcp.fly.dev/mcp?key=<ACCESS_KEY>"
+      "url": "https://lincx-mcp.fly.dev/mcp"
     }
   }
 }
 ```
 
-Then run `auth_login` from Claude — it returns a browser URL. Open it, sign in with your Lincx credentials, return to Claude, run `auth_status` → `network_list` → `network_switch` to pick a network.
+The client handles authentication automatically:
+
+1. Calls `/mcp` and receives `401 + WWW-Authenticate: Bearer resource_metadata=…`
+2. Discovers OAuth endpoints from `/.well-known/oauth-authorization-server`
+3. Registers itself via `POST /oauth/register` (Dynamic Client Registration)
+4. Opens a browser to `/oauth/authorize` — you sign in with Lincx credentials
+5. Exchanges the auth code at `/oauth/token` for access + refresh tokens
+6. Sends `Authorization: Bearer <access_token>` on every `/mcp` call
+
+Tokens are stored by your MCP client and survive desktop-app reloads — no re-auth on reconnect. Once signed in, run `network_list` → `network_switch` to pick a network.
+
+If the deployment also requires `MCP_ACCESS_KEY`, append it: `https://lincx-mcp.fly.dev/mcp?key=<KEY>`.
 
 ---
 
 ## How it works
 
 ```
-Claude calls auth_login
-  → MCP server returns http://localhost:<PORT>/login
-  → User opens URL in browser, enters email + password
-  → Browser POSTs to local MCP server (/api/login)
-  → MCP server forwards credentials to the Lincx identity server
-  → On success: session created server-side, browser shows confirmation screen
-  → User closes tab, returns to Claude
-  → Claude calls auth_status → session confirmed, networks listed
+Client → POST /mcp (no auth)            ← 401 + WWW-Authenticate
+Client → /.well-known/oauth-authorization-server   (discovery)
+Client → POST /oauth/register                      (DCR)
+Client → opens browser → GET /oauth/authorize?...&code_challenge=…
+Server stores pending auth-request → redirects browser to /login
+User submits credentials → server signs into Lincx → issues auth code
+Browser navigates to redirect_uri?code=…&state=…
+Client → POST /oauth/token (with code_verifier)    ← access_token, refresh_token
+Client → POST /mcp + Authorization: Bearer …       (all subsequent calls)
 ```
+
+Two unrelated tokens identify a user: the OAuth access token (sent by the
+client on every `/mcp` request) and the Lincx JWT (server-side only, used by
+`workApiRequest`). They meet in Redis: `oauth:access:<token>` →
+`lincx_session_id` → Lincx session.
 
 Multi-tenancy is handled by appending `?networkId=<id>` to every Work API request. The `networkId` is always injected server-side from the active session — Claude never controls it directly.
 
