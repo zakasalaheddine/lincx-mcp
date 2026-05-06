@@ -135,8 +135,6 @@ export async function destroySession(sessionId: string): Promise<void> {
 // ── MCP-session ↔ Lincx-session binding ──────────────────────────────────────
 
 const MCP_PREFIX = "mcp:session:";
-const TICKET_PREFIX = "ticket:";
-const TICKET_TTL_SECONDS = 600;   // 10 min
 
 /** Resolve an MCP session id to its bound Lincx session id. */
 export async function resolveLincxSession(
@@ -164,35 +162,6 @@ export async function unbindMcpSession(
   const id = mcpSessionId ?? "stdio";
   const kv = await getKvStore();
   await kv.delete(MCP_PREFIX + id);
-}
-
-// ── Login tickets (single-use, short-lived) ──────────────────────────────────
-
-/** Mint a ticket that correlates a browser login back to an MCP session. */
-export async function mintTicket(
-  mcpSessionId: string | undefined
-): Promise<string> {
-  const id = mcpSessionId ?? "stdio";
-  const ticket = uuidv4();
-  const kv = await getKvStore();
-  await kv.set(TICKET_PREFIX + ticket, id, TICKET_TTL_SECONDS);
-  return ticket;
-}
-
-/** Consume a ticket (single-use). Returns the MCP session id it was minted for, or null. */
-export async function consumeTicket(ticket: string): Promise<string | null> {
-  const kv = await getKvStore();
-  const mcpSessionId = await kv.get(TICKET_PREFIX + ticket);
-  if (!mcpSessionId) return null;
-  await kv.delete(TICKET_PREFIX + ticket);
-  return mcpSessionId;
-}
-
-/** Peek a ticket without consuming — used by GET /login to pre-validate. */
-export async function peekTicket(ticket: string): Promise<boolean> {
-  const kv = await getKvStore();
-  const v = await kv.get(TICKET_PREFIX + ticket);
-  return v !== null;
 }
 
 // ── OAuth bearer → Lincx session ─────────────────────────────────────────────
