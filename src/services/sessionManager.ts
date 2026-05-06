@@ -15,6 +15,7 @@ import { getSessionStore, getKvStore } from "./sessionStore.js";
 import { SESSION_TTL_SECONDS } from "../constants.js";
 import { revokeToken } from "./auth.js";
 import { fetchUserNetworks } from "./networkService.js";
+import { lookupAccessToken } from "./oauth/tokens.js";
 
 // ── Create ───────────────────────────────────────────────────────────────────
 
@@ -192,4 +193,21 @@ export async function peekTicket(ticket: string): Promise<boolean> {
   const kv = await getKvStore();
   const v = await kv.get(TICKET_PREFIX + ticket);
   return v !== null;
+}
+
+// ── OAuth bearer → Lincx session ─────────────────────────────────────────────
+
+/**
+ * Resolve a bearer token from `Authorization: Bearer <token>` to a Lincx session id.
+ * Returns null if the token is missing, expired, or the underlying Lincx session is gone.
+ */
+export async function resolveLincxSessionFromBearer(
+  authorizationHeader: string | undefined,
+): Promise<string | null> {
+  if (!authorizationHeader) return null;
+  const m = authorizationHeader.match(/^Bearer\s+(\S+)$/i);
+  if (!m) return null;
+  const access = await lookupAccessToken(m[1]);
+  if (!access) return null;
+  return access.lincx_session_id;
 }
