@@ -34,6 +34,7 @@ import { mcpLimiter } from "./middleware/rateLimit.js";
 import { SERVER_PORT, TRANSPORT, IS_PRODUCTION } from "./constants.js";
 import { wellKnownRouter } from "./routes/wellKnown.js";
 import { oauthRegisterRouter } from "./routes/oauthRegister.js";
+import { oauthTokenRouter } from "./routes/oauthToken.js";
 import { loginRouter } from "./routes/login.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +76,7 @@ app.get("/health", (_req, res) => {
 // ── OAuth discovery + registration (public, no access-key gate) ──────────────
 app.use("/.well-known", wellKnownRouter);
 app.use("/oauth", oauthRegisterRouter);
+app.use("/oauth", oauthTokenRouter);
 
 // ── Login UI + OAuth authorize/token-exchange (public — OAuth handles auth) ──
 app.use(loginRouter);
