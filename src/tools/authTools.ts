@@ -11,16 +11,9 @@ import { z } from "zod";
 import {
   destroySession,
   resolveLincxSession,
-  mintTicket,
   unbindMcpSession,
 } from "../services/sessionManager.js";
 import { getSessionStore } from "../services/sessionStore.js";
-import { PUBLIC_BASE_URL, MCP_ACCESS_KEY } from "../constants.js";
-
-function buildLoginUrl(ticket: string): string {
-  const base = `${PUBLIC_BASE_URL}/login?t=${encodeURIComponent(ticket)}`;
-  return MCP_ACCESS_KEY ? `${base}&key=${encodeURIComponent(MCP_ACCESS_KEY)}` : base;
-}
 
 export function registerAuthTools(server: McpServer): void {
 
@@ -29,36 +22,25 @@ export function registerAuthTools(server: McpServer): void {
     "auth_login",
     {
       title: "Login",
-      description: `Open the browser login page to authenticate with Interlincx.
-
-Returns a URL the user must open in their browser.
-Credentials are entered there and sent directly to the identity server — Claude never sees them.
-
-The URL is single-use and tied to this MCP session; it expires in 10 minutes.
-After the user completes login, call 'auth_status' to confirm the session is active.
-
-Returns: { login_url: string, message: string }`,
+      description: `Authentication is now handled by your MCP client via OAuth.
+If you are not yet signed in, your client should open a browser automatically.
+Use 'auth_status' to check the current session.`,
       inputSchema: z.object({}),
       annotations: {
-        readOnlyHint: false,
+        readOnlyHint: true,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
     },
-    async (_args, extra) => {
-      const ticket = await mintTicket(extra?.sessionId);
-      const url = buildLoginUrl(ticket);
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            login_url: url,
-            message: `Open ${url} in your browser, log in, then come back here and call 'auth_status'.`,
-          }, null, 2),
-        }],
-      };
-    }
+    async () => ({
+      content: [{
+        type: "text" as const,
+        text: "Authentication is now handled by your MCP client via OAuth. " +
+              "If you are not yet signed in, your client should open a browser " +
+              "automatically. Use 'auth_status' to check the current session.",
+      }],
+    }),
   );
 
   // ── auth_status ───────────────────────────────────────────────────────────
