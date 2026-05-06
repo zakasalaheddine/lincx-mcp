@@ -34,6 +34,7 @@ import { registerReportingTools } from "./tools/reportingTools.js";
 import { requireAccessKey } from "./middleware/requireAccessKey.js";
 import { loginLimiter, mcpLimiter } from "./middleware/rateLimit.js";
 import { SERVER_PORT, TRANSPORT, IDENTITY_SERVER, IS_PRODUCTION } from "./constants.js";
+import { wellKnownRouter } from "./routes/wellKnown.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP SERVER
@@ -70,6 +71,9 @@ app.use(express.urlencoded({ extended: true }));
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+// ── OAuth discovery (public, no access-key gate) ─────────────────────────────
+app.use("/.well-known", wellKnownRouter);
 
 // ── Login UI (access-key gated) ──────────────────────────────────────────────
 app.get("/login", requireAccessKey, async (req, res) => {
