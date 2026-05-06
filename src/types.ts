@@ -24,3 +24,35 @@ export interface SessionValidationResult {
   session?: Session;
   error?: string;
 }
+
+// ── OAuth ────────────────────────────────────────────────────────────────────
+
+export interface OauthClient {
+  client_id: string;
+  client_name?: string;
+  redirect_uris: string[];
+  created_at: number;
+}
+
+export interface AuthCode {
+  code: string;
+  client_id: string;
+  redirect_uri: string;
+  code_challenge: string;
+  lincx_session_id: string;
+  expires_at: number;
+}
+
+export interface AccessToken {
+  token: string;
+  client_id: string;
+  lincx_session_id: string;
+  expires_at: number;
+}
+
+export interface RefreshToken {
+  token: string;
+  client_id: string;
+  lincx_session_id: string;
+  expires_at: number;
+}
