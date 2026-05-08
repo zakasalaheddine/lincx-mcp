@@ -7,6 +7,7 @@
  * get_template_version  — GET /api/templates/{id}/versions/{version}
  * get_template_parents  — GET /api/templates/{id}/parents
  * render_template   — composite: fetch template + CAG → inject mock ads → return HTML+CSS
+ * get_template_preview_bundle  — composite: template + CAG + zone-resolved (or synthesized) mockAds
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -219,6 +220,125 @@ Params:
 
       const text = JSON.stringify(result, null, 2);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
+    }
+  });
+
+  // ── get_template_preview_bundle ─────────────────────────────────────────────
+  server.registerTool("get_template_preview_bundle", {
+    title: "Get Template Preview Bundle",
+    description: `Fetch everything needed to preview a template locally: html, css, the CAG schema, and a mockAds array.
+
+mockAds come from the zone (bound to this template) with the highest ad count.
+If no zone is bound, or every bound zone is empty, mockAds are synthesized from the CAG schema.
+
+Params:
+  - templateId: ID of the template
+  - version: optional version number (omit for latest)`,
+    inputSchema: z.object({
+      templateId: z.string().describe("Template ID"),
+      version: z.number().int().min(1).optional(),
+    }).strict(),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ templateId, version }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
+    if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
+    const v = await validateSession(sessionId);
+    if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
+
+    const warnings: string[] = [];
+
+    try {
+      // 1. Template
+      const templatePath = version
+        ? `/api/templates/${templateId}/versions/${version}`
+        : `/api/templates/${templateId}`;
+      const templateResp = await workApiRequest<Record<string, unknown>>(v.session, "GET", templatePath);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const tpl = ((templateResp as any).data ?? templateResp) as Record<string, unknown>;
+      const html = String(tpl.html ?? tpl.htmlTemplate ?? "");
+      const css = String(tpl.css ?? tpl.cssTemplate ?? "");
+      const cagId = String(tpl.creativeAssetGroupId ?? tpl.creative_asset_group_id ?? tpl.assetGroupId ?? "");
+      const tplVersion = (typeof tpl.version === "number" ? tpl.version : null) ?? version ?? null;
+
+      if (!cagId) {
+        return { content: [{ type: "text" as const, text: "Error: Template has no linked creative asset group. Cannot generate mock data." }] };
+      }
+
+      // 2. CAG
+      const cagResp = await workApiRequest<Record<string, unknown>>(v.session, "GET", `/api/creative-asset-groups/${cagId}`);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cagData = ((cagResp as any).data ?? cagResp) as Record<string, unknown>;
+      const fields =
+        Array.isArray(cagData.fields) ? cagData.fields :
+        Array.isArray(cagData.assets) ? cagData.assets :
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        Array.isArray((cagData as any).schema?.fields) ? (cagData as any).schema.fields :
+        [];
+      const cagSchema = { fields };
+
+      // 3. Zones for this template (no template-scoped endpoint exists; filter client-side).
+      let candidateZones: Array<{ id: string; templateId?: string }> = [];
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const zonesResp = await workApiRequest<any>(v.session, "GET", "/api/zones");
+        const allZones = ((zonesResp?.data ?? zonesResp) as Array<{ id: string; templateId?: string }>) ?? [];
+        candidateZones = (Array.isArray(allZones) ? allZones : [])
+          .filter(z => z && typeof z.id === "string" && z.templateId === templateId);
+      } catch (err) {
+        warnings.push(`Zone resolution failed: ${(err as Error).message}. Using synthesized ads.`);
+      }
+
+      // 4. Pick the candidate zone with the highest ad count (ties → API order).
+      let chosenZoneId: string | null = null;
+      let mockAds: Record<string, unknown>[] = [];
+
+      if (candidateZones.length === 0) {
+        if (warnings.length === 0) {
+          warnings.push("No zones are bound to this template. Using synthesized ads.");
+        }
+      } else {
+        const counted: Array<{ id: string; ads: Record<string, unknown>[] }> = [];
+        for (const z of candidateZones) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const adsResp = await workApiRequest<any>(v.session, "GET", `/api/zones/${z.id}/ads`);
+            const ads = ((adsResp?.data ?? adsResp) as Record<string, unknown>[]) ?? [];
+            counted.push({ id: z.id, ads: Array.isArray(ads) ? ads : [] });
+          } catch {
+            counted.push({ id: z.id, ads: [] });
+          }
+        }
+        // Stable sort by length desc; Array.sort in V8 is stable, so ties preserve API order.
+        counted.sort((a, b) => b.ads.length - a.ads.length);
+        const winner = counted[0];
+        if (winner && winner.ads.length > 0) {
+          chosenZoneId = winner.id;
+          mockAds = winner.ads;
+        } else {
+          warnings.push("Zones are bound to this template but all are empty (no ads). Using synthesized ads.");
+        }
+      }
+
+      const source: "zone" | "synthesized" = mockAds.length > 0 ? "zone" : "synthesized";
+      if (source === "synthesized") {
+        mockAds = generateMockAds(cagData, 2);
+      }
+
+      const result = {
+        templateId,
+        version: tplVersion,
+        html,
+        css,
+        creativeAssetGroupId: cagId,
+        cagSchema,
+        chosenZoneId,
+        mockAds,
+        source,
+        warnings,
+      };
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
