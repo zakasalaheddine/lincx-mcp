@@ -72,17 +72,24 @@ research time.
 
 Zone objects returned by `GET /api/zones` do **not** carry an `adCount` field — the zone
 schema (`lincx-core/server/model/schemas/zone.json`) has no such property. Counting ads
-therefore requires a separate call per zone via `GET /api/zones/:id/ads`.
+requires a separate `GET /api/zones/:id/ads` call per zone.
 
-Recommended strategy for `get_template_preview_bundle`:
+**Strategy (per spec, locked in brainstorming):** highest ad count wins; ties broken by
+the order zones come back from `/api/zones`.
 
-1. Filter zones by `templateId` (client-side, as above).
-2. Pick the **best zone** (heuristic: lowest `dateCreated`, i.e. oldest/primary; or expose
-   all and let the tool caller pick).
-3. Call `GET /api/zones/:id/ads` on the selected zone only — **one extra call**, not N.
+Steps inside `get_template_preview_bundle`:
 
-This avoids an N-calls fan-out across all zones serving the template. Tasks 2b/2c should
-implement this single-zone selection rather than fetching ads for every matching zone.
+1. `GET /api/zones` (network is implicit via session) → filter to
+   `zones.filter(z => z.templateId === templateId)`.
+2. For each matching zone, `GET /api/zones/:id/ads` and use `ads.length`.
+3. Pick the zone with the largest count. On tie, take the first by API order.
+4. Return that zone's ads as `mockAds`. If zero zones or every zone has zero ads,
+   fall through to CAG-synthesized ads with a warning.
+
+The N+1 cost is bounded: most templates bind 1–3 zones, so this loop runs a small
+constant number of times. This was an explicit trade-off in the design — keeping the
+ranking client-side lets us tweak the policy (e.g. switch to "most recent") without a
+server redeploy.
 
 ---
 
