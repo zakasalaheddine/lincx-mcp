@@ -12,7 +12,7 @@ function callBundleTool(args: Record<string, unknown>) {
   registerTemplateTools(server);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tool = (server as any)._registeredTools["get_template_preview_bundle"];
-  return tool.callback(args, { sessionId: "test-session" });
+  return tool.handler(args, { sessionId: "test-session" });
 }
 
 async function callBundle(templateId = "tpl_x") {
