@@ -31,4 +31,13 @@ describe("smoke", () => {
     expect(res.body.resource).toMatch(/\/mcp$/);
     expect(res.body.authorization_servers).toBeInstanceOf(Array);
   });
+
+  it("serves protected-resource metadata at the RFC 9728 path-scoped URL", async () => {
+    const app = buildTestApp();
+    app.use("/.well-known", wellKnownRouter);
+    const res = await request(app).get("/.well-known/oauth-protected-resource/mcp");
+    expect(res.status).toBe(200);
+    expect(res.body.resource).toMatch(/\/mcp$/);
+    expect(res.body.authorization_servers).toBeInstanceOf(Array);
+  });
 });

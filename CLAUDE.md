@@ -171,7 +171,6 @@ TTLs:
 | `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production |
 | `NODE_ENV` | No | `development` | Set to `production` to disable `/dev/*` routes and require `MCP_ACCESS_KEY` |
 | `PUBLIC_BASE_URL` | No | `http://localhost:<PORT>` | Used when building browser login URLs returned to Claude |
-| `MCP_ACCESS_KEY` | Yes in prod | `` (empty) | Shared access key required on `?key=` for `/mcp`. OAuth endpoints (`/oauth/*`, `/.well-known/*`, `/login`) are always public so client discovery can work. |
 
 There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api/networks`.
 
@@ -349,20 +348,25 @@ registerYourDomainTools(server);
 Deployed via Docker to Fly.io with Upstash Redis. Users get a single URL to paste into their MCP client; the client handles the OAuth dance and stores tokens itself:
 
 ```
-https://<app>.fly.dev/mcp                                    # OAuth-only deployment
-https://<app>.fly.dev/mcp?key=<MCP_ACCESS_KEY>               # OAuth + access-key gate
+https://<app>.fly.dev/mcp
 ```
 
-Without `MCP_ACCESS_KEY`, OAuth alone is the identity layer. With it, both must
-pass — useful as a deploy-wide kill-switch. OAuth discovery (`/.well-known/*`)
-and the OAuth endpoints (`/oauth/*`, `/login`) are always public regardless.
+OAuth 2.1 (Dynamic Client Registration + PKCE) is the sole identity layer. The
+`/mcp` endpoint returns `401 WWW-Authenticate: Bearer resource_metadata=...`
+on unauthenticated requests so any spec-conformant MCP client (Claude Desktop,
+claude.ai, Claude Code) can discover and complete the OAuth dance.
+
+A query-param "access key" gate is intentionally NOT used on `/mcp`: it
+suppresses the RFC-9728 challenge response and is dropped by some clients
+between the discovery probe and post-OAuth calls, which breaks browser-based
+clients entirely. To kill access deploy-wide, scale machines to zero or rotate
+Redis (invalidating every OAuth access/refresh token).
 
 ### One-time setup
 
 ```bash
 fly launch --no-deploy
 fly redis create                                           # sets REDIS_URL as a secret
-fly secrets set MCP_ACCESS_KEY=$(openssl rand -hex 32)
 fly deploy
 ```
 
@@ -370,14 +374,6 @@ fly deploy
 
 ```bash
 fly deploy
-```
-
-### Rotate the access key
-
-```bash
-fly secrets set MCP_ACCESS_KEY=$(openssl rand -hex 32)
-fly deploy
-# hand the new URL to users
 ```
 
 ### Inspect sessions

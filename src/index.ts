@@ -29,7 +29,6 @@ import { registerPublisherTools } from "./tools/publisherTools.js";
 import { registerAdvertiserTools } from "./tools/advertiserTools.js";
 import { registerExperienceTools } from "./tools/experienceTools.js";
 import { registerReportingTools } from "./tools/reportingTools.js";
-import { requireAccessKey } from "./middleware/requireAccessKey.js";
 import { mcpLimiter } from "./middleware/rateLimit.js";
 import { SERVER_PORT, TRANSPORT, IS_PRODUCTION, PUBLIC_BASE_URL } from "./constants.js";
 import {
@@ -139,7 +138,7 @@ function bearerChallengeHeader(): string {
   return `Bearer resource_metadata="${PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"`;
 }
 
-app.post("/mcp", requireAccessKey, mcpLimiter, async (req, res) => {
+app.post("/mcp", mcpLimiter, async (req, res) => {
   const lincxSessionId = await resolveLincxSessionFromBearer(req.header("authorization"));
   if (!lincxSessionId) {
     res.setHeader("WWW-Authenticate", bearerChallengeHeader());
@@ -159,7 +158,7 @@ app.post("/mcp", requireAccessKey, mcpLimiter, async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 });
 
-app.get("/mcp", requireAccessKey, async (req, res) => {
+app.get("/mcp", async (req, res) => {
   const lincxSessionId = await resolveLincxSessionFromBearer(req.header("authorization"));
   if (!lincxSessionId) {
     res.setHeader("WWW-Authenticate", bearerChallengeHeader());
@@ -174,7 +173,7 @@ app.get("/mcp", requireAccessKey, async (req, res) => {
   await transports.get(existingId)!.handleRequest(req, res);
 });
 
-app.delete("/mcp", requireAccessKey, async (req, res) => {
+app.delete("/mcp", async (req, res) => {
   const lincxSessionId = await resolveLincxSessionFromBearer(req.header("authorization"));
   if (!lincxSessionId) {
     res.setHeader("WWW-Authenticate", bearerChallengeHeader());
