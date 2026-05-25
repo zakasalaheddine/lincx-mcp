@@ -19,17 +19,26 @@ export async function workApiRequest<T>(
   session: Session,
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
-  options: { body?: unknown; params?: Record<string, unknown> } = {}
+  options: { body?: unknown; params?: Record<string, unknown>; timeoutMs?: number } = {}
 ): Promise<T> {
   const params = new URLSearchParams();
   // networkId always injected here — client tools never pass it
   params.set("networkId", session.active_network!);
   for (const [k, v] of Object.entries(options.params ?? {})) {
-    if (v !== undefined && v !== null) params.set(k, String(v));
+    if (v === undefined || v === null) continue;
+    if (Array.isArray(v)) {
+      // Repeat the key per element (?d=zone&d=template) — OpenAPI form/explode,
+      // which is what the Work API expects for array params like `d`.
+      for (const item of v) {
+        if (item !== undefined && item !== null) params.append(k, String(item));
+      }
+    } else {
+      params.set(k, String(v));
+    }
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000);
 
   let res: Response;
   try {
@@ -63,18 +72,45 @@ export async function workApiRequest<T>(
   return res.json() as Promise<T>;
 }
 
+/**
+ * Render an upstream error body into a short, readable suffix so the actual
+ * validation message reaches the caller instead of being swallowed. Returns ""
+ * when there's nothing useful (empty object / null).
+ */
+function formatErrorBody(data: unknown): string {
+  if (data === undefined || data === null) return "";
+  if (typeof data === "string") return data.trim() ? ` — ${data.trim()}` : "";
+  if (typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    if (Object.keys(obj).length === 0) return "";
+    // Combine the headline (message/error) with the specific reason
+    // (details/detail/errors) — the Work API puts the useful part in `details`,
+    // e.g. { error: "Unprocessable Entity", details: "must have required property 'endDate'" }.
+    const asText = (v: unknown) => (typeof v === "string" ? v : JSON.stringify(v));
+    const parts: string[] = [];
+    const headline = obj.message ?? obj.error;
+    const reason = obj.details ?? obj.detail ?? obj.errors;
+    if (headline !== undefined) parts.push(asText(headline));
+    if (reason !== undefined) parts.push(asText(reason));
+    return parts.length ? ` — ${parts.join(": ")}` : ` — ${JSON.stringify(obj)}`;
+  }
+  return ` — ${String(data)}`;
+}
+
 export function handleWorkApiError(error: unknown): string {
   if (error instanceof Error) {
     const e = error as Error & { status?: number; data?: unknown; code?: string };
     if (e.status !== undefined) {
+      const body = formatErrorBody(e.data);
       switch (e.status) {
-        case 400: return `Error: Bad request — ${JSON.stringify(e.data)}`;
+        case 400: return `Error: Bad request${body}`;
         case 401: return "Error: Unauthorized. Use 'auth_logout' then 'auth_login' to re-authenticate.";
         case 403: return "Error: Forbidden — you don't have access to this resource on the active network.";
         case 404: return "Error: Resource not found. Double-check the ID.";
+        case 422: return `Error: Unprocessable request (422 — the API rejected the parameters)${body}`;
         case 429: return "Error: Rate limit hit. Wait a moment then retry.";
         case 500: return "Error: Work API server error. Try again later.";
-        default:  return `Error: API returned status ${e.status}`;
+        default:  return `Error: API returned status ${e.status}${body}`;
       }
     }
     if (e.code === "TIMEOUT") return "Error: Request timed out.";

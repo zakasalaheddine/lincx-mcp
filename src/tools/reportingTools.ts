@@ -89,13 +89,13 @@ export function registerReportingTools(server: McpServer): void {
   // ── report_query ─────────────────────────────────────────────────────────────
   server.registerTool("report_query", {
     title: "Report Query",
-    description: `Run a report query against a dimension set. Returns rows of metric data broken down by the specified dimensions and time resolution.`,
+    description: `Run a report query against a dimension set. Returns rows of metric data broken down by the specified dimensions. startDate and endDate are REQUIRED (the API rejects requests without them). Reports default to daily; pass resolution="hourly" for an hourly breakdown.`,
     inputSchema: z.object({
       dimensionSetId: z.string().describe("Dimension set ID to query"),
-      startDate: z.string().optional().describe("Start date in ISO format (e.g. 2024-01-01)"),
-      endDate: z.string().optional().describe("End date in ISO format (e.g. 2024-01-31)"),
-      resolution: z.enum(["day", "hour"]).default("day").describe("Report resolution"),
-      dimensions: z.array(z.string()).optional().describe("Dimensions to break down by (maps to query param 'd')"),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").describe("Required. Start date, YYYY-MM-DD (e.g. 2026-05-18)"),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").describe("Required. End date, YYYY-MM-DD (e.g. 2026-05-25)"),
+      resolution: z.literal("hourly").optional().describe("Omit for the daily default; pass 'hourly' for an hourly breakdown. ('day'/'hour' are NOT valid.)"),
+      dimensions: z.array(z.string()).optional().describe("Dimensions to break down by (repeated query param 'd', e.g. ['zone','template']). Omit to aggregate at the network level."),
       testMode: z.boolean().optional().describe("Enable test mode (maps to query param 'test-mode')"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -107,16 +107,16 @@ export function registerReportingTools(server: McpServer): void {
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
     try {
-      const params: Record<string, unknown> = { resolution };
-      if (startDate !== undefined) params.startDate = startDate;
-      if (endDate !== undefined) params.endDate = endDate;
+      const params: Record<string, unknown> = { startDate, endDate };
+      if (resolution !== undefined) params.resolution = resolution;
       if (dimensions !== undefined) params.d = dimensions;
       if (testMode !== undefined) params["test-mode"] = testMode;
 
-      const data = await workApiRequest<unknown>(v.session, "GET", `/api/reports/${dimensionSetId}`, { params });
+      // Reports can take >10s (esp. hourly over a wide range) — give them headroom.
+      const data = await workApiRequest<unknown>(v.session, "GET", `/api/reports/${dimensionSetId}`, { params, timeoutMs: 60_000 });
 
       const rowCount = Array.isArray(data) ? data.length : "?";
-      const summary = `Report for dimension set "${dimensionSetId}" | Resolution: ${resolution} | Rows: ${rowCount}`;
+      const summary = `Report for dimension set "${dimensionSetId}" | Resolution: ${resolution ?? "default (daily)"} | Rows: ${rowCount}`;
 
       return { content: [{ type: "text" as const, text: truncateIfNeeded(`${summary}\n\n${JSON.stringify(data, null, 2)}`) }] };
     } catch (err) {
