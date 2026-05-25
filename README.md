@@ -144,10 +144,25 @@ The server is HTTP-only — it serves the login UI and the MCP `/mcp` endpoint o
 npm start
 ```
 
-**Dev mode** (auto-reloads on file changes; `predev` starts a Dockerized Redis):
+**Dev mode** — `npm run dev` starts a Cloudflare tunnel and prints a public
+`https://…/mcp` URL you can paste into a Claude Desktop / claude.ai connector
+(both require https). It also starts a Dockerized Redis via the `predev` hook.
+Requires [`cloudflared`](https://github.com/cloudflare/cloudflared) (`brew install cloudflared`):
 
 ```bash
 npm run dev
+# ════════════════════════════════════════════════
+#   Public URL:   https://<random>.trycloudflare.com
+#   MCP endpoint: https://<random>.trycloudflare.com/mcp
+#   Local:        http://localhost:5001
+# ════════════════════════════════════════════════
+```
+
+For plain local work without a tunnel (e.g. connecting via `mcp-remote`, which
+accepts `http://localhost`):
+
+```bash
+npm run dev:local
 # → http://localhost:5001/mcp  and  http://localhost:5001/health
 ```
 

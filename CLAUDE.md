@@ -188,14 +188,23 @@ There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api
 npm install          # first time only
 npm run build        # compile TS → dist/ — required after every source change
 npm start            # run the compiled server (node dist/index.js) on PORT
-npm run dev          # tsx watch — auto-reloads; predev starts a Dockerized Redis
+npm run dev          # cloudflared tunnel + tsx watch (see below)
+npm run dev:local    # tsx watch only — no tunnel, http://localhost:5001
 ```
 
-`npm run dev` runs a `predev` hook (`docker compose up -d redis`) that brings up the
-bundled Redis on `localhost:6379` so the dev server always has persistent sessions.
-This requires Docker to be running. To use the in-memory store instead, blank
-`REDIS_URL` in `.env` (and the predev hook becomes a harmless no-op you can ignore).
-Stop the dev Redis with `npm run redis:stop`.
+**`npm run dev`** (`scripts/dev-tunnel.mjs`) starts a Cloudflare quick tunnel,
+captures the generated `https://<random>.trycloudflare.com` URL, then boots the
+watch server with `PUBLIC_BASE_URL` set to it and prints a banner with the
+`<url>/mcp` to paste into a Claude Desktop / claude.ai connector (those require
+https, so a tunnel is needed for local connector use). Requires `cloudflared`
+(`brew install cloudflared`). Use **`npm run dev:local`** for plain local work
+(e.g. connecting via `mcp-remote`, which accepts `http://localhost`).
+
+Both run a `predev` hook (`docker compose up -d redis`) that brings up the bundled
+Redis on `localhost:6379` so the dev server always has persistent sessions. This
+requires Docker; if it isn't running the hook is a non-blocking no-op. To use the
+in-memory store instead, blank `REDIS_URL` in `.env`. Stop the dev Redis with
+`npm run redis:stop`.
 
 ---
 
