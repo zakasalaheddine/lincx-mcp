@@ -1,0 +1,23 @@
+# Local-only override — auto-merged by `docker compose up`, ignored by Coolify
+# (Coolify reads only docker-compose.yml). Replaces the SERVICE_* magic values
+# that Coolify injects in production with plain literals so the stack runs
+# end-to-end on your machine.
+#
+#   docker compose up --build   →   http://localhost:3000/health
+#
+# Edit WORK_API_BASE_URL to point at a local Work API instead. The Redis
+# password is a throwaway local value — it just has to match on both services.
+services:
+  app:
+    environment:
+      - PUBLIC_BASE_URL=http://localhost:3000
+      - WORK_API_BASE_URL=https://api.lincx.com
+      - REDIS_URL=redis://default:localdev@redis:6379
+    ports:
+      - "3000:3000"
+  redis:
+    command: redis-server --requirepass localdev --appendonly yes
+    # Exposed to the host so `npm run dev` (running outside Docker) shares this
+    # same Redis. Connect with REDIS_URL=redis://default:localdev@localhost:6379.
+    ports:
+      - "6379:6379"

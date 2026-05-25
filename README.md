@@ -12,7 +12,7 @@ Add the server URL to your MCP client config:
 {
   "mcpServers": {
     "lincx": {
-      "url": "https://lincx-mcp.fly.dev/mcp"
+      "url": "https://<your-coolify-domain>/mcp"
     }
   }
 }
@@ -28,8 +28,6 @@ The client handles authentication automatically:
 6. Sends `Authorization: Bearer <access_token>` on every `/mcp` call
 
 Tokens are stored by your MCP client and survive desktop-app reloads — no re-auth on reconnect. Once signed in, run `network_list` → `network_switch` to pick a network.
-
-If the deployment also requires `MCP_ACCESS_KEY`, append it: `https://lincx-mcp.fly.dev/mcp?key=<KEY>`.
 
 ---
 
@@ -118,14 +116,12 @@ WORK_API_BASE_URL=https://your-work-api.example.com
 # Optional — Lincx identity server (defaults shown)
 IDENTITY_SERVER=https://your-identity-server.example.com
 
-# Optional — port for the browser login UI (default: 5001)
+# Optional — port for the login UI + MCP /mcp endpoint (default: 5001)
 PORT=5001
 
-# Optional — transport mode: stdio (default) or http
-TRANSPORT=stdio
-
-# Optional — Redis connection URL. Omit to use in-memory sessions (lost on restart)
-REDIS_URL=redis://localhost:6379
+# Optional — Redis connection URL. `npm run dev` starts a Dockerized Redis and
+# points here automatically. Omit to use in-memory sessions (lost on restart).
+REDIS_URL=redis://default:localdev@localhost:6379
 ```
 
 > **Note:** There is no `NETWORK_API_BASE_URL`. Networks are fetched from `WORK_API_BASE_URL/api/networks`.
@@ -140,115 +136,61 @@ Compiles TypeScript to `dist/`. You must rebuild after any source changes.
 
 ### 4. Run
 
-**stdio mode** (default — for Claude Code and local IDE use):
+The server is HTTP-only — it serves the login UI and the MCP `/mcp` endpoint on `PORT`.
+
+**Production / compiled:**
 
 ```bash
 npm start
 ```
 
-**HTTP mode** (for remote or multi-client use):
-
-```bash
-TRANSPORT=http npm start
-```
-
-**Dev mode** (auto-reloads on file changes, no build step needed):
+**Dev mode** (auto-reloads on file changes; `predev` starts a Dockerized Redis):
 
 ```bash
 npm run dev
+# → http://localhost:5001/mcp  and  http://localhost:5001/health
 ```
 
 ---
 
-## Register with Claude Code
+## Register an MCP client
 
-Add to your Claude Code MCP config (`~/.claude/mcp_settings.json` or via Claude Code settings):
+The server is HTTP-only, so every client connects by URL — there is no stdio
+command form. Use the deployed URL (`https://<your-coolify-domain>/mcp`) or the
+local dev URL (`http://localhost:5001/mcp`).
 
-```json
-{
-  "mcpServers": {
-    "lincx": {
-      "command": "node",
-      "args": ["/absolute/path/to/lincx-mcp-server/dist/index.js"],
-      "env": {
-        "WORK_API_BASE_URL": "https://your-work-api.example.com",
-        "PORT": "5001"
-      }
-    }
-  }
-}
-```
-
-> Replace `/absolute/path/to/` with the actual path on your machine. After saving, restart Claude Code to pick up the new server.
-
-> **Node version:** If you have multiple Node versions installed, use the full path to a Node 18+ binary (e.g. `/path/to/nvm/versions/node/v22.x.x/bin/node`) to avoid subtle ESM issues with older Node versions that may be on your `PATH`.
-
----
-
-## Register with Claude Desktop
-
-Add to your Claude Desktop config:
-- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
-
-**Production mode** (runs compiled JS from `dist/`):
-
-```json
-{
-  "mcpServers": {
-    "lincx": {
-      "command": "node",
-      "args": ["/absolute/path/to/lincx-mcp-server/dist/index.js"],
-      "env": {
-        "WORK_API_BASE_URL": "https://your-work-api.example.com",
-        "PORT": "5001"
-      }
-    }
-  }
-}
-```
-
-**Dev mode** (runs TypeScript directly via `tsx` — no rebuild needed):
-
-```json
-{
-  "mcpServers": {
-    "lincx": {
-      "command": "npx",
-      "args": ["tsx", "/absolute/path/to/lincx-mcp-server/src/index.ts"],
-      "env": {
-        "WORK_API_BASE_URL": "https://your-work-api.example.com",
-        "PORT": "5001"
-      }
-    }
-  }
-}
-```
-
-> After saving, quit and reopen Claude Desktop to pick up the new server.
-
----
-
-## Running remotely (HTTP mode)
-
-To expose the MCP server over HTTP (e.g. on a remote machine or in a container):
-
-```bash
-TRANSPORT=http WORK_API_BASE_URL=https://your-work-api.example.com npm start
-```
-
-Connect from Claude Code with:
+**Claude Code** — native HTTP transport:
 
 ```json
 {
   "mcpServers": {
     "lincx": {
       "type": "http",
-      "url": "http://your-server-host:5001/mcp"
+      "url": "http://localhost:5001/mcp"
     }
   }
 }
 ```
+
+**Claude Desktop / claude.ai** — add the URL via Settings → Connectors → Add
+custom connector. Or, for clients that only accept a stdio command, bridge the
+URL with [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
+
+```json
+{
+  "mcpServers": {
+    "lincx": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:5001/mcp"]
+    }
+  }
+}
+```
+
+In all cases the client completes the OAuth dance in the browser on first connect
+and stores the tokens itself. For OAuth redirects to resolve, `PUBLIC_BASE_URL`
+must equal the URL the client hits — left unset locally it defaults to
+`http://localhost:<PORT>`.
 
 > The browser login UI runs on the same port. In remote mode, engineers must be able to reach `http://your-server-host:<PORT>/login` in a browser to complete authentication. Consider using a secure tunnel (e.g. ngrok, Cloudflare Tunnel) if the server is not publicly reachable.
 
@@ -507,10 +449,12 @@ registerYourDomainTools(server, getSessionId);
 
 ## Deployment
 
-See the "Deployment" section in `CLAUDE.md` for the full Fly.io workflow. Short version:
+Deployed on [Coolify](https://coolify.io) as a Docker Compose stack. See the
+"Deployment" section in `CLAUDE.md` for the full setup. Short version:
 
-```bash
-fly deploy
-```
+1. New Resource → **Docker Compose** → point at this repo (`docker-compose.yml`).
+2. Set `WORK_API_BASE_URL` in the Coolify Environment Variables tab.
+3. Enable **Auto Deploy** + add the webhook to the repo — pushes to `main` redeploy.
 
-The `Dockerfile` and `fly.toml` in this repo are the source of truth.
+The `Dockerfile` and `docker-compose.yml` in this repo are the source of truth.
+Coolify provisions the bundled Redis, assigns the domain, and terminates TLS.

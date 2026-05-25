@@ -5,12 +5,11 @@
  *  1. HTTP login UI (GET /login, POST /api/login, GET /login/success)
  *  2. MCP Streamable HTTP transport (POST|GET|DELETE /mcp)
  *
- * In stdio mode, the MCP server is connected over stdin/stdout instead of /mcp;
- * the Express app still serves the login UI on SERVER_PORT for local dev.
+ * The server is HTTP-only — MCP clients connect over /mcp. There is no stdio
+ * transport; everything (Claude Code, Desktop, claude.ai) connects by URL.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { randomUUID } from "node:crypto";
@@ -31,7 +30,7 @@ import { registerExperienceTools } from "./tools/experienceTools.js";
 import { registerReportingTools } from "./tools/reportingTools.js";
 import { mcpLimiter } from "./middleware/rateLimit.js";
 import { installToolGuards } from "./middleware/toolGuard.js";
-import { SERVER_PORT, TRANSPORT, IS_PRODUCTION, PUBLIC_BASE_URL } from "./constants.js";
+import { SERVER_PORT, IS_PRODUCTION, PUBLIC_BASE_URL } from "./constants.js";
 import {
   resolveLincxSessionFromBearer,
   bindMcpToLincxSession,
@@ -72,7 +71,7 @@ installToolGuards(server);
 // ─────────────────────────────────────────────────────────────────────────────
 
 const app = express();
-app.set("trust proxy", 1);   // behind Fly proxy; needed for correct rate-limit IPs
+app.set("trust proxy", 1);   // behind the Coolify (Traefik) proxy; needed for correct rate-limit IPs
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -217,13 +216,7 @@ async function main(): Promise<void> {
     }
   });
 
-  if (TRANSPORT === "http") {
-    console.error(`[MCP]    HTTP transport ready`);
-  } else {
-    const stdio = new StdioServerTransport();
-    await server.connect(stdio);
-    console.error("[MCP]    stdio transport active");
-  }
+  console.error(`[MCP]    HTTP transport ready`);
 }
 
 main().catch((err) => {

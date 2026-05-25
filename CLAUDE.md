@@ -10,9 +10,14 @@ Read this fully before making any changes.
 An MCP (Model Context Protocol) server that gives Claude access to the Lincx / Interlincx platform.
 It handles authentication, multi-network context, and exposes business tools as MCP tools.
 
-The server runs locally alongside Claude Code. It has two responsibilities:
-1. **MCP stdio transport** — Claude talks to it over stdin/stdout (JSON-RPC)
-2. **Express HTTP server on `PORT`** (5001 dev default, 3000 in production via `fly.toml`) — serves a browser login UI and, when `TRANSPORT=http`, the MCP Streamable HTTP transport. Credentials never pass through Claude.
+The server is **HTTP-only** — there is no stdio transport. Everything runs on a
+single Express server on `PORT` (5001 dev default, 3000 in production via
+`docker-compose.yml`):
+- the MCP Streamable HTTP transport at `POST|GET|DELETE /mcp`
+- the browser login UI and OAuth endpoints
+- `/health`
+
+All MCP clients (Claude Code, Desktop, claude.ai) connect by URL. Credentials never pass through Claude.
 
 ---
 
@@ -41,11 +46,13 @@ src/
 
 ## Critical rules — never violate these
 
-### stdout is sacred
-In stdio MCP mode, **stdout is the wire protocol**. Every byte written to stdout must be valid JSON-RPC.
-- **Never use `console.log`** anywhere in this codebase
-- Always use `console.error` for all logging — it goes to stderr, which the transport ignores
-- This includes inside Express route handlers, services, and tools
+### Logging goes to stderr, never stdout
+- **Never use `console.log`** anywhere in this codebase — always use `console.error`.
+- This includes inside Express route handlers, services, and tools.
+- Why this is a hard rule: the server is HTTP-only today, but it began as a stdio
+  MCP server where **stdout was the JSON-RPC wire protocol** — a stray `console.log`
+  would corrupt the stream. Keeping logging on stderr preserves clean stdout in
+  case a stdio transport is ever reintroduced, and keeps container logs uniform.
 
 ### Claude never controls auth or network context
 - `auth_token` — stored in session server-side only, never returned to Claude
@@ -167,9 +174,8 @@ TTLs:
 | `WORK_API_BASE_URL` | Yes | `http://localhost:3050` | Work API — all requests go here |
 | `IDENTITY_SERVER` | No | `https://ix-id.lincx.la` | Lincx auth server |
 | `PORT` | No | `5001` | Express HTTP port (login UI + MCP over HTTP) |
-| `TRANSPORT` | No | `stdio` | `stdio` (local) or `http` (remote) |
-| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production |
-| `NODE_ENV` | No | `development` | Set to `production` to disable `/dev/*` routes and require `MCP_ACCESS_KEY` |
+| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production. `npm run dev` points this at a Dockerized Redis it starts automatically |
+| `NODE_ENV` | No | `development` | Set to `production` to disable the `/dev/*` debug routes |
 | `PUBLIC_BASE_URL` | No | `http://localhost:<PORT>` | Used when building browser login URLs returned to Claude |
 
 There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api/networks`.
@@ -181,33 +187,42 @@ There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api
 ```bash
 npm install          # first time only
 npm run build        # compile TS → dist/ — required after every source change
-npm start            # run in stdio mode (for Claude Code)
-npm run dev          # tsx watch — auto-reloads, no build step (dev only)
+npm start            # run the compiled server (node dist/index.js) on PORT
+npm run dev          # tsx watch — auto-reloads; predev starts a Dockerized Redis
 ```
 
-The `dist/` directory must be committed or rebuilt before the MCP server can start.
-Claude Code runs `dist/index.js` — source changes have no effect until rebuilt.
+`npm run dev` runs a `predev` hook (`docker compose up -d redis`) that brings up the
+bundled Redis on `localhost:6379` so the dev server always has persistent sessions.
+This requires Docker to be running. To use the in-memory store instead, blank
+`REDIS_URL` in `.env` (and the predev hook becomes a harmless no-op you can ignore).
+Stop the dev Redis with `npm run redis:stop`.
 
 ---
 
-## Claude Code MCP config
+## Connecting an MCP client
+
+The server is HTTP-only, so clients connect by URL — there is no stdio command form.
+
+- **Production (Coolify):** point the client at `https://<your-coolify-domain>/mcp`.
+- **Local dev:** run `npm run dev`, then connect to `http://localhost:5001/mcp`.
+
+`claude.ai` and Claude Desktop take the URL directly (Settings → Connectors).
+For Claude Code or any stdio-only client, bridge the URL with `mcp-remote`:
 
 ```json
 {
   "mcpServers": {
     "lincx": {
-      "command": "/Users/salaheddinezaka/.nvm/versions/node/v22.13.1/bin/node",
-      "args": ["/absolute/path/to/lincx-mcp-server/dist/index.js"],
-      "env": {
-        "WORK_API_BASE_URL": "http://localhost:3050",
-        "PORT": "5001"
-      }
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:5001/mcp"]
     }
   }
 }
 ```
 
-**Always use a full absolute path to a Node 18+ binary.** Node 16 is on the PATH first and will be picked by default — it causes subtle ESM and runtime issues. Node v22 is confirmed installed and working.
+`mcp-remote` runs the OAuth dance in the browser and proxies it over stdio. For
+`PUBLIC_BASE_URL` to match the URL the client hits, leave it unset locally (it
+defaults to `http://localhost:<PORT>`).
 
 ---
 
@@ -345,10 +360,12 @@ registerYourDomainTools(server);
 
 ## Deployment
 
-Deployed via Docker to Fly.io with Upstash Redis. Users get a single URL to paste into their MCP client; the client handles the OAuth dance and stores tokens itself:
+Deployed via Coolify as a Docker Compose stack (`docker-compose.yml`) — the
+`app` container plus a bundled `redis` service. Users get a single URL to paste
+into their MCP client; the client handles the OAuth dance and stores tokens itself:
 
 ```
-https://<app>.fly.dev/mcp
+https://<your-coolify-domain>/mcp
 ```
 
 OAuth 2.1 (Dynamic Client Registration + PKCE) is the sole identity layer. The
@@ -359,29 +376,41 @@ claude.ai, Claude Code) can discover and complete the OAuth dance.
 A query-param "access key" gate is intentionally NOT used on `/mcp`: it
 suppresses the RFC-9728 challenge response and is dropped by some clients
 between the discovery probe and post-OAuth calls, which breaks browser-based
-clients entirely. To kill access deploy-wide, scale machines to zero or rotate
+clients entirely. To kill access deploy-wide, stop the app in Coolify or rotate
 Redis (invalidating every OAuth access/refresh token).
 
-### One-time setup
+### How the compose file is wired
 
-```bash
-fly launch --no-deploy
-fly redis create                                           # sets REDIS_URL as a secret
-fly deploy
-```
+`docker-compose.yml` relies on Coolify's magic environment variables:
+- `SERVICE_FQDN_APP_3000` — declaring this key makes Coolify generate a public
+  domain for the `app` service and route the Traefik proxy to port 3000.
+- `PUBLIC_BASE_URL=https://${SERVICE_FQDN_APP}` — the generated domain, forced to https.
+- `SERVICE_PASSWORD_REDIS` — a random password Coolify generates once; shared
+  between the Redis server and the app's `REDIS_URL` (`redis://default:…@redis:6379`).
+
+Redis persists to a named volume (`redis-data`), so sessions survive restarts.
+
+### One-time setup (Coolify UI)
+
+1. New Resource → **Docker Compose** → point it at this Git repo (`docker-compose.yml`).
+2. In **Environment Variables**, set `WORK_API_BASE_URL` (and optionally `IDENTITY_SERVER`).
+   `NODE_ENV`, `PORT`, and `PUBLIC_BASE_URL` are already set in the compose file.
+3. Enable **Auto Deploy** and add the generated webhook to the repo (GitHub →
+   Settings → Webhooks). Pushes to `main` then redeploy automatically — no
+   GitHub Actions workflow is needed or present.
+4. Deploy. Coolify assigns the domain and provisions a TLS cert via its proxy.
 
 ### Subsequent deploys
 
-```bash
-fly deploy
-```
+Push to `main` — Coolify's webhook redeploys. Or click **Redeploy** in the UI.
 
 ### Inspect sessions
 
+Use Coolify's container logs/terminal for the `redis` service, or with `REDIS_URL`
+exported locally:
+
 ```bash
-fly logs
-# Or, with REDIS_URL exported locally:
-redis-cli --tls -u "$REDIS_URL" keys "lincx:session:*" | wc -l
+redis-cli -u "$REDIS_URL" keys "lincx:session:*" | wc -l
 ```
 
 ---

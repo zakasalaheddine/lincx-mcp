@@ -13,8 +13,7 @@
  *      (tool name, duration, response bytes, param KEYS only, status).
  *
  * NOTE ON LOGGING CHANNEL: all logging here goes to stderr via console.error,
- * never console.log. In stdio MCP mode stdout is the JSON-RPC wire protocol —
- * any stray byte on stdout corrupts the transport (see CLAUDE.md). Param VALUES
+ * never console.log (the project-wide rule — see CLAUDE.md). Param VALUES
  * are never logged (PII / secret risk); only Object.keys(params).
  */
 

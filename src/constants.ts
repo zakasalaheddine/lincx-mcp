@@ -28,15 +28,12 @@ export const REDIS_URL = process.env.REDIS_URL ?? "";
 // Port for the Express HTTP server (login UI + MCP HTTP transport)
 export const SERVER_PORT = parseInt(process.env.PORT ?? "5001", 10);
 
-// Transport: "stdio" (default, Claude Code) or "http" (remote)
-export const TRANSPORT = process.env.TRANSPORT ?? "stdio";
-
 // NODE_ENV — "production" disables the /dev/* debug routes
 export const NODE_ENV = process.env.NODE_ENV ?? "development";
 export const IS_PRODUCTION = NODE_ENV === "production";
 
 // Public base URL used when building login links returned to Claude
-// In dev, defaults to http://localhost:<PORT>; in prod, set to the Fly hostname.
+// In dev, defaults to http://localhost:<PORT>; in prod, set to the Coolify domain.
 export const PUBLIC_BASE_URL =
   process.env.PUBLIC_BASE_URL ?? `http://localhost:${SERVER_PORT}`;
 
