@@ -41,21 +41,28 @@ export async function loginWithCredentials(
     clearTimeout(timer);
   }
 
-  const body = await res.json() as { success: boolean; message?: string; data?: { authToken: string } };
+  const body = await res.json() as { success: boolean; error?: string; message?: string; data?: { authToken: string } };
+
+  // The identity server reports failures in `body.error` (observed:
+  // { success:false, error:"User Not Found" }). Read that first so the real
+  // reason reaches the user/logs — `message` is a forward-compat fallback.
+  // Previously every branch read only `body.message`, masking every failure as
+  // "Invalid email or password" and making login impossible to diagnose.
+  const serverError = body.error ?? body.message;
 
   if (res.status === 401) {
-    throw new Error(body.message ?? "Invalid email or password");
+    throw new Error(serverError ?? "Invalid email or password");
   }
   if (res.status === 403) {
-    throw new Error(body.message ?? "Account not confirmed. Check your email for a confirmation link.");
+    throw new Error(serverError ?? "Account not confirmed. Check your email for a confirmation link.");
   }
   if (!res.ok) {
-    throw new Error(body.message ?? `Login failed with status ${res.status}`);
+    throw new Error(serverError ?? `Login failed with status ${res.status}`);
   }
 
   const authToken = body.data?.authToken;
   if (!body.success || authToken === undefined) {
-    throw new Error(body.message ?? "Login failed — no token returned");
+    throw new Error(serverError ?? "Login failed — no token returned");
   }
 
   return { authToken, email: email.toLowerCase().trim() };
