@@ -12,6 +12,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
+import { paginationShape } from "./_shared.js";
 
 export function registerCreativeAssetGroupTools(server: McpServer): void {
 
@@ -29,11 +30,7 @@ Params:
   - limit: max results (1–100, default 25)
   - offset: pagination offset (default 0)
   - fields: extra item fields to include beyond { id, name } plus status fields`,
-    inputSchema: z.object({
-      limit: z.number().int().min(1).max(100).default(25),
-      offset: z.number().int().min(0).default(0),
-      fields: z.array(z.string()).optional().describe("Extra item fields to include beyond { id, name } plus status fields"),
-    }).strict(),
+    inputSchema: z.object({ ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ limit, offset, fields }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);

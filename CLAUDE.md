@@ -39,8 +39,12 @@ src/
 └── tools/
     ├── authTools.ts          # auth_login, auth_status, auth_logout
     ├── networkTools.ts       # network_list, network_switch, network_refresh
+    ├── _shared.ts            # paginationShape / includeShape / READONLY_ANNOTATIONS + getEntityWithIncludes — reuse these in new tools
     └── (add new domain tool files here)
 ```
+
+`get_*` tools take `include: ['parents']` (via `includeShape` + `getEntityWithIncludes`)
+instead of separate `get_*_parents` tools — keeps the per-request tool surface small.
 
 ---
 
@@ -297,10 +301,9 @@ registerYourDomainTools(server);
 
 ### Templates (M1)
 - `list_templates` — `GET /api/templates` (paginated, limit/offset)
-- `get_template` — `GET /api/templates/{id}` — includes HTML + CSS source
+- `get_template` — `GET /api/templates/{id}` — includes HTML + CSS source; `include: ['parents']` adds parent hierarchy
 - `get_template_versions` — `GET /api/templates/{id}/versions`
 - `get_template_version` — `GET /api/templates/{id}/versions/{version}`
-- `get_template_parents` — `GET /api/templates/{id}/parents`
 - `render_template` — composite: fetch template + CAG schema → generate mock ads → return HTML + CSS
 
 ### Creative Asset Groups (M1)
@@ -309,41 +312,34 @@ registerYourDomainTools(server);
 
 ### Zones (M2)
 - `list_zones` — `GET /api/zones` (paginated)
-- `get_zone` — `GET /api/zones/{id}`
-- `get_zone_parents` — `GET /api/zones/{id}/parents`
+- `get_zone` — `GET /api/zones/{id}` — `include: ['parents']` adds parent hierarchy
 - `get_zone_report` — `GET /api/zones/{id}/report` (params: resolution, startDate, endDate)
 - `zone_load_trace` — composite: fan-out across zone + parents + ads/ad + debug + ads details + template → structured diagnostic blob
 
 ### Ads (M2)
 - `list_ads` — `GET /api/ads` (paginated)
-- `get_ad` — `GET /api/ads/{id}`
-- `get_ad_parents` — `GET /api/ads/{id}/parents`
+- `get_ad` — `GET /api/ads/{id}` — `include: ['parents']` adds parent hierarchy
 - `get_zone_ads` — `GET /api/ads/ad?zoneId=` — ad-serving endpoint, returns { ads, template }
 
 ### Ad Groups (M2)
 - `list_ad_groups` — `GET /api/ad-groups` (paginated)
-- `get_ad_group` — `GET /api/ad-groups/{id}`
-- `get_ad_group_parents` — `GET /api/ad-groups/{id}/parents`
+- `get_ad_group` — `GET /api/ad-groups/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Creatives (M2)
 - `list_creatives` — `GET /api/creatives` (paginated)
-- `get_creative` — `GET /api/creatives/{id}`
-- `get_creative_parents` — `GET /api/creatives/{id}/parents`
+- `get_creative` — `GET /api/creatives/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Campaigns (M2)
 - `list_campaigns` — `GET /api/campaigns` (paginated)
-- `get_campaign` — `GET /api/campaigns/{id}`
-- `get_campaign_parents` — `GET /api/campaigns/{id}/parents`
+- `get_campaign` — `GET /api/campaigns/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Channels (M2)
 - `list_channels` — `GET /api/channels` (paginated)
-- `get_channel` — `GET /api/channels/{id}`
-- `get_channel_parents` — `GET /api/channels/{id}/parents`
+- `get_channel` — `GET /api/channels/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Sites (M2)
 - `list_sites` — `GET /api/sites` (paginated)
-- `get_site` — `GET /api/sites/{id}`
-- `get_site_parents` — `GET /api/sites/{id}/parents`
+- `get_site` — `GET /api/sites/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Publishers (M2)
 - `list_publishers` — `GET /api/publishers` (paginated)

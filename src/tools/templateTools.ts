@@ -5,7 +5,6 @@
  * get_template      — GET /api/templates/{id}
  * get_template_versions — GET /api/templates/{id}/versions
  * get_template_version  — GET /api/templates/{id}/versions/{version}
- * get_template_parents  — GET /api/templates/{id}/parents
  * render_template   — composite: fetch template + CAG → inject mock ads → return HTML+CSS
  * get_template_preview_bundle  — composite: template + CAG + zone-resolved (or synthesized) mockAds
  */
@@ -14,6 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
+import { paginationShape, includeShape, getEntityWithIncludes } from "./_shared.js";
 
 export function registerTemplateTools(server: McpServer): void {
 
@@ -29,11 +29,7 @@ Params:
   - limit: max results (1–100, default 25)
   - offset: pagination offset (default 0)
   - fields: extra item fields to include beyond { id, name } plus status fields`,
-    inputSchema: z.object({
-      limit: z.number().int().min(1).max(100).default(25),
-      offset: z.number().int().min(0).default(0),
-      fields: z.array(z.string()).optional().describe("Extra item fields to include beyond { id, name } plus status fields"),
-    }).strict(),
+    inputSchema: z.object({ ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ limit, offset, fields }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
@@ -60,9 +56,10 @@ Returns the template object with id, name, html, css, creativeAssetGroupId, and 
 Use 'render_template' to preview it with mock ad data.`,
     inputSchema: z.object({
       id: z.string().describe("Template ID"),
+      ...includeShape,
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }, extra) => {
+  }, async ({ id, include }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -70,7 +67,7 @@ Use 'render_template' to preview it with mock ad data.`,
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
     try {
-      const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}`);
+      const data = await getEntityWithIncludes(v.session, "/api/templates", id, include);
       const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
@@ -127,29 +124,6 @@ Use 'get_template_versions' first to see available version numbers.`,
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}/versions/${version}`);
       const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
-    } catch (err) {
-      return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
-    }
-  });
-
-  // ── get_template_parents ────────────────────────────────────────────────────
-  server.registerTool("get_template_parents", {
-    title: "Get Template Parents",
-    description: `Fetch the parent entities of a template (e.g. which network it belongs to).`,
-    inputSchema: z.object({
-      id: z.string().describe("Template ID"),
-    }).strict(),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId);
-    if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
-
-    const v = await validateSession(sessionId);
-    if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
-
-    try {
-      const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}/parents`);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }

@@ -3,13 +3,13 @@
  *
  * list_channels        — GET /api/channels (paginated)
  * get_channel          — GET /api/channels/{id}
- * get_channel_parents  — GET /api/channels/{id}/parents
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
+import { paginationShape, includeShape, getEntityWithIncludes } from "./_shared.js";
 
 export function registerChannelTools(server: McpServer): void {
 
@@ -17,11 +17,7 @@ export function registerChannelTools(server: McpServer): void {
   server.registerTool("list_channels", {
     title: "List Channels",
     description: `List all channels on the active network with limit/offset pagination.`,
-    inputSchema: z.object({
-      limit: z.number().int().min(1).max(100).default(25),
-      offset: z.number().int().min(0).default(0),
-      fields: z.array(z.string()).optional().describe("Extra item fields to include beyond { id, name } plus status fields"),
-    }).strict(),
+    inputSchema: z.object({ ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ limit, offset, fields }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
@@ -45,9 +41,10 @@ export function registerChannelTools(server: McpServer): void {
     description: `Fetch full configuration of a channel by ID.`,
     inputSchema: z.object({
       id: z.string().describe("Channel ID"),
+      ...includeShape,
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }, extra) => {
+  }, async ({ id, include }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -55,31 +52,7 @@ export function registerChannelTools(server: McpServer): void {
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
     try {
-      const data = await workApiRequest<unknown>(v.session, "GET", `/api/channels/${id}`);
-      const text = JSON.stringify(data);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
-    } catch (err) {
-      return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
-    }
-  });
-
-  // ── get_channel_parents ──────────────────────────────────────────────────────
-  server.registerTool("get_channel_parents", {
-    title: "Get Channel Parents",
-    description: `Returns parent hierarchy: publisher → network.`,
-    inputSchema: z.object({
-      id: z.string().describe("Channel ID"),
-    }).strict(),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId);
-    if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
-
-    const v = await validateSession(sessionId);
-    if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
-
-    try {
-      const data = await workApiRequest<unknown>(v.session, "GET", `/api/channels/${id}/parents`);
+      const data = await getEntityWithIncludes(v.session, "/api/channels", id, include);
       const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
