@@ -60,6 +60,20 @@ describe("resources (T1-3 / T4-6)", () => {
     expect(out.contents[0].text).toMatch(/^Error:/);
   });
 
+  it("records a usage event when a resource is read", async () => {
+    const { getEventSink } = await import("../services/usageAnalytics.js");
+    api.on("GET", /^\/api\/campaigns\/c9$/, () => ({ id: "c9", name: "C" }));
+    const server = build();
+    const tmpl = server._registeredResourceTemplates["campaign-by-id"];
+
+    await tmpl.readCallback(new URL("lincx://campaign/c9"), { id: "c9" }, extra);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const recent = await (await getEventSink()).readRecent(5);
+    const rec = recent.find((e) => e.type === "resource" && e.name === "campaign-by-id");
+    expect(rec?.status).toBe("ok");
+  });
+
   it("e2e: a real client sees lincx://networks in resources/list and can read it", async () => {
     const server = new McpServer({ name: "test", version: "0.0.0" });
     registerResources(server);

@@ -23,6 +23,7 @@ import type { ServerRequest, ServerNotification } from "@modelcontextprotocol/sd
 import type { Session } from "../types.js";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError } from "../services/workApi.js";
+import { recordEvent, classifyResult } from "../services/usageAnalytics.js";
 
 type ResExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -40,6 +41,28 @@ const json = (uri: URL, value: unknown) => ({
 const plain = (uri: URL, text: string) => ({
   contents: [{ uri: uri.href, mimeType: "text/plain", text }],
 });
+
+// Wrap a resource read so it emits one usage event (fire-and-forget).
+async function recorded(
+  name: string,
+  extra: ResExtra,
+  variables: Record<string, unknown> | undefined,
+  read: () => Promise<{ contents: Array<{ uri: string; mimeType: string; text: string }> }>,
+): Promise<{ contents: Array<{ uri: string; mimeType: string; text: string }> }> {
+  const start = Date.now();
+  const result = await read();
+  // Resource errors are returned as a text/plain "Error: ..." body — reuse the
+  // tool classifier by adapting the contents text into the shape it expects.
+  const { status, error_kind } = classifyResult({ content: [{ text: result.contents[0]?.text ?? "" }] });
+  recordEvent({
+    type: "resource", name, status, error_kind,
+    duration_ms: Date.now() - start,
+    response_chars: JSON.stringify(result).length,
+    params_keys: variables ? Object.keys(variables) : [],
+    mcp_session_id: extra?.sessionId,
+  });
+  return result;
+}
 
 // entity URI segment → Work API base path (mirrors the get_<entity> tools).
 const ENTITY_PATHS: Record<string, string> = {
@@ -68,11 +91,11 @@ export function registerResources(server: McpServer): void {
       description: "Networks the current session can access, plus which one is active. Use the network_switch tool to change the active network.",
       mimeType: "application/json",
     },
-    async (uri, extra) => {
+    async (uri, extra) => recorded("networks", extra, undefined, async () => {
       const r = await requireSession(extra);
       if ("error" in r) return plain(uri, r.error);
       return json(uri, { active_network: r.session.active_network, networks: r.session.networks ?? [] });
-    },
+    }),
   );
 
   // ── lincx://{entity}/{id} ─────────────────────────────────────────────────────
@@ -85,7 +108,7 @@ export function registerResources(server: McpServer): void {
         description: `A single ${seg} by id — equivalent to GET ${basePath}/{id}.`,
         mimeType: "application/json",
       },
-      async (uri, variables, extra) => {
+      async (uri, variables, extra) => recorded(`${seg}-by-id`, extra, variables, async () => {
         const r = await requireSession(extra);
         if ("error" in r) return plain(uri, r.error);
         const id = String(variables.id);
@@ -95,7 +118,7 @@ export function registerResources(server: McpServer): void {
         } catch (err) {
           return plain(uri, handleWorkApiError(err));
         }
-      },
+      }),
     );
   }
 }
