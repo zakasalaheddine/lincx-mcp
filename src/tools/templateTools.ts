@@ -10,7 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, fitEntityToText, stripListItems, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
 import { paginationShape, includeShape, getEntityWithIncludes } from "./_shared.js";
 
 export function registerTemplateTools(server: McpServer): void {
@@ -65,8 +65,7 @@ Returns the template object with id, name, html, css, creativeAssetGroupId, and 
 
     try {
       const data = await getEntityWithIncludes(v.session, "/api/templates", id, include);
-      const text = JSON.stringify(data);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      return { content: [{ type: "text" as const, text: fitEntityToText(data) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
@@ -92,8 +91,7 @@ Use 'get_template_version' to fetch the HTML + CSS of a specific version.`,
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}/versions`);
-      const text = JSON.stringify(stripListItems(data));
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      return { content: [{ type: "text" as const, text: fitEntityToText(stripListItems(data)) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
@@ -119,8 +117,7 @@ Use 'get_template_versions' first to see available version numbers.`,
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}/versions/${version}`);
-      const text = JSON.stringify(data);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      return { content: [{ type: "text" as const, text: fitEntityToText(data) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }

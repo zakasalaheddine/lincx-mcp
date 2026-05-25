@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, fitEntityToText, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
 import { paginationShape, includeShape, getEntityWithIncludes } from "./_shared.js";
 
 export function registerChannelTools(server: McpServer): void {
@@ -53,8 +53,7 @@ export function registerChannelTools(server: McpServer): void {
 
     try {
       const data = await getEntityWithIncludes(v.session, "/api/channels", id, include);
-      const text = JSON.stringify(data);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      return { content: [{ type: "text" as const, text: fitEntityToText(data) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }

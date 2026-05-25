@@ -274,3 +274,72 @@ export function truncateIfNeeded(text: string, total?: number): string {
     : "\n\n[Truncated. Use pagination parameters to see more.]";
   return text.slice(0, CHARACTER_LIMIT) + suffix;
 }
+
+/**
+ * Serialize a single entity to valid JSON under CHARACTER_LIMIT.
+ *
+ * The old path (`truncateIfNeeded(JSON.stringify(entity))`) sliced the JSON
+ * string mid-structure when an entity was too big (e.g. a template's html/css),
+ * producing UNPARSEABLE output below the 30k tool-guard threshold. This instead
+ * elides the largest STRING leaves one at a time, largest-first, until the result
+ * fits — and ALWAYS emits valid JSON. A `_truncated` note lists the elided field
+ * paths (e.g. `html`, `entity.css`) so the caller knows what was dropped and can
+ * fetch full fidelity via the entity's resource URI (`lincx://{entity}/{id}`) or
+ * a more specific tool (e.g. `get_template_version`).
+ *
+ * Invariant: `JSON.parse(fitEntityToText(x))` never throws, for any input.
+ */
+export function fitEntityToText(data: unknown): string {
+  let text = JSON.stringify(data ?? null);
+  if (text.length <= CHARACTER_LIMIT) return text;
+
+  // Reserve headroom for the _truncated note appended after eliding.
+  const budget = CHARACTER_LIMIT - 400;
+  // Deep clone — data came from JSON (no cycles/functions), so this is safe.
+  const clone: unknown = JSON.parse(text);
+
+  type Leaf = { parent: Record<string, unknown> | unknown[]; key: string | number; path: string; length: number };
+  const leaves: Leaf[] = [];
+  const walk = (node: unknown, path: string): void => {
+    if (Array.isArray(node)) {
+      node.forEach((v, i) => {
+        const p = `${path}[${i}]`;
+        if (typeof v === "string") leaves.push({ parent: node, key: i, path: p, length: v.length });
+        else if (v && typeof v === "object") walk(v, p);
+      });
+    } else if (node && typeof node === "object") {
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+        const p = path ? `${path}.${k}` : k;
+        if (typeof v === "string") leaves.push({ parent: node as Record<string, unknown>, key: k, path: p, length: v.length });
+        else if (v && typeof v === "object") walk(v, p);
+      }
+    }
+  };
+  walk(clone, "");
+  leaves.sort((a, b) => b.length - a.length);
+
+  // Elide the largest string leaf, re-measure, repeat — never over-elide in a batch.
+  const elided: string[] = [];
+  for (const leaf of leaves) {
+    (leaf.parent as Record<string | number, unknown>)[leaf.key] = `[elided: ${leaf.length} chars]`;
+    elided.push(leaf.path);
+    text = JSON.stringify(clone);
+    if (text.length <= budget) break;
+  }
+
+  const note = {
+    elided,
+    reason: `Response exceeded ${CHARACTER_LIMIT} chars; large string fields were elided. Fetch full content via the entity's resource URI (lincx://{entity}/{id}) or a more specific tool.`,
+  };
+
+  if (clone && typeof clone === "object" && !Array.isArray(clone)) {
+    (clone as Record<string, unknown>)._truncated = note;
+    text = JSON.stringify(clone);
+    if (text.length <= CHARACTER_LIMIT) return text;
+    // Eliding strings wasn't enough (huge non-string structure) — last-resort note.
+    return JSON.stringify({ _truncated: { ...note, partial: true } });
+  }
+  // Array/primitive root — wrap so the note can ride along as valid JSON.
+  const wrapped = JSON.stringify({ data: clone, _truncated: note });
+  return wrapped.length <= CHARACTER_LIMIT ? wrapped : JSON.stringify({ _truncated: { ...note, partial: true } });
+}

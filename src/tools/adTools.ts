@@ -9,7 +9,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, fitEntityToText, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
 import { paginationShape, includeShape, getEntityWithIncludes } from "./_shared.js";
 
 export function registerAdTools(server: McpServer): void {
@@ -54,8 +54,7 @@ export function registerAdTools(server: McpServer): void {
 
     try {
       const data = await getEntityWithIncludes(v.session, "/api/ads", id, include);
-      const text = JSON.stringify(data);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      return { content: [{ type: "text" as const, text: fitEntityToText(data) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
@@ -95,8 +94,7 @@ export function registerAdTools(server: McpServer): void {
       if (scoreKey !== undefined) params.scoreKey = scoreKey;
 
       const data = await workApiRequest<unknown>(v.session, "GET", debug ? "/api/ads/ad/debug" : "/api/ads/ad", { params });
-      const text = JSON.stringify(data);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      return { content: [{ type: "text" as const, text: fitEntityToText(data) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }

@@ -11,7 +11,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, fitEntityToText, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
 import { paginationShape } from "./_shared.js";
 
 export function registerCreativeAssetGroupTools(server: McpServer): void {
@@ -70,8 +70,7 @@ Use this with 'get_template' to understand what mock ad data a template expects.
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/creative-asset-groups/${id}`);
-      const text = JSON.stringify(data);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      return { content: [{ type: "text" as const, text: fitEntityToText(data) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
