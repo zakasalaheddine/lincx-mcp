@@ -30,6 +30,7 @@ import { registerAdvertiserTools } from "./tools/advertiserTools.js";
 import { registerExperienceTools } from "./tools/experienceTools.js";
 import { registerReportingTools } from "./tools/reportingTools.js";
 import { mcpLimiter } from "./middleware/rateLimit.js";
+import { installToolGuards } from "./middleware/toolGuard.js";
 import { SERVER_PORT, TRANSPORT, IS_PRODUCTION, PUBLIC_BASE_URL } from "./constants.js";
 import {
   resolveLincxSessionFromBearer,
@@ -61,6 +62,10 @@ registerPublisherTools(server);
 registerAdvertiserTools(server);
 registerExperienceTools(server);
 registerReportingTools(server);
+
+// Wrap every registered tool handler with the response-size guard + metrics
+// logging. Must run after all register*Tools() calls above.
+installToolGuards(server);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // EXPRESS

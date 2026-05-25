@@ -1,5 +1,10 @@
 export const CHARACTER_LIMIT = 25_000;
 
+// Hard ceiling on a single serialized tool response. Responses above this are
+// dropped and replaced with a structured `response_too_large` error so one heavy
+// payload can't wedge the event loop / saturate the SSE stream.
+export const RESPONSE_SIZE_LIMIT = 30_000;
+
 // 7-day session TTL in Redis / in-memory store
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 
