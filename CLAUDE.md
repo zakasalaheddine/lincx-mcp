@@ -355,7 +355,7 @@ registerYourDomainTools(server);
 
 ### Reporting (M3)
 - `get_event_stats_keys` — `GET /api/event-stats` — unique event key-values for last 31 days (use to discover filter dimensions)
-- `report_query` — composite: `GET /api/reports/{dimensionSetId}` with date range, resolution (`day`/`hour`), dimension filters (`d`), optional test-mode
+- `report_query` — `GET /api/reports/{dimensionSetId}` with required date range. The upstream API always returns hourly-granular rows; this tool **aggregates server-side** and returns compact rolled-up sums (grand total by default, or grouped by `groupBy` e.g. `['zone']` / `['zone','date']`). `raw: true` returns the unaggregated rows. Server-side rollup keeps a week of data (hundreds of rows) under the response-size limit instead of truncating — the pattern to follow for any high-volume endpoint.
 
 ### Advertisers (M3)
 - `list_advertisers` — `GET /api/advertisers` (paginated)
