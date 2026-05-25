@@ -50,7 +50,18 @@ async function recorded(
   read: () => Promise<{ contents: Array<{ uri: string; mimeType: string; text: string }> }>,
 ): Promise<{ contents: Array<{ uri: string; mimeType: string; text: string }> }> {
   const start = Date.now();
-  const result = await read();
+  let result: { contents: Array<{ uri: string; mimeType: string; text: string }> };
+  try {
+    result = await read();
+  } catch (err) {
+    recordEvent({
+      type: "resource", name, status: "error", error_kind: "other",
+      duration_ms: Date.now() - start, response_chars: 0,
+      params_keys: variables ? Object.keys(variables) : [],
+      mcp_session_id: extra?.sessionId,
+    });
+    throw err;
+  }
   // Resource errors are returned as a text/plain "Error: ..." body — reuse the
   // tool classifier by adapting the contents text into the shape it expects.
   const { status, error_kind } = classifyResult({ content: [{ text: result.contents[0]?.text ?? "" }] });
