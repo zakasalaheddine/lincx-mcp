@@ -116,6 +116,85 @@ export function stripListItems(data: unknown): unknown {
   return data;
 }
 
+/**
+ * Standard envelope returned by every list_* tool.
+ * Items are projected to a minimal field set to keep responses small.
+ */
+export interface ListEnvelope {
+  items: unknown[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
+// Status-ish fields worth surfacing in a list projection (at most 2 are kept).
+const STATUS_FIELDS = ["status", "is_active", "active", "enabled", "state", "archived"];
+
+function projectListItem(item: unknown, extraFields: string[]): unknown {
+  if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
+  const obj = item as Record<string, unknown>;
+
+  const keep: string[] = [];
+  for (const base of ["id", "name"]) {
+    if (base in obj) keep.push(base);
+  }
+  let statusAdded = 0;
+  for (const s of STATUS_FIELDS) {
+    if (statusAdded >= 2) break;
+    if (s in obj) { keep.push(s); statusAdded++; }
+  }
+  for (const f of extraFields) {
+    if (f in obj && !keep.includes(f)) keep.push(f);
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const k of keep) out[k] = obj[k];
+  return out;
+}
+
+/**
+ * Pull the items array and a total count (when the API provides one) out of an
+ * unknown list response. Handles bare arrays and objects with one array property
+ * (e.g. { items: [...], total: N } or { data: [...] }).
+ */
+function extractItemsAndTotal(data: unknown): { items: unknown[]; total: number | null } {
+  if (Array.isArray(data)) return { items: data, total: null };
+  if (typeof data === "object" && data !== null) {
+    const obj = data as Record<string, unknown>;
+    let total: number | null = null;
+    for (const k of ["total", "totalCount", "total_count", "count"]) {
+      if (typeof obj[k] === "number") { total = obj[k] as number; break; }
+    }
+    for (const k of Object.keys(obj)) {
+      if (Array.isArray(obj[k])) return { items: obj[k] as unknown[], total };
+    }
+  }
+  return { items: [], total: null };
+}
+
+/**
+ * Build the standard list envelope: minimal-field items plus pagination metadata.
+ * When the upstream API reports a total it is used directly; otherwise total is a
+ * lower bound (offset + page size) and has_more is inferred from a full page.
+ */
+export function buildListEnvelope(
+  data: unknown,
+  opts: { limit: number; offset: number; fields?: string[] }
+): ListEnvelope {
+  const { limit, offset, fields = [] } = opts;
+  const { items, total } = extractItemsAndTotal(data);
+  const projected = items.map((it) => projectListItem(it, fields));
+  const hasMore = total !== null ? offset + items.length < total : items.length >= limit;
+  return {
+    items: projected,
+    total: total ?? offset + items.length,
+    limit,
+    offset,
+    has_more: hasMore,
+  };
+}
+
 export function truncateIfNeeded(text: string, total?: number): string {
   if (text.length <= CHARACTER_LIMIT) return text;
   const suffix = total

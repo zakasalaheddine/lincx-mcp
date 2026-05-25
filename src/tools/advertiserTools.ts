@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope } from "../services/workApi.js";
 
 export function registerAdvertiserTools(server: McpServer): void {
 
@@ -17,11 +17,12 @@ export function registerAdvertiserTools(server: McpServer): void {
     title: "List Advertisers",
     description: `List all advertisers on the active network with limit/offset pagination.`,
     inputSchema: z.object({
-      limit: z.number().int().min(1).max(100).default(20),
+      limit: z.number().int().min(1).max(100).default(25),
       offset: z.number().int().min(0).default(0),
+      fields: z.array(z.string()).optional().describe("Extra item fields to include beyond { id, name } plus status fields"),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset }, extra) => {
+  }, async ({ limit, offset, fields }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -30,7 +31,7 @@ export function registerAdvertiserTools(server: McpServer): void {
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", "/api/advertisers", { params: { limit, offset } });
-      const text = JSON.stringify(stripListItems(data), null, 2);
+      const text = JSON.stringify(buildListEnvelope(data, { limit, offset, fields }), null, 2);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
