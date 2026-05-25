@@ -351,7 +351,7 @@ must equal the URL the client hits — left unset locally it defaults to
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `get_event_stats_keys` | — | Returns unique event key-value pairs collected by the active network over the last 31 days. Use this to discover what filter dimensions are available before calling `report_query`. |
-| `report_query` | `dimensionSetId`, `startDate?`, `endDate?`, `resolution?`, `dimensions?`, `testMode?` | Composite reporting tool: runs `GET /api/reports/{dimensionSetId}` with the given date range and filters. Returns a summary line (row count, resolution) followed by the raw report data. `resolution` is `day` (default) or `hour`. `dimensions` is a list of dimension keys to aggregate by. |
+| `report_query` | `dimensionSetId`, `startDate`, `endDate`, `groupBy?`, `raw?`, `testMode?` | Runs `GET /api/reports/{dimensionSetId}` and **aggregates server-side**, returning compact rolled-up metric sums. `startDate`/`endDate` (YYYY-MM-DD) are required. Omit `groupBy` for a grand total, or pass it for breakdowns (`["zone"]`, `["zone","date"]`, `["advertiser"]`, …). `raw: true` returns the unaggregated hourly rows (large). |
 
 ---
 
@@ -462,14 +462,110 @@ registerYourDomainTools(server, getSessionId);
 
 ---
 
-## Deployment
+## Deployment (Coolify)
 
-Deployed on [Coolify](https://coolify.io) as a Docker Compose stack. See the
-"Deployment" section in `CLAUDE.md` for the full setup. Short version:
+Deployed on [Coolify](https://coolify.io) as a **Docker Compose** stack defined by
+[`docker-compose.yml`](docker-compose.yml) — an `app` container (built from the
+`Dockerfile`) plus a bundled `redis`. Coolify builds the image, provisions Redis,
+assigns an HTTPS domain via its Traefik proxy, and terminates TLS. You expose a
+single URL (`https://<your-domain>/mcp`); clients run the OAuth dance themselves.
 
-1. New Resource → **Docker Compose** → point at this repo (`docker-compose.yml`).
-2. Set `WORK_API_BASE_URL` in the Coolify Environment Variables tab.
-3. Enable **Auto Deploy** + add the webhook to the repo — pushes to `main` redeploy.
+### Prerequisites
 
-The `Dockerfile` and `docker-compose.yml` in this repo are the source of truth.
-Coolify provisions the bundled Redis, assigns the domain, and terminates TLS.
+- A running Coolify instance (self-hosted).
+- This repository accessible to Coolify (GitHub connection or public repo URL).
+
+### Step-by-step
+
+1. **Create the resource.** Coolify → your Project → **+ New** → **Docker Compose**.
+   Connect this Git repository, pick branch **`main`**, and set the compose file
+   path to **`docker-compose.yml`**.
+
+2. **Set environment variables** (resource → **Environment Variables** tab). Only
+   one is required — see the table below:
+   ```
+   WORK_API_BASE_URL=https://api.lincx.com
+   # IDENTITY_SERVER=https://ix-id.lincx.la   # optional; this is the default
+   ```
+
+3. **Domain & TLS.** The compose file declares `SERVICE_FQDN_APP_3000`, which marks
+   the `app` service as web-facing on port 3000. See
+   [Setting the domain](#setting-the-domain) below — for a Docker Compose resource
+   the domain is set **per-service**, not in a single top-level field.
+
+4. **Deploy.** Click **Deploy**. Coolify builds the Dockerfile, starts `redis` then
+   `app` (the app waits for Redis's healthcheck), and marks the stack healthy once
+   `GET /health` returns 200.
+
+5. **Verify.**
+   ```bash
+   curl https://<your-domain>/health        # → {"status":"ok",...}
+   curl -i https://<your-domain>/mcp        # → 401 + WWW-Authenticate: Bearer ...
+   ```
+   The `401` on `/mcp` is correct — it's the OAuth challenge clients discover from.
+
+6. **Auto-deploy (optional).** Enable **Auto Deploy** on the resource and add the
+   generated webhook to the repo (GitHub → Settings → Webhooks). Pushes to `main`
+   then redeploy automatically — no GitHub Actions workflow is needed or present.
+
+7. **Connect a client.** Point any MCP client at `https://<your-domain>/mcp`
+   (see [Connecting from an MCP client](#connecting-from-an-mcp-client)).
+
+### Setting the domain
+
+Unlike a plain Application, a **Docker Compose** resource has **no single top-level
+domain field** — the domain is set **per service**, and the field only appears
+**after Coolify parses your `docker-compose.yml`**. To set it:
+
+1. Open the resource → **Configuration**. Coolify lists the parsed services — you'll
+   see **`app`** and **`redis`**.
+2. The **`app`** service has its own **Domains** field (it's web-facing because the
+   compose declares `SERVICE_FQDN_APP_3000`). Enter the full URL there, e.g.
+   `https://mcp.yourdomain.com`.
+3. **Save**, then **Redeploy**. `PUBLIC_BASE_URL` follows this value automatically
+   (it's `https://${SERVICE_FQDN_APP}`), so OAuth/login redirects stay correct.
+
+**Don't see a Domains field?** Two common causes:
+
+- **No wildcard domain on the instance.** Automatic subdomain generation requires a
+  wildcard domain configured under **Settings → Configuration → Instance Wildcard
+  Domain**. Without it, nothing is auto-generated — but you can still type your own
+  domain in the per-service Domains field above.
+- **Compose not parsed yet.** Save/reload the compose so the service list populates;
+  the `app` service's Domains field appears once Coolify has read the file.
+
+**DNS & TLS:** point an `A` record for your domain at the Coolify server's IP. Coolify
+then provisions a Let's Encrypt certificate automatically. (The `SERVICE_FQDN_*` /
+`SERVICE_URL_*` magic vars are **not** editable in the Environment Variables tab — the
+per-service Domains field is the supported way to pin a custom domain.)
+
+### Environment variables
+
+| Variable | Required | Set by | Value / default | Purpose |
+|----------|----------|--------|-----------------|---------|
+| `WORK_API_BASE_URL` | **Yes** | **You** (Coolify UI) | e.g. `https://api.lincx.com` | Base URL for all Work API calls. The deploy **fails fast** if this is unset (`:?` guard in compose). |
+| `IDENTITY_SERVER` | No | You (Coolify UI) | `https://ix-id.lincx.la` | Lincx identity server used for login. Override only if it changes. |
+| `NODE_ENV` | — | compose | `production` | Disables the `/dev/*` debug routes. |
+| `PORT` | — | compose | `3000` | Port the app listens on; the proxy routes here. |
+| `PUBLIC_BASE_URL` | — | compose | `https://${SERVICE_FQDN_APP}` | Public base used to build OAuth/login URLs. Must equal the domain clients hit — derived from the Coolify domain automatically. |
+| `REDIS_URL` | — | compose | `redis://default:${SERVICE_PASSWORD_REDIS}@redis:6379` | Connection to the bundled Redis. |
+| `SERVICE_FQDN_APP_3000` | — | **Coolify** (magic) | generated | Declaring this key makes Coolify generate the public domain and route the proxy to port 3000. |
+| `SERVICE_FQDN_APP` | — | Coolify (magic) | generated | The generated domain (no scheme); consumed by `PUBLIC_BASE_URL`. |
+| `SERVICE_PASSWORD_REDIS` | — | Coolify (magic) | generated once | Random Redis password, shared between the `redis` server and the app's `REDIS_URL`. |
+
+In short: **you only set `WORK_API_BASE_URL`** (and optionally `IDENTITY_SERVER`).
+Everything else is wired by the compose file or generated by Coolify.
+
+### Notes
+
+- **Sessions persist.** Redis writes to a named volume (`redis-data`), so OAuth
+  tokens and Lincx sessions survive container restarts and redeploys.
+- **Revoking access.** To cut off all clients, stop the `app` in Coolify or rotate
+  Redis (which invalidates every OAuth access/refresh token).
+- **Subsequent deploys.** Push to `main` (with the webhook) or click **Redeploy**.
+- **Inspect sessions.** Use Coolify's `redis` container terminal:
+  `redis-cli -a "$SERVICE_PASSWORD_REDIS" keys "lincx:session:*" | wc -l`.
+
+> The `docker-compose.yml` is intended for Coolify — a plain local `docker compose up`
+> won't expand the `SERVICE_*` magic vars. For local runs use `npm run dev` /
+> `npm run dev:local` (see [Run](#4-run)).
