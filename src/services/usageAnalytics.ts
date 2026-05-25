@@ -75,28 +75,29 @@ export interface EventSink {
 }
 
 const EVENTS_KEY = "usage:events";
-let _sink: EventSink | null = null;
+let _sinkP: Promise<EventSink> | null = null;
 
-export async function getEventSink(): Promise<EventSink> {
-  if (_sink) return _sink;
-
-  if (REDIS_URL) {
-    const { Redis } = await import("ioredis");
-    const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
-    _sink = {
-      async append(event) {
-        await redis.lpush(EVENTS_KEY, JSON.stringify(event));
-        await redis.ltrim(EVENTS_KEY, 0, USAGE_EVENT_CAP - 1);
-      },
-      async readRecent(limit) {
-        const raw = await redis.lrange(EVENTS_KEY, 0, Math.max(0, limit - 1));
-        return raw.map((r) => JSON.parse(r) as UsageEvent);
-      },
-    };
-    console.error("[Analytics] Using Redis event log");
-  } else {
+export function getEventSink(): Promise<EventSink> {
+  if (_sinkP) return _sinkP;
+  _sinkP = (async (): Promise<EventSink> => {
+    if (REDIS_URL) {
+      const { Redis } = await import("ioredis");
+      const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
+      console.error("[Analytics] Using Redis event log");
+      return {
+        async append(event) {
+          await redis.lpush(EVENTS_KEY, JSON.stringify(event));
+          await redis.ltrim(EVENTS_KEY, 0, USAGE_EVENT_CAP - 1);
+        },
+        async readRecent(limit) {
+          const raw = await redis.lrange(EVENTS_KEY, 0, Math.max(0, limit - 1));
+          return raw.map((r) => JSON.parse(r) as UsageEvent);
+        },
+      };
+    }
     const buf: UsageEvent[] = []; // newest at index 0
-    _sink = {
+    console.error("[Analytics] No REDIS_URL — using in-memory event log (dev only)");
+    return {
       async append(event) {
         buf.unshift(event);
         if (buf.length > USAGE_EVENT_CAP) buf.length = USAGE_EVENT_CAP;
@@ -105,14 +106,13 @@ export async function getEventSink(): Promise<EventSink> {
         return buf.slice(0, limit);
       },
     };
-    console.error("[Analytics] No REDIS_URL — using in-memory event log (dev only)");
-  }
-  return _sink;
+  })();
+  return _sinkP;
 }
 
 // ── recordEvent ───────────────────────────────────────────────────────────────
 
-type RecordInput = Omit<UsageEvent, "ts" | "user_id" | "email">;
+export type RecordInput = Omit<UsageEvent, "ts" | "user_id" | "email">;
 
 /** Awaitable core — used by tests and by the fire-and-forget recordEvent. */
 export async function recordEventAsync(input: RecordInput): Promise<void> {
@@ -218,9 +218,15 @@ export function computeStats(events: UsageEvent[]): UsageStats {
   }
   recent.sort((a, b) => (bySession.get(b.session)!.at(-1)!.ts) - (bySession.get(a.session)!.at(-1)!.ts));
 
-  const tsList = events.map((e) => e.ts);
+  let oldest = Infinity;
+  let newest = -Infinity;
+  for (const e of events) {
+    if (e.ts < oldest) oldest = e.ts;
+    if (e.ts > newest) newest = e.ts;
+  }
+
   return {
-    window: { events: events.length, oldest_ts: tsList.length ? Math.min(...tsList) : 0, newest_ts: tsList.length ? Math.max(...tsList) : 0 },
+    window: { events: events.length, oldest_ts: events.length ? oldest : 0, newest_ts: events.length ? newest : 0 },
     tools, users, errors,
     sequences: { recent: recent.slice(0, 50), transitions },
   };
