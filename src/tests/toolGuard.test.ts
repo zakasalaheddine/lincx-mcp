@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { installToolGuards } from "../middleware/toolGuard.js";
 import { RESPONSE_SIZE_LIMIT } from "../constants.js";
+import { getEventSink } from "../services/usageAnalytics.js";
 
 // The guard logs one JSON metrics line per call to stderr — silence it in tests.
 beforeEach(() => vi.spyOn(console, "error").mockImplementation(() => {}));
@@ -53,5 +54,25 @@ describe("installToolGuards (T2-4 response-size guard)", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tool = (server as any)._registeredTools["boom"];
     await expect(tool.handler({}, { sessionId: "s" })).rejects.toThrow("kaboom");
+  });
+});
+
+describe("installToolGuards records usage events", () => {
+  it("records a returned Error: result as a usage error", async () => {
+    const server = new McpServer({ name: "t", version: "0.0.0" });
+    server.registerTool("err_tool", { description: "t", inputSchema: z.object({}).strict() },
+      async () => ({ content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] }));
+    installToolGuards(server);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tool = (server as any)._registeredTools["err_tool"];
+
+    await tool.handler({}, { sessionId: "s-guard" });
+    // recordEvent is fire-and-forget — let the microtask/append settle.
+    await new Promise((r) => setTimeout(r, 20));
+
+    const recent = await (await getEventSink()).readRecent(5);
+    const rec = recent.find((e) => e.name === "err_tool");
+    expect(rec?.status).toBe("error");
+    expect(rec?.error_kind).toBe("not_authenticated");
   });
 });

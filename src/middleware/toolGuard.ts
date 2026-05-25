@@ -19,6 +19,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { RESPONSE_SIZE_LIMIT } from "../constants.js";
+import { recordEvent, classifyResult, classifyErrorKind } from "../services/usageAnalytics.js";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; [k: string]: unknown };
 type ToolHandler = (...args: unknown[]) => Promise<unknown>;
@@ -72,13 +73,17 @@ export function installToolGuards(server: McpServer): void {
         ? (first as Record<string, unknown>)
         : {};
       const paramsKeys = Object.keys(params);
+      const extra = handlerArgs[1] as { sessionId?: string } | undefined;
+      const mcpSessionId = extra?.sessionId;
       const start = Date.now();
 
       let result: unknown;
       try {
         result = await original(...handlerArgs);
       } catch (err) {
-        logMetrics({ tool: name, duration_ms: Date.now() - start, response_chars: 0, params_keys: paramsKeys, status: "error" });
+        const duration = Date.now() - start;
+        logMetrics({ tool: name, duration_ms: duration, response_chars: 0, params_keys: paramsKeys, status: "error" });
+        recordEvent({ type: "tool", name, status: "error", error_kind: classifyErrorKind(err instanceof Error ? err.message : String(err)), duration_ms: duration, response_chars: 0, params_keys: paramsKeys, mcp_session_id: mcpSessionId });
         throw err;
       }
 
@@ -89,14 +94,18 @@ export function installToolGuards(server: McpServer): void {
         serialized = "";
       }
       const bytes = serialized.length;
+      const duration = Date.now() - start;
 
       if (bytes > RESPONSE_SIZE_LIMIT) {
         console.error(`[ToolGuard] ${name} response too large: ${bytes} chars (limit ${RESPONSE_SIZE_LIMIT}); params=[${paramsKeys.join(",")}]`);
-        logMetrics({ tool: name, duration_ms: Date.now() - start, response_chars: bytes, params_keys: paramsKeys, status: "error" });
+        logMetrics({ tool: name, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, status: "error" });
+        recordEvent({ type: "tool", name, status: "error", error_kind: "response_too_large", duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, mcp_session_id: mcpSessionId });
         return oversizedResult(bytes);
       }
 
-      logMetrics({ tool: name, duration_ms: Date.now() - start, response_chars: bytes, params_keys: paramsKeys, status: "ok" });
+      const { status, error_kind } = classifyResult(result);
+      logMetrics({ tool: name, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, status });
+      recordEvent({ type: "tool", name, status, error_kind, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, mcp_session_id: mcpSessionId });
       return result;
     };
   }
