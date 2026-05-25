@@ -1,8 +1,8 @@
 # lincx-mcp-server — Norms & Token-Consumption Audit
 
-Audit date: 2026-05-25 (rev 2 — refocused on connection-only scope).
+Audit date: 2026-05-25 (rev 3 — Tier 0 scope cut executed).
 SDK: `@modelcontextprotocol/sdk@^1.12.0` (stale — see T1-1).
-Surface today: **35 registered tools** (down from 43), 0 resources, 0 prompts,
+Surface today: **32 registered tools** (down from 43), 0 resources, 0 prompts,
 1 tool using `structuredContent` (`auth_status`), 0 tools with `outputSchema`.
 
 Checklist is ordered by token impact, not by file. The leanest possible surface
@@ -44,14 +44,11 @@ not orchestration — it's response-size management for a single high-row endpoi
 
 This supersedes the old "tier the surface" item (was T1-6). Removal beats gating.
 
-- [ ] **T0-1 — Remove `render_template` + `get_template_preview_bundle`** from `templateTools.ts`, and delete the `generateMockAds` helper. These fetch a template + CAG, synthesize mock ads, and bundle HTML/CSS — pure client workflow. Net: −2 tools, −2 of the largest schemas, and the biggest single-payload offenders gone from the request path.
-- [ ] **T0-2 — Remove `zone_load_trace`** from `zoneTools.ts`. Its multi-round fan-out (zone + parents + ad-serving + debug + per-ad details + template) is exactly the orchestration a skill should own. Net: −1 tool, −1 large schema.
-- [ ] **T0-3 — Expose the one endpoint the trace skill would otherwise lose.** `/api/ads/ad/debug` is currently reached *only* inside `zone_load_trace`. Before deleting it, add a thin accessor so the skill can still get debug data — simplest: add a `debug: boolean` flag to `get_zone_ads` (`GET /api/ads/ad` vs `/api/ads/ad/debug`). This is the only new MCP capability the cut requires; everything else the skills need (`get_template`, `get_creative_asset_group`, `get_zone` with parents, `get_ad`) already exists.
-- [ ] **T0-4 — Build the companion plugin (skills + scripts).** A Claude Code plugin that reimplements the removed workflows against the lean tools:
-  - `render-template` / `preview-bundle` skill → calls `get_template` + `get_creative_asset_group`, runs the (ported) mock-ad generation in a script, writes previewable HTML/CSS to disk.
-  - `zone-load-trace` skill → orchestrates `get_zone` (include parents) + `get_zone_ads` (+`debug`) + `get_ad` + `get_template`, assembles the diagnostic locally.
-  - Decide home: a `plugins/` dir in this repo vs. a separate plugin repo. (See `plugin-dev`/`skill-creator` tooling.)
-- [ ] **T0-5 — Reconcile docs after the cut.** Remove the three tools from CLAUDE.md's Implemented Tools, drop the "composite" pattern from the "how to add a tool" guidance, and note the connection-only principle there so future tools don't reintroduce orchestration.
+- [x] **T0-1 — Remove `render_template` + `get_template_preview_bundle`** + the `generateMockAds` helper from `templateTools.ts`. DONE.
+- [x] **T0-2 — Remove `zone_load_trace`** from `zoneTools.ts`. DONE.
+- [x] **T0-3 — Expose the one endpoint the trace skill would otherwise lose.** DONE — added a `debug: boolean` flag to `get_zone_ads` (`/api/ads/ad` vs `/api/ads/ad/debug`). All other endpoints the skills need (`get_template`, `get_creative_asset_group`, `get_zone` with parents, `get_ad`) already exist.
+- [~] **T0-4 — Build the companion plugin (skills + scripts).** OWNED ELSEWHERE — lives in the user's separate skills/plugins repo, not this one. The MCP side is ready: it exposes `get_template`, `get_creative_asset_group`, `get_zone` (`include:['parents']`), `get_zone_ads` (`+debug`), `get_ad`, `get_template_version(s)` — everything the render/preview and zone-trace skills need. (Port `generateMockAds` from git history `templateTools.ts` into the render skill.)
+- [x] **T0-5 — Reconcile docs after the cut.** DONE — removed the 3 tools from CLAUDE.md's Implemented Tools, added a "Scope: connection only" section to CLAUDE.md, and noted the `get_zone_ads` debug flag.
 
 ## Tier 1 — Paid on EVERY request (the tool list / schemas)
 

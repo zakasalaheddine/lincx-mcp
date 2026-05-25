@@ -56,7 +56,7 @@ Params:
 The schema defines what data fields ads must provide when rendered into a template
 linked to this group (e.g. title: string, imageUrl: string, clickUrl: string).
 
-Use this before calling 'render_template' to understand what mock ad data to provide.`,
+Use this with 'get_template' to understand what mock ad data a template expects.`,
     inputSchema: z.object({
       id: z.string().describe("Creative asset group ID"),
     }).strict(),

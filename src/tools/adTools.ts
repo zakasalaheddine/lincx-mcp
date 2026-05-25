@@ -64,9 +64,10 @@ export function registerAdTools(server: McpServer): void {
   // ── get_zone_ads ─────────────────────────────────────────────────────────────
   server.registerTool("get_zone_ads", {
     title: "Get Zone Ads",
-    description: `Calls the ad-serving endpoint for a zone. Returns the ads that would be shown and the template they render into ({ ads, template }).`,
+    description: `Calls the ad-serving endpoint for a zone. Returns the ads that would be shown and the template they render into ({ ads, template }). Set debug: true to hit the debug endpoint instead, which explains which ad-groups matched and which were rejected.`,
     inputSchema: z.object({
       zoneId: z.string().describe("Zone ID to fetch serving ads for"),
+      debug: z.boolean().optional().default(false).describe("Hit /api/ads/ad/debug instead of /api/ads/ad — returns ad-group match/reject diagnostics"),
       adFeedCount: z.number().int().optional(),
       geoState: z.string().optional(),
       geoCity: z.string().optional(),
@@ -76,7 +77,7 @@ export function registerAdTools(server: McpServer): void {
       scoreKey: z.string().optional(),
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ zoneId, adFeedCount, geoState, geoCity, geoIP, geoPostal, geoCountry, scoreKey }, extra) => {
+  }, async ({ zoneId, debug, adFeedCount, geoState, geoCity, geoIP, geoPostal, geoCountry, scoreKey }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -93,7 +94,7 @@ export function registerAdTools(server: McpServer): void {
       if (geoCountry !== undefined) params.geoCountry = geoCountry;
       if (scoreKey !== undefined) params.scoreKey = scoreKey;
 
-      const data = await workApiRequest<unknown>(v.session, "GET", "/api/ads/ad", { params });
+      const data = await workApiRequest<unknown>(v.session, "GET", debug ? "/api/ads/ad/debug" : "/api/ads/ad", { params });
       const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {

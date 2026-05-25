@@ -19,6 +19,17 @@ single Express server on `PORT` (5001 dev default, 3000 in production via
 
 All MCP clients (Claude Code, Desktop, claude.ai) connect by URL. Credentials never pass through Claude.
 
+### Scope: this server is a *connection* to Lincx, nothing more
+
+Its only job is auth + network context + thin, single-endpoint Work API tools.
+**Do not add orchestration, rendering, mock-data synthesis, multi-call fan-out,
+or local file bundling here.** Every business tool should map to roughly one
+Work API call. Multi-step workflows (template render/preview, zone load-trace,
+etc.) live in a separate Claude Code skills/scripts plugin that consumes these
+tools — they were intentionally removed from this server. The one tolerated bit
+of server-side logic is `report_query`'s aggregation, kept purely to avoid
+dumping thousands of raw rows into context (it exposes `raw: true` to opt out).
+
 ---
 
 ## Project structure
@@ -304,7 +315,6 @@ registerYourDomainTools(server);
 - `get_template` — `GET /api/templates/{id}` — includes HTML + CSS source; `include: ['parents']` adds parent hierarchy
 - `get_template_versions` — `GET /api/templates/{id}/versions`
 - `get_template_version` — `GET /api/templates/{id}/versions/{version}`
-- `render_template` — composite: fetch template + CAG schema → generate mock ads → return HTML + CSS
 
 ### Creative Asset Groups (M1)
 - `list_creative_asset_groups` — `GET /api/creative-asset-groups` (paginated)
@@ -314,12 +324,11 @@ registerYourDomainTools(server);
 - `list_zones` — `GET /api/zones` (paginated)
 - `get_zone` — `GET /api/zones/{id}` — `include: ['parents']` adds parent hierarchy
 - `get_zone_report` — `GET /api/zones/{id}/report` (params: resolution, startDate, endDate)
-- `zone_load_trace` — composite: fan-out across zone + parents + ads/ad + debug + ads details + template → structured diagnostic blob
 
 ### Ads (M2)
 - `list_ads` — `GET /api/ads` (paginated)
 - `get_ad` — `GET /api/ads/{id}` — `include: ['parents']` adds parent hierarchy
-- `get_zone_ads` — `GET /api/ads/ad?zoneId=` — ad-serving endpoint, returns { ads, template }
+- `get_zone_ads` — `GET /api/ads/ad?zoneId=` — ad-serving endpoint, returns { ads, template }. `debug: true` hits `/api/ads/ad/debug` (ad-group match/reject diagnostics)
 
 ### Ad Groups (M2)
 - `list_ad_groups` — `GET /api/ad-groups` (paginated)
