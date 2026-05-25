@@ -29,6 +29,7 @@ import { registerPublisherTools } from "./tools/publisherTools.js";
 import { registerAdvertiserTools } from "./tools/advertiserTools.js";
 import { registerExperienceTools } from "./tools/experienceTools.js";
 import { registerReportingTools } from "./tools/reportingTools.js";
+import { registerResources } from "./tools/resources.js";
 import { mcpLimiter } from "./middleware/rateLimit.js";
 import { installToolGuards } from "./middleware/toolGuard.js";
 import { SERVER_PORT, IS_PRODUCTION, PUBLIC_BASE_URL } from "./constants.js";
@@ -67,6 +68,7 @@ function createMcpServer(): McpServer {
   registerAdvertiserTools(server);
   registerExperienceTools(server);
   registerReportingTools(server);
+  registerResources(server);
 
   // Wrap every registered tool handler with the response-size guard + metrics
   // logging. Must run after all register*Tools() calls above.

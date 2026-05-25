@@ -51,6 +51,7 @@ src/
     ├── authTools.ts          # auth_login, auth_status, auth_logout
     ├── networkTools.ts       # network_list, network_switch, network_refresh
     ├── _shared.ts            # paginationShape / includeShape / READONLY_ANNOTATIONS + getEntityWithIncludes — reuse these in new tools
+    ├── resources.ts          # MCP Resources: lincx://networks + lincx://{entity}/{id} templates
     └── (add new domain tool files here)
 ```
 
@@ -309,6 +310,14 @@ registerYourDomainTools(server);
 - `network_list` — list available networks
 - `network_switch` — change active network
 - `network_refresh` — re-fetch networks from API
+
+### Resources (MCP Resources, `src/tools/resources.ts`)
+Pull-based reference data — read by URI, not via a tool call. Not part of the
+per-request tool schema, so they cost nothing per turn.
+- `lincx://networks` — networks the session can access + the active one (the `network_list` tool stays as the discovery surface)
+- `lincx://{entity}/{id}` — resource templates mirroring `get_<entity>` for all 13 entity types (campaign, zone, ad, ad-group, creative, template, channel, site, publisher, advertiser, experience, creative-asset-group, dimension-set). Templates aren't listed in `resources/list` (no per-request cost); they let clients reference/cache entities.
+
+Deliberately NOT resources: dimension sets / event-stats keys stay as tools — they're inputs to `report_query` and the model discovers them more reliably via a planned tool call.
 
 ### Templates (M1)
 - `list_templates` — `GET /api/templates` (paginated, limit/offset)
