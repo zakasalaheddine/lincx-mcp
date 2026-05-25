@@ -76,9 +76,13 @@ app.set("trust proxy", 1);   // behind Fly proxy; needed for correct rate-limit 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ── /health (no auth) ────────────────────────────────────────────────────────
+// ── /health (no auth, fast — used by Coolify healthchecks) ───────────────────
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
+  res.json({
+    status: "ok",
+    uptime_s: Math.round(process.uptime()),
+    active_sessions: transports.size,
+  });
 });
 
 // ── OAuth discovery + registration (public, no access-key gate) ──────────────
