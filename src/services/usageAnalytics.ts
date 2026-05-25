@@ -15,6 +15,8 @@
  */
 
 import { REDIS_URL, USAGE_EVENT_CAP } from "../constants.js";
+import { resolveLincxSession } from "./sessionManager.js";
+import { getSessionStore } from "./sessionStore.js";
 
 export type ErrorKind =
   | "not_authenticated"
@@ -106,4 +108,35 @@ export async function getEventSink(): Promise<EventSink> {
     console.error("[Analytics] No REDIS_URL — using in-memory event log (dev only)");
   }
   return _sink;
+}
+
+// ── recordEvent ───────────────────────────────────────────────────────────────
+
+type RecordInput = Omit<UsageEvent, "ts" | "user_id" | "email">;
+
+/** Awaitable core — used by tests and by the fire-and-forget recordEvent. */
+export async function recordEventAsync(input: RecordInput): Promise<void> {
+  try {
+    let user_id: string | undefined;
+    let email: string | undefined;
+    if (input.mcp_session_id) {
+      const lincxId = await resolveLincxSession(input.mcp_session_id);
+      if (lincxId) {
+        const session = await (await getSessionStore()).get(lincxId);
+        user_id = session?.user_id;
+        email = session?.email;
+      }
+    }
+    const event: UsageEvent = { ts: Date.now(), ...input, user_id, email };
+    const sink = await getEventSink();
+    await sink.append(event);
+  } catch (err) {
+    // Analytics must NEVER affect a tool call. Swallow (one stderr line).
+    console.error("[Analytics] recordEvent failed:", err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Fire-and-forget wrapper — callers must NOT await this. */
+export function recordEvent(input: RecordInput): void {
+  void recordEventAsync(input);
 }

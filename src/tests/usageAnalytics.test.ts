@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { classifyResult, getEventSink, type UsageEvent } from "../services/usageAnalytics.js";
+import { classifyResult, getEventSink, type UsageEvent, recordEventAsync } from "../services/usageAnalytics.js";
+import { getSessionStore } from "../services/sessionStore.js";
+import { bindMcpToLincxSession } from "../services/sessionManager.js";
+import type { Session } from "../types.js";
 
 describe("classifyResult", () => {
   it("marks a normal result ok", () => {
@@ -40,5 +43,33 @@ describe("EventSink (in-memory)", () => {
     const recent = await sink.readRecent(3);
     expect(recent).toHaveLength(3);
     expect(recent[0].name).toBe("t4"); // newest first
+  });
+});
+
+describe("recordEventAsync", () => {
+  it("resolves and attaches the real user from the mcp session id", async () => {
+    const session: Session = {
+      session_id: "lincx-rec", user_id: "u@x.com", email: "u@x.com",
+      auth_token: "t", networks: [{ id: "n1", name: "N" }], active_network: "n1",
+    };
+    await (await getSessionStore()).set("lincx-rec", session);
+    await bindMcpToLincxSession("mcp-rec", "lincx-rec");
+
+    await recordEventAsync({
+      type: "tool", name: "get_zone", status: "ok",
+      duration_ms: 3, response_chars: 50, params_keys: ["id"], mcp_session_id: "mcp-rec",
+    });
+
+    const recent = await (await getEventSink()).readRecent(1);
+    expect(recent[0].name).toBe("get_zone");
+    expect(recent[0].user_id).toBe("u@x.com");
+    expect(recent[0].email).toBe("u@x.com");
+  });
+
+  it("never throws when the session can't be resolved", async () => {
+    await expect(recordEventAsync({
+      type: "tool", name: "list_ads", status: "ok",
+      duration_ms: 1, response_chars: 10, params_keys: [], mcp_session_id: "missing",
+    })).resolves.toBeUndefined();
   });
 });
