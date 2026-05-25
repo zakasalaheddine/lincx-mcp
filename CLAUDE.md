@@ -389,9 +389,11 @@ log (`services/usageAnalytics.ts`) — Redis list `usage:events` (cap
 unset. Recording happens in `toolGuard` (tools) and `resources.ts` (reads),
 fire-and-forget and failure-isolated — analytics can never delay or break a call.
 
-`GET /stats` (gated by the `STATS_TOKEN` env via `Authorization: Bearer <token>`;
-404 when unset) returns tool health, per-user adoption, error friction, and usage
-sequences, computed on read by `computeStats`.
+`GET /stats` (gated by the `STATS_TOKEN` env — accepted as `Authorization: Bearer
+<token>` or a `?token=<token>` query param for browser access; 404 when unset)
+returns tool health, per-user adoption, error friction, and usage sequences,
+computed on read by `computeStats`. The `?token=` form leaks the secret into
+history/logs/Referer — prefer the header and rotate the token if a URL leaks.
 
 Privacy invariants: never store `auth_token`/OAuth tokens, never parameter VALUES
 (keys only), never raw error messages (classified `error_kind` only). `user_id`/

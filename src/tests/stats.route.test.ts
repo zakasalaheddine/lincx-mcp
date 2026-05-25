@@ -19,7 +19,7 @@ describe("GET /stats", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns the stats payload with the right token", async () => {
+  it("returns the stats payload with the right bearer token", async () => {
     const res = await request(app()).get("/stats").set("Authorization", "Bearer secret-xyz");
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("window");
@@ -27,5 +27,16 @@ describe("GET /stats", () => {
     expect(res.body).toHaveProperty("users");
     expect(res.body).toHaveProperty("errors");
     expect(res.body).toHaveProperty("sequences");
+  });
+
+  it("accepts the token as a ?token= query param (browser-friendly)", async () => {
+    const res = await request(app()).get("/stats?token=secret-xyz");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("window");
+  });
+
+  it("401s on a wrong ?token= value", async () => {
+    const res = await request(app()).get("/stats?token=nope");
+    expect(res.status).toBe(401);
   });
 });
