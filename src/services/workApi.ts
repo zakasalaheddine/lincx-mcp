@@ -162,6 +162,7 @@ export interface ListEnvelope {
   limit: number;
   offset: number;
   has_more: boolean;
+  next_offset: number | null;
 }
 
 // Status-ish fields worth surfacing in a list projection (at most 2 are kept).
@@ -228,7 +229,42 @@ export function buildListEnvelope(
     limit,
     offset,
     has_more: hasMore,
+    next_offset: hasMore ? offset + items.length : null,
   };
+}
+
+/**
+ * Serialize a list envelope to compact JSON, fitting it under CHARACTER_LIMIT by
+ * DROPPING trailing items — never by slicing the string. This keeps the output
+ * valid JSON (the old character-slice in truncateIfNeeded cut mid-structure and
+ * produced unparseable responses) while keeping pagination metadata honest:
+ * has_more/next_offset are rewritten so the caller can fetch the dropped items.
+ */
+export function listEnvelopeToText(env: ListEnvelope): string {
+  if (JSON.stringify(env).length <= CHARACTER_LIMIT) return JSON.stringify(env);
+
+  const fetched = env.items.length;
+  const kept = [...env.items];
+  // Reserve headroom for the larger truncated-envelope metadata.
+  while (kept.length > 0) {
+    const candidate = { ...env, items: kept, has_more: true };
+    if (JSON.stringify(candidate).length <= CHARACTER_LIMIT - 200) break;
+    kept.pop();
+  }
+
+  const next = env.offset + kept.length;
+  const result = {
+    ...env,
+    items: kept,
+    has_more: true,
+    next_offset: next,
+    truncated: {
+      returned: kept.length,
+      fetched,
+      reason: `Response exceeded ${CHARACTER_LIMIT} chars. Returned ${kept.length} of ${fetched} fetched items; request offset=${next} to continue, or pass a narrower 'fields'.`,
+    },
+  };
+  return JSON.stringify(result);
 }
 
 export function truncateIfNeeded(text: string, total?: number): string {

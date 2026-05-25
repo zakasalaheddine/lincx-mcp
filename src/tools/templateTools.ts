@@ -13,7 +13,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems, buildListEnvelope } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, truncateIfNeeded, stripListItems, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
 
 export function registerTemplateTools(server: McpServer): void {
 
@@ -44,8 +44,8 @@ Params:
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", "/api/templates", { params: { limit, offset } });
-      const text = JSON.stringify(buildListEnvelope(data, { limit, offset, fields }), null, 2);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }));
+      return { content: [{ type: "text" as const, text }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
@@ -71,7 +71,7 @@ Use 'render_template' to preview it with mock ad data.`,
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}`);
-      const text = JSON.stringify(data, null, 2);
+      const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
@@ -98,7 +98,7 @@ Use 'get_template_version' to fetch the HTML + CSS of a specific version.`,
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}/versions`);
-      const text = JSON.stringify(stripListItems(data), null, 2);
+      const text = JSON.stringify(stripListItems(data));
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
@@ -125,7 +125,7 @@ Use 'get_template_versions' first to see available version numbers.`,
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}/versions/${version}`);
-      const text = JSON.stringify(data, null, 2);
+      const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
@@ -149,7 +149,7 @@ Use 'get_template_versions' first to see available version numbers.`,
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/templates/${id}/parents`);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
@@ -220,7 +220,7 @@ Params:
         note: "Paste the html and css into a local file to preview. The mockAdsUsed shows the data shape your template expects.",
       };
 
-      const text = JSON.stringify(result, null, 2);
+      const text = JSON.stringify(result);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
@@ -340,7 +340,7 @@ Params:
         source,
         warnings,
       };
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }

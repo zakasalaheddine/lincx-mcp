@@ -59,7 +59,7 @@ fields (still subject to the response-size guard).`,
             })),
       };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
         structuredContent: result,
       };
     }
@@ -107,7 +107,7 @@ Returns: { success, active_network, previous_network_id, message }`,
         message: `Switched to '${network?.name ?? network_id}'. All tool calls now use this network.`,
       };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(response) }],
         structuredContent: response,
       };
     }
@@ -145,7 +145,7 @@ Preserves the active network if it still exists.`,
             success: true,
             networks: session?.networks ?? [],
             active_network: session?.active_network ?? null,
-          }, null, 2),
+          }),
         }],
       };
     }

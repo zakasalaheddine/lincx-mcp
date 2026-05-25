@@ -10,7 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
 
 export function registerReportingTools(server: McpServer): void {
 
@@ -33,8 +33,8 @@ export function registerReportingTools(server: McpServer): void {
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", "/api/dimension-sets", { params: { limit, offset } });
-      const text = JSON.stringify(buildListEnvelope(data, { limit, offset, fields }), null, 2);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }));
+      return { content: [{ type: "text" as const, text }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
@@ -57,7 +57,7 @@ export function registerReportingTools(server: McpServer): void {
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/dimension-sets/${id}`);
-      const text = JSON.stringify(data, null, 2);
+      const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
@@ -79,7 +79,7 @@ export function registerReportingTools(server: McpServer): void {
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", "/api/event-stats");
-      const text = JSON.stringify(data, null, 2);
+      const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
@@ -128,7 +128,7 @@ export function registerReportingTools(server: McpServer): void {
       const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
 
       if (raw) {
-        const text = `Report "${dimensionSetId}" | ${startDate}→${endDate} | raw rows: ${rows.length}\n\n${JSON.stringify(rows, null, 2)}`;
+        const text = `Report "${dimensionSetId}" | ${startDate}→${endDate} | raw rows: ${rows.length}\n\n${JSON.stringify(rows)}`;
         return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
       }
 
@@ -142,7 +142,7 @@ export function registerReportingTools(server: McpServer): void {
             groupBy: cleanGroupBy,
             rowsScanned: rows.length,
             ...result,
-          }, null, 2)),
+          })),
         }],
       };
     } catch (err) {

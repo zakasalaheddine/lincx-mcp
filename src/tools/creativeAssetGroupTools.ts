@@ -11,7 +11,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
 
 export function registerCreativeAssetGroupTools(server: McpServer): void {
 
@@ -44,8 +44,8 @@ Params:
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", "/api/creative-asset-groups", { params: { limit, offset } });
-      const text = JSON.stringify(buildListEnvelope(data, { limit, offset, fields }), null, 2);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }));
+      return { content: [{ type: "text" as const, text }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
@@ -73,7 +73,7 @@ Use this before calling 'render_template' to understand what mock ad data to pro
 
     try {
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/creative-asset-groups/${id}`);
-      const text = JSON.stringify(data, null, 2);
+      const text = JSON.stringify(data);
       return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };

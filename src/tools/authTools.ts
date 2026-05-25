@@ -114,7 +114,7 @@ Use after 'auth_login' to confirm the session is ready.`,
             })),
       };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(status) }],
         structuredContent: status,
       };
     }
