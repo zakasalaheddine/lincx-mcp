@@ -8,6 +8,11 @@ export const RESPONSE_SIZE_LIMIT = 30_000;
 // 7-day session TTL in Redis / in-memory store
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;
 
+// How often the in-memory store sweeps expired entries (dev only; Redis expires
+// keys itself). Each key already carries an absolute TTL — the sweep evicts past
+// expiry proactively instead of only lazily on the next access.
+export const MEMORY_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
 // Lincx identity server (authentic-server)
 export const IDENTITY_SERVER =
   process.env.IDENTITY_SERVER ?? "https://ix-id.lincx.la";
