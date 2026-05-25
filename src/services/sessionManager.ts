@@ -13,7 +13,7 @@ import { v4 as uuidv4 } from "uuid";
 import type { Session, SessionValidationResult } from "../types.js";
 import { getSessionStore, getKvStore } from "./sessionStore.js";
 import { SESSION_TTL_SECONDS } from "../constants.js";
-import { revokeToken } from "./auth.js";
+import { revokeToken, isJwtExpired } from "./auth.js";
 import { fetchUserNetworks } from "./networkService.js";
 import { lookupAccessToken } from "./oauth/tokens.js";
 
@@ -53,6 +53,15 @@ export async function validateSession(
     return {
       valid: false,
       error: "Not authenticated. Use 'auth_login' to open the browser login page.",
+    };
+  }
+
+  // Proactively catch a lapsed Lincx JWT so the user gets one clear re-login
+  // prompt instead of every tool call failing with a Work API 401.
+  if (isJwtExpired(session.auth_token)) {
+    return {
+      valid: false,
+      error: "Your Lincx session has expired. Use 'auth_login' to sign in again.",
     };
   }
 

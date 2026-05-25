@@ -460,10 +460,13 @@ Cross-reference with the actual login request from the Lincx web app (DevTools �
 `{ networks: [] }` | `{ data: [] }` | `{ items: [] }` | bare `[]`
 The actual shape from the real endpoint is unknown — confirm and simplify the parsing once known.
 
-### No token expiry handling
-authentic-server JWTs expire after ~30 days. When they expire, all tool calls will fail with 401.
-Currently the user must `auth_logout` then `auth_login` manually. Consider adding expiry detection
-to `validateSession()` and returning a clear re-login prompt.
+### Token expiry handling
+authentic-server JWTs expire after ~30 days. `validateSession()` decodes the JWT's
+`exp` claim (`isJwtExpired` in `services/auth.ts` — an unverified read; the Work API
+still verifies the signature) and short-circuits with a clear "session has expired,
+use 'auth_login'" prompt before any Work API call, instead of letting every tool 401.
+It fails open when `exp` is unreadable. Re-login is still manual (no auto-refresh of
+the Lincx JWT — only the OAuth access token refreshes).
 
 ---
 

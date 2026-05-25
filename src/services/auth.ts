@@ -68,3 +68,30 @@ export async function loginWithCredentials(
 export async function revokeToken(_token: string): Promise<void> {
   // intentional no-op
 }
+
+/**
+ * Read the `exp` claim (seconds since epoch) from a JWT WITHOUT verifying the
+ * signature. We only need to know whether our stored Lincx token has lapsed so
+ * we can prompt a clean re-login instead of letting every Work API call 401 —
+ * the Work API still verifies the signature on its side. Returns null when the
+ * value isn't a 3-part JWT or carries no numeric `exp`.
+ */
+export function getJwtExpiry(token: string): number | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { exp?: unknown };
+    return typeof payload.exp === "number" ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the token carries an `exp` claim that has already passed. Tokens with
+ * no readable expiry return false (fail open — let the Work API be the authority).
+ */
+export function isJwtExpired(token: string, nowMs: number = Date.now()): boolean {
+  const exp = getJwtExpiry(token);
+  return exp !== null && exp * 1000 <= nowMs;
+}
