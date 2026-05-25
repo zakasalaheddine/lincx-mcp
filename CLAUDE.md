@@ -381,6 +381,25 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 
 ---
 
+## Usage analytics
+
+Every tool call and resource read is recorded as one `UsageEvent` in a capped
+log (`services/usageAnalytics.ts`) — Redis list `usage:events` (cap
+`USAGE_EVENT_CAP`, default 50k) or an in-memory ring buffer when `REDIS_URL` is
+unset. Recording happens in `toolGuard` (tools) and `resources.ts` (reads),
+fire-and-forget and failure-isolated — analytics can never delay or break a call.
+
+`GET /stats` (gated by the `STATS_TOKEN` env via `Authorization: Bearer <token>`;
+404 when unset) returns tool health, per-user adoption, error friction, and usage
+sequences, computed on read by `computeStats`.
+
+Privacy invariants: never store `auth_token`/OAuth tokens, never parameter VALUES
+(keys only), never raw error messages (classified `error_kind` only). `user_id`/
+`email` are stored for adoption analysis and only ever appear in the authenticated
+`/stats` response — never in tool output.
+
+---
+
 ## Deployment
 
 Deployed via Coolify as a Docker Compose stack (`docker-compose.yml`) — the

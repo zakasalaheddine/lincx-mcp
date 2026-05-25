@@ -40,6 +40,7 @@ import {
 import { wellKnownRouter } from "./routes/wellKnown.js";
 import { oauthRegisterRouter } from "./routes/oauthRegister.js";
 import { oauthTokenRouter } from "./routes/oauthToken.js";
+import { statsRouter } from "./routes/stats.js";
 import { loginRouter } from "./routes/login.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -99,6 +100,7 @@ app.get("/health", (_req, res) => {
 app.use("/.well-known", wellKnownRouter);
 app.use("/oauth", oauthRegisterRouter);
 app.use("/oauth", oauthTokenRouter);
+app.use(statsRouter);
 
 // ── Login UI + OAuth authorize/token-exchange (public — OAuth handles auth) ──
 app.use(loginRouter);
