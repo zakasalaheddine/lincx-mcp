@@ -27,11 +27,16 @@ Returns:
   {
     active_network_id: string | null,
     networks: Array<{ id: string, name: string, is_active: boolean }>
-  }`,
-      inputSchema: z.object({}),
+  }
+
+Pass verbose: true to return the full network objects instead of the slim
+fields (still subject to the response-size guard).`,
+      inputSchema: z.object({
+        verbose: z.boolean().default(false).describe("Return full network objects instead of slim { id, name, is_active }"),
+      }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (_args, extra) => {
+    async ({ verbose }, extra) => {
       const sessionId = await resolveLincxSession(extra?.sessionId);
       if (!sessionId) {
         return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
@@ -45,11 +50,13 @@ Returns:
 
       const result = {
         active_network_id: session.active_network,
-        networks: session.networks.map((n) => ({
-          id: n.id,
-          name: n.name,
-          is_active: n.id === session.active_network,
-        })),
+        networks: verbose
+          ? session.networks
+          : session.networks.map((n) => ({
+              id: n.id,
+              name: n.name,
+              is_active: n.id === session.active_network,
+            })),
       };
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
