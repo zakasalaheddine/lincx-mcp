@@ -48,3 +48,10 @@ export const OAUTH_AUTH_CODE_TTL_SECONDS = 60;
 export const OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30;
 export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 90;
+
+// ── Usage analytics ──────────────────────────────────────────────────────────
+// Shared secret guarding GET /stats. Empty → /stats returns 404 (disabled).
+export const STATS_TOKEN = process.env.STATS_TOKEN ?? "";
+
+// Retention: max UsageEvents kept in the capped log (also the default /stats window).
+export const USAGE_EVENT_CAP = parseInt(process.env.USAGE_EVENT_CAP ?? "50000", 10);
