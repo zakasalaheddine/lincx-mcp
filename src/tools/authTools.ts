@@ -54,10 +54,15 @@ Returns:
   - authenticated (boolean)
   - email (string)
   - active_network: currently selected network ID
-  - available_networks: all networks accessible to the user
+  - networks: accessible networks, slimmed to { id, name, is_active }
+
+Pass verbose: true to return the full network objects instead of the slim
+fields (still subject to the response-size guard).
 
 Use after 'auth_login' to confirm the session is ready.`,
-      inputSchema: z.object({}),
+      inputSchema: z.object({
+        verbose: z.boolean().default(false).describe("Return full network objects instead of slim { id, name, is_active }"),
+      }),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -65,7 +70,7 @@ Use after 'auth_login' to confirm the session is ready.`,
         openWorldHint: false,
       },
     },
-    async (_args, extra) => {
+    async ({ verbose }, extra) => {
       const sessionId = await resolveLincxSession(extra?.sessionId);
 
       if (!sessionId) {
@@ -97,9 +102,16 @@ Use after 'auth_login' to confirm the session is ready.`,
 
       const status = {
         authenticated: true,
+        user: session.email,
         email: session.email,
         active_network: session.active_network,
-        available_networks: session.networks,
+        networks: verbose
+          ? session.networks
+          : session.networks.map((n) => ({
+              id: n.id,
+              name: n.name,
+              is_active: n.id === session.active_network,
+            })),
       };
       return {
         content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }],
