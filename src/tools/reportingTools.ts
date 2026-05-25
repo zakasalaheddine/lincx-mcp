@@ -100,6 +100,18 @@ export function registerReportingTools(server: McpServer): void {
       raw: z.boolean().optional().default(false).describe("Return the raw, unaggregated hourly rows instead of rolled-up sums. Large — only when you specifically need per-hour detail."),
       testMode: z.boolean().optional().describe("Enable test mode (maps to query param 'test-mode')"),
     }).strict(),
+    // structuredContent shape — covers both the aggregated default (total/groups)
+    // and raw mode (raw rows). All mode-specific fields are optional so one schema
+    // validates both returns.
+    outputSchema: z.object({
+      dimensionSet: z.string(),
+      range: z.object({ startDate: z.string(), endDate: z.string() }),
+      groupBy: z.array(z.string()),
+      rowsScanned: z.number(),
+      total: z.record(z.number()).optional(),
+      groups: z.array(z.record(z.unknown())).optional(),
+      raw: z.array(z.record(z.unknown())).optional(),
+    }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ dimensionSetId, startDate, endDate, groupBy, raw, testMode }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
@@ -125,22 +137,30 @@ export function registerReportingTools(server: McpServer): void {
       const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
 
       if (raw) {
+        const structured = {
+          dimensionSet: dimensionSetId,
+          range: { startDate, endDate },
+          groupBy: cleanGroupBy,
+          rowsScanned: rows.length,
+          raw: rows,
+        };
         const text = `Report "${dimensionSetId}" | ${startDate}→${endDate} | raw rows: ${rows.length}\n\n${JSON.stringify(rows)}`;
-        return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+        return {
+          content: [{ type: "text" as const, text: truncateIfNeeded(text) }],
+          structuredContent: structured,
+        };
       }
 
-      const result = aggregateReport(rows, cleanGroupBy);
+      const structured = {
+        dimensionSet: dimensionSetId,
+        range: { startDate, endDate },
+        groupBy: cleanGroupBy,
+        rowsScanned: rows.length,
+        ...aggregateReport(rows, cleanGroupBy),
+      };
       return {
-        content: [{
-          type: "text" as const,
-          text: truncateIfNeeded(JSON.stringify({
-            dimensionSet: dimensionSetId,
-            range: { startDate, endDate },
-            groupBy: cleanGroupBy,
-            rowsScanned: rows.length,
-            ...result,
-          })),
-        }],
+        content: [{ type: "text" as const, text: truncateIfNeeded(JSON.stringify(structured)) }],
+        structuredContent: structured,
       };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
