@@ -13,7 +13,7 @@
  */
 
 import type { Session } from "../types.js";
-import { REDIS_URL, SESSION_TTL_SECONDS } from "../constants.js";
+import { REDIS_URL, SESSION_TTL_SECONDS, MEMORY_SWEEP_INTERVAL_MS } from "../constants.js";
 
 export interface KvStore {
   get(key: string): Promise<string | null>;
@@ -49,7 +49,22 @@ export async function getKvStore(): Promise<KvStore> {
       },
       async delete(key) { mem.delete(key); },
     };
-    console.error("[SessionStore] No REDIS_URL — using in-memory store (dev only)");
+
+    // Periodic sweep — proactively evict entries past their TTL so memory doesn't
+    // grow with abandoned sessions. unref() keeps this from holding the process open.
+    const sweep = setInterval(() => {
+      const now = Date.now();
+      let evicted = 0;
+      for (const [key, entry] of mem) {
+        if (now > entry.expiresAt) { mem.delete(key); evicted++; }
+      }
+      if (evicted > 0) {
+        console.error(`[SessionStore] Swept ${evicted} expired entr${evicted === 1 ? "y" : "ies"} (${mem.size} remaining)`);
+      }
+    }, MEMORY_SWEEP_INTERVAL_MS);
+    sweep.unref?.();
+
+    console.error("[SessionStore] No REDIS_URL — using in-memory store (dev only); sweeping expired entries every " + Math.round(MEMORY_SWEEP_INTERVAL_MS / 1000) + "s");
   }
 
   return _kv;
