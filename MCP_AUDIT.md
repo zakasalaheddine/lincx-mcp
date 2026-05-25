@@ -1,7 +1,7 @@
 # lincx-mcp-server — Norms & Token-Consumption Audit
 
-Audit date: 2026-05-25 (rev 3 — Tier 0 scope cut executed).
-SDK: `@modelcontextprotocol/sdk@^1.12.0` (stale — see T1-1).
+Audit date: 2026-05-25 (rev 4 — Tier 0 cut + SDK bump done).
+SDK: `@modelcontextprotocol/sdk@^1.29.0` (current).
 Surface today: **32 registered tools** (down from 43), 0 resources, 0 prompts,
 1 tool using `structuredContent` (`auth_status`), 0 tools with `outputSchema`.
 
@@ -52,7 +52,7 @@ This supersedes the old "tier the surface" item (was T1-6). Removal beats gating
 
 ## Tier 1 — Paid on EVERY request (the tool list / schemas)
 
-- [ ] **T1-1 — Upgrade the SDK.** `^1.12.0` is mid-2024. Bump to current, then adopt the now-normative features below (outputSchema, resources, prompts). Re-test the Streamable HTTP transport + OAuth flow after upgrade.
+- [x] **T1-1 — Upgrade the SDK.** DONE — the `^1.12.0` floor had already resolved to 1.27.1 installed; bumped to `^1.29.0` (latest) and pinned the floor. Verified end-to-end after the bump: build + 36 tests pass, server boots clean, `/mcp` still returns the RFC-9728 `401 WWW-Authenticate` challenge, and both `.well-known` OAuth metadata endpoints serve 200. Unblocks T1-3 (resources), T2-2 (outputSchema), T4-1 (prompts), T4-6.
 - [x] **T1-2 — Collapse `get_X_parents` into `get_X`.** DONE — removed all 8 `get_*_parents` tools; the matching `get_X` now takes `include: ["parents"]` and fans out in parallel, returning a stable `{ entity, parents }` shape. Tool surface dropped from **43 → 35**. Helper `getEntityWithIncludes` in `src/tools/_shared.ts`; covered by `src/tests/getEntityWithIncludes.test.ts`.
 - [ ] **T1-3 — Move reference/read-only catalogs to MCP Resources.** Networks, dimension sets, event-stats keys, and arguably the `list_*` catalogs are reference data. Resources are *not* sent in the per-turn tool schema and clients can cache them. Candidates: `network_list`, `list_dimension_sets`/`get_dimension_set`, `get_event_stats_keys`. This is also a current-norm gap (zero resources registered).
 - [x] **T1-4 — Extract shared input schemas.** DONE (partial) — `paginationShape` + `includeShape` + `READONLY_ANNOTATIONS` live in `src/tools/_shared.ts`; all 13 `list_*` tools now spread `{ ...paginationShape }`. (A reusable `idShape` for the remaining `{ id }`-only schemas is still open but low-value.)
