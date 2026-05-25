@@ -22,14 +22,16 @@ describe("buildListEnvelope", () => {
     expect(env.next_offset).toBe(1);
   });
 
-  it("projects to { id, name } + status by default but returns full rows for fields ['*']", () => {
-    const row = { id: "1", name: "a", status: "active", extra: "x", note: "keep-me" };
+  it("projects to { id, name } + status by default; ['*'] returns full rows minus heavy fields", () => {
+    const row = { id: "1", name: "a", status: "active", note: "keep-me", html: "<huge/>" };
     const projected = buildListEnvelope([row], { limit: 25, offset: 0 }).items[0] as Record<string, unknown>;
     expect(projected).toEqual({ id: "1", name: "a", status: "active" });
     expect(projected).not.toHaveProperty("note");
 
-    const full = buildListEnvelope([row], { limit: 25, offset: 0, fields: ["*"] }).items[0];
-    expect(full).toEqual(row);
+    const full = buildListEnvelope([row], { limit: 25, offset: 0, fields: ["*"] }).items[0] as Record<string, unknown>;
+    // '*' keeps non-heavy fields like `note` but still drops content blobs like `html`.
+    expect(full).toEqual({ id: "1", name: "a", status: "active", note: "keep-me" });
+    expect(full).not.toHaveProperty("html");
   });
 });
 

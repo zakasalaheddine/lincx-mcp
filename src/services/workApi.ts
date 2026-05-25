@@ -172,9 +172,10 @@ function projectListItem(item: unknown, extraFields: string[]): unknown {
   if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
   const obj = item as Record<string, unknown>;
 
-  // Escape hatch: `fields: ['*']` returns the full row unprojected (heavy fields
-  // were already stripped upstream; listEnvelopeToText still caps total size).
-  if (extraFields.includes("*")) return obj;
+  // Escape hatch: `fields: ['*']` returns the full row — but still minus the heavy
+  // content blobs (html/css/schema/…), which belong in the per-entity get_* tools,
+  // never in a list. listEnvelopeToText still caps overall response size.
+  if (extraFields.includes("*")) return stripHeavyFields(obj);
 
   const keep: string[] = [];
   for (const base of ["id", "name"]) {

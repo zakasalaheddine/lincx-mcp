@@ -53,6 +53,28 @@ describe("report_query structured output (T2-2)", () => {
 
     expect(r.structuredContent.raw).toHaveLength(3);
     expect(r.structuredContent.total).toBeUndefined();
+    expect(r.structuredContent.rawTruncated).toBeUndefined(); // small → not capped
+    expect(tool.outputSchema.safeParse(r.structuredContent).success).toBe(true);
+  });
+
+  it("raw mode caps rows so the whole result stays under the 30k size guard", async () => {
+    const many = Array.from({ length: 5_000 }, (_, i) => ({
+      zone: `Zone-${i}`, date: "2026-05-19", hour: "00", loads: i, clicks: i % 7, revenue: i * 0.013, level: "date-hour-zone",
+    }));
+    api.on("GET", /^\/api\/reports\/ds1$/, () => many);
+    const tool = getReportTool();
+
+    const r = await tool.handler(
+      { dimensionSetId: "ds1", startDate: "2026-05-19", endDate: "2026-05-19", raw: true },
+      { sessionId: "test-session" },
+    );
+
+    expect(r.structuredContent.raw.length).toBeLessThan(5_000);
+    expect(r.structuredContent.rowsScanned).toBe(5_000);
+    expect(r.structuredContent.rawTruncated.total).toBe(5_000);
+    expect(r.structuredContent.rawTruncated.returned).toBe(r.structuredContent.raw.length);
+    // The whole serialized result (content + structuredContent) must clear the hard guard.
+    expect(JSON.stringify(r).length).toBeLessThanOrEqual(30_000);
     expect(tool.outputSchema.safeParse(r.structuredContent).success).toBe(true);
   });
 });

@@ -11,6 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
+import { RESPONSE_SIZE_LIMIT } from "../constants.js";
 import { paginationShape } from "./_shared.js";
 
 export function registerReportingTools(server: McpServer): void {
@@ -111,6 +112,7 @@ export function registerReportingTools(server: McpServer): void {
       total: z.record(z.number()).optional(),
       groups: z.array(z.record(z.unknown())).optional(),
       raw: z.array(z.record(z.unknown())).optional(),
+      rawTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ dimensionSetId, startDate, endDate, groupBy, raw, testMode }, extra) => {
@@ -137,16 +139,33 @@ export function registerReportingTools(server: McpServer): void {
       const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
 
       if (raw) {
+        // outputSchema forces structuredContent, so the rows appear ~2.4× in the final
+        // serialized result: once raw in structuredContent (1×) and once embedded as an
+        // escaped JSON *string* in the content text (~1.4× from quote-escaping). Budget
+        // for ~2.5× so the whole result stays under the tool-size guard — otherwise the
+        // guard nukes the ENTIRE response. Aggregated mode (omit `raw`) is for wide ranges.
+        const rowBudget = Math.floor((RESPONSE_SIZE_LIMIT - 2000) / 2.5);
+        const kept: Record<string, unknown>[] = [];
+        let used = 0;
+        for (const row of rows) {
+          used += JSON.stringify(row).length + 1;
+          if (used > rowBudget && kept.length > 0) break;
+          kept.push(row);
+        }
+        const capped = kept.length < rows.length;
         const structured = {
           dimensionSet: dimensionSetId,
           range: { startDate, endDate },
           groupBy: cleanGroupBy,
           rowsScanned: rows.length,
-          raw: rows,
+          raw: kept,
+          ...(capped
+            ? { rawTruncated: { returned: kept.length, total: rows.length, note: "Raw rows capped to fit the response size limit. Omit 'raw' for server-side aggregated totals, or narrow the date range." } }
+            : {}),
         };
-        const text = `Report "${dimensionSetId}" | ${startDate}→${endDate} | raw rows: ${rows.length}\n\n${JSON.stringify(rows)}`;
+        const header = `Report "${dimensionSetId}" | ${startDate}→${endDate} | raw rows: ${kept.length}${capped ? ` of ${rows.length} (capped)` : ""}`;
         return {
-          content: [{ type: "text" as const, text: truncateIfNeeded(text) }],
+          content: [{ type: "text" as const, text: `${header}\n\n${JSON.stringify(kept)}` }],
           structuredContent: structured,
         };
       }
