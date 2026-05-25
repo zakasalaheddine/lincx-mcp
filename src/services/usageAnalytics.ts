@@ -14,6 +14,8 @@
  * All logging here uses console.error (stderr), never console.log (project rule).
  */
 
+import { REDIS_URL, USAGE_EVENT_CAP } from "../constants.js";
+
 export type ErrorKind =
   | "not_authenticated"
   | "auth_expired"
@@ -61,4 +63,47 @@ export function classifyResult(result: unknown): { status: "ok" | "error"; error
   const isErr = r?.isError === true || text.startsWith("Error:");
   if (!isErr) return { status: "ok" };
   return { status: "error", error_kind: classifyErrorKind(text) };
+}
+
+// ── EventSink ─────────────────────────────────────────────────────────────────
+
+export interface EventSink {
+  append(event: UsageEvent): Promise<void>;
+  readRecent(limit: number): Promise<UsageEvent[]>;
+}
+
+const EVENTS_KEY = "usage:events";
+let _sink: EventSink | null = null;
+
+export async function getEventSink(): Promise<EventSink> {
+  if (_sink) return _sink;
+
+  if (REDIS_URL) {
+    const { Redis } = await import("ioredis");
+    const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
+    _sink = {
+      async append(event) {
+        await redis.lpush(EVENTS_KEY, JSON.stringify(event));
+        await redis.ltrim(EVENTS_KEY, 0, USAGE_EVENT_CAP - 1);
+      },
+      async readRecent(limit) {
+        const raw = await redis.lrange(EVENTS_KEY, 0, Math.max(0, limit - 1));
+        return raw.map((r) => JSON.parse(r) as UsageEvent);
+      },
+    };
+    console.error("[Analytics] Using Redis event log");
+  } else {
+    const buf: UsageEvent[] = []; // newest at index 0
+    _sink = {
+      async append(event) {
+        buf.unshift(event);
+        if (buf.length > USAGE_EVENT_CAP) buf.length = USAGE_EVENT_CAP;
+      },
+      async readRecent(limit) {
+        return buf.slice(0, limit);
+      },
+    };
+    console.error("[Analytics] No REDIS_URL — using in-memory event log (dev only)");
+  }
+  return _sink;
 }

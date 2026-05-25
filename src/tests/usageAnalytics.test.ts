@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyResult } from "../services/usageAnalytics.js";
+import { classifyResult, getEventSink, type UsageEvent } from "../services/usageAnalytics.js";
 
 describe("classifyResult", () => {
   it("marks a normal result ok", () => {
@@ -25,5 +25,20 @@ describe("classifyResult", () => {
     expect(classifyResult({ content: [{ type: "text", text: "Error: Work API server error. Try again later." }] }).error_kind).toBe("work_api_5xx");
     expect(classifyResult({ content: [{ type: "text", text: "Error: Request timed out." }] }).error_kind).toBe("timeout");
     expect(classifyResult({ content: [{ type: "text", text: "Error: something weird" }] }).error_kind).toBe("other");
+  });
+});
+
+const ev = (over: Partial<UsageEvent> = {}): UsageEvent => ({
+  ts: Date.now(), type: "tool", name: "list_zones", status: "ok",
+  duration_ms: 5, response_chars: 100, params_keys: [], ...over,
+});
+
+describe("EventSink (in-memory)", () => {
+  it("returns most-recent-first and evicts beyond the cap", async () => {
+    const sink = await getEventSink();
+    for (let i = 0; i < 5; i++) await sink.append(ev({ name: `t${i}` }));
+    const recent = await sink.readRecent(3);
+    expect(recent).toHaveLength(3);
+    expect(recent[0].name).toBe("t4"); // newest first
   });
 });
