@@ -21,6 +21,16 @@ describe("buildListEnvelope", () => {
     expect(env.has_more).toBe(true);
     expect(env.next_offset).toBe(1);
   });
+
+  it("projects to { id, name } + status by default but returns full rows for fields ['*']", () => {
+    const row = { id: "1", name: "a", status: "active", extra: "x", note: "keep-me" };
+    const projected = buildListEnvelope([row], { limit: 25, offset: 0 }).items[0] as Record<string, unknown>;
+    expect(projected).toEqual({ id: "1", name: "a", status: "active" });
+    expect(projected).not.toHaveProperty("note");
+
+    const full = buildListEnvelope([row], { limit: 25, offset: 0, fields: ["*"] }).items[0];
+    expect(full).toEqual(row);
+  });
 });
 
 describe("listEnvelopeToText", () => {

@@ -17,7 +17,7 @@ export const paginationShape = {
   fields: z
     .array(z.string())
     .optional()
-    .describe("Extra item fields to include beyond { id, name } plus status fields"),
+    .describe("Extra item fields to include beyond { id, name } plus status fields. Use ['*'] to return full rows (still size-capped)."),
 } as const;
 
 /**

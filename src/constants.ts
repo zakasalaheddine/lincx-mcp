@@ -1,8 +1,14 @@
+// Soft per-response budget the serializers (listEnvelopeToText / fitEntityToText)
+// aim to stay under by dropping items / eliding fields. Measured in CHARACTERS of
+// serialized JSON — a deliberately rough proxy for tokens (~3–4 chars/token), not
+// an exact token count. Kept below RESPONSE_SIZE_LIMIT so well-formed responses
+// never trip the hard guard.
 export const CHARACTER_LIMIT = 25_000;
 
-// Hard ceiling on a single serialized tool response. Responses above this are
-// dropped and replaced with a structured `response_too_large` error so one heavy
-// payload can't wedge the event loop / saturate the SSE stream.
+// Hard ceiling (also in CHARACTERS) on a single serialized tool response, enforced
+// by the toolGuard middleware. Responses above this are dropped and replaced with a
+// structured `response_too_large` error so one heavy payload can't wedge the event
+// loop / saturate the SSE stream.
 export const RESPONSE_SIZE_LIMIT = 30_000;
 
 // 7-day session TTL in Redis / in-memory store

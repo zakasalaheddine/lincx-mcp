@@ -45,7 +45,7 @@ function oversizedResult(size: number): ToolResult {
 function logMetrics(record: {
   tool: string;
   duration_ms: number;
-  response_bytes: number;
+  response_chars: number;
   params_keys: string[];
   status: "ok" | "error";
 }): void {
@@ -78,7 +78,7 @@ export function installToolGuards(server: McpServer): void {
       try {
         result = await original(...handlerArgs);
       } catch (err) {
-        logMetrics({ tool: name, duration_ms: Date.now() - start, response_bytes: 0, params_keys: paramsKeys, status: "error" });
+        logMetrics({ tool: name, duration_ms: Date.now() - start, response_chars: 0, params_keys: paramsKeys, status: "error" });
         throw err;
       }
 
@@ -92,11 +92,11 @@ export function installToolGuards(server: McpServer): void {
 
       if (bytes > RESPONSE_SIZE_LIMIT) {
         console.error(`[ToolGuard] ${name} response too large: ${bytes} chars (limit ${RESPONSE_SIZE_LIMIT}); params=[${paramsKeys.join(",")}]`);
-        logMetrics({ tool: name, duration_ms: Date.now() - start, response_bytes: bytes, params_keys: paramsKeys, status: "error" });
+        logMetrics({ tool: name, duration_ms: Date.now() - start, response_chars: bytes, params_keys: paramsKeys, status: "error" });
         return oversizedResult(bytes);
       }
 
-      logMetrics({ tool: name, duration_ms: Date.now() - start, response_bytes: bytes, params_keys: paramsKeys, status: "ok" });
+      logMetrics({ tool: name, duration_ms: Date.now() - start, response_chars: bytes, params_keys: paramsKeys, status: "ok" });
       return result;
     };
   }

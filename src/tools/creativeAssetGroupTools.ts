@@ -24,12 +24,7 @@ export function registerCreativeAssetGroupTools(server: McpServer): void {
 Creative asset groups define the ad data schema — the fields (title, image URL, click URL, etc.)
 that ads must provide when rendered in a template.
 
-Each template is linked to exactly one creative asset group.
-
-Params:
-  - limit: max results (1–100, default 25)
-  - offset: pagination offset (default 0)
-  - fields: extra item fields to include beyond { id, name } plus status fields`,
+Each template is linked to exactly one creative asset group.`,
     inputSchema: z.object({ ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ limit, offset, fields }, extra) => {

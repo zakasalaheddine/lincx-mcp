@@ -172,6 +172,10 @@ function projectListItem(item: unknown, extraFields: string[]): unknown {
   if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
   const obj = item as Record<string, unknown>;
 
+  // Escape hatch: `fields: ['*']` returns the full row unprojected (heavy fields
+  // were already stripped upstream; listEnvelopeToText still caps total size).
+  if (extraFields.includes("*")) return obj;
+
   const keep: string[] = [];
   for (const base of ["id", "name"]) {
     if (base in obj) keep.push(base);

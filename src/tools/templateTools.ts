@@ -21,12 +21,7 @@ export function registerTemplateTools(server: McpServer): void {
     description: `List all ad templates available on the active network.
 
 Returns an array of template objects. Each template has an id, name, and metadata.
-Use 'get_template' to fetch the full HTML + CSS source of a specific template.
-
-Params:
-  - limit: max results (1–100, default 25)
-  - offset: pagination offset (default 0)
-  - fields: extra item fields to include beyond { id, name } plus status fields`,
+Use 'get_template' to fetch the full HTML + CSS source of a specific template.`,
     inputSchema: z.object({ ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ limit, offset, fields }, extra) => {
