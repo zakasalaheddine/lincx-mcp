@@ -18,6 +18,11 @@ services:
   redis:
     command: redis-server --requirepass localdev --appendonly yes
     # Exposed to the host so `npm run dev` (running outside Docker) shares this
-    # same Redis. Connect with REDIS_URL=redis://default:localdev@localhost:6379.
+    # same Redis. Connect with REDIS_URL=redis://default:localdev@localhost:6380.
+    # Host port is 6380, not 6379: lincx-core's test stack binds 6379, so this
+    # container failed to start and the dev server silently fell through to
+    # lincx-core's redis — which never held this server's oauth:client:* keys
+    # (every authorize returned "Unknown client_id"). Sharing that redis is also
+    # unsafe: lincx-core's test suite FLUSHALLs it.
     ports:
-      - "6379:6379"
+      - "6380:6379"
