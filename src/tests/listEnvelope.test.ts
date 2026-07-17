@@ -2,15 +2,36 @@ import { describe, it, expect } from "vitest";
 import { buildListEnvelope, listEnvelopeToText } from "../services/workApi.js";
 
 describe("buildListEnvelope", () => {
-  it("derives next_offset from a full page when upstream gives no total", () => {
-    const items = Array.from({ length: 25 }, (_, i) => ({ id: String(i), name: `n${i}` }));
-    const env = buildListEnvelope(items, { limit: 25, offset: 0 });
-    expect(env.has_more).toBe(true);
-    expect(env.next_offset).toBe(25);
+  it("slices the window client-side when upstream returns the full set (no total)", () => {
+    // Real Work API behavior: ignores limit/offset, returns every row, no total.
+    const items = Array.from({ length: 100 }, (_, i) => ({ id: String(i), name: `n${i}` }));
+
+    const page1 = buildListEnvelope(items, { limit: 25, offset: 0 });
+    expect(page1.items).toHaveLength(25);
+    expect((page1.items[0] as { id: string }).id).toBe("0");
+    expect(page1.total).toBe(100);
+    expect(page1.has_more).toBe(true);
+    expect(page1.next_offset).toBe(25);
+
+    const page2 = buildListEnvelope(items, { limit: 25, offset: 25 });
+    // The bug: offset was ignored so page2 === page1. It must now differ.
+    expect((page2.items[0] as { id: string }).id).toBe("25");
+    expect(page2.total).toBe(100);
   });
 
-  it("sets next_offset to null on the last page", () => {
-    const env = buildListEnvelope([{ id: "1", name: "a" }], { limit: 25, offset: 0 });
+  it("sets has_more false / next_offset null on the last partial page", () => {
+    const items = Array.from({ length: 30 }, (_, i) => ({ id: String(i), name: `n${i}` }));
+    const env = buildListEnvelope(items, { limit: 25, offset: 25 });
+    expect(env.items).toHaveLength(5);
+    expect(env.has_more).toBe(false);
+    expect(env.next_offset).toBeNull();
+  });
+
+  it("returns an empty page (no more) when offset is past the end", () => {
+    const items = Array.from({ length: 10 }, (_, i) => ({ id: String(i), name: `n${i}` }));
+    const env = buildListEnvelope(items, { limit: 25, offset: 50 });
+    expect(env.items).toHaveLength(0);
+    expect(env.total).toBe(10);
     expect(env.has_more).toBe(false);
     expect(env.next_offset).toBeNull();
   });
