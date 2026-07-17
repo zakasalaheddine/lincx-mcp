@@ -217,8 +217,16 @@ function extractItemsAndTotal(data: unknown): { items: unknown[]; total: number 
 
 /**
  * Build the standard list envelope: minimal-field items plus pagination metadata.
- * When the upstream API reports a total it is used directly; otherwise total is a
- * lower bound (offset + page size) and has_more is inferred from a full page.
+ *
+ * Two upstream behaviors are handled:
+ *  - Full-set (every real Work API list endpoint): the API ignores limit/offset and
+ *    returns ALL rows with no total field. We slice the [offset, offset+limit) window
+ *    ourselves so pagination actually works, and `total` is the real, stable row count.
+ *  - Paginated: the API returns one page plus a `total` field (total > page length).
+ *    We trust it and don't re-slice.
+ *
+ * Detecting full-set as "no total, or total <= rows returned" means a stray count
+ * field equal to the row count still takes the slice path (we have everything).
  */
 export function buildListEnvelope(
   data: unknown,
@@ -226,15 +234,20 @@ export function buildListEnvelope(
 ): ListEnvelope {
   const { limit, offset, fields = [] } = opts;
   const { items, total } = extractItemsAndTotal(data);
-  const projected = items.map((it) => projectListItem(it, fields));
-  const hasMore = total !== null ? offset + items.length < total : items.length >= limit;
+
+  const upstreamPaginated = total !== null && total > items.length;
+  const page = upstreamPaginated ? items : items.slice(offset, offset + limit);
+  const realTotal = upstreamPaginated ? total : items.length;
+
+  const projected = page.map((it) => projectListItem(it, fields));
+  const hasMore = offset + page.length < realTotal;
   return {
     items: projected,
-    total: total ?? offset + items.length,
+    total: realTotal,
     limit,
     offset,
     has_more: hasMore,
-    next_offset: hasMore ? offset + items.length : null,
+    next_offset: hasMore ? offset + page.length : null,
   };
 }
 
