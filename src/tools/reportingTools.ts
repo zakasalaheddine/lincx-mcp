@@ -100,6 +100,7 @@ export function registerReportingTools(server: McpServer): void {
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").describe("Required. End date, YYYY-MM-DD (e.g. 2026-05-25)"),
       groupBy: z.array(z.string()).optional().describe("Dimension fields to roll up by, e.g. ['zone'] or ['zone','date']. Omit for a grand total. Valid fields are the dimension set's dimensions (zone, template, advertiser, campaign, publisher, date, hour, …)."),
       filter: z.record(z.string(), z.string()).optional().describe("Scope to one entity: { dimension: value }, e.g. { advertiser: 'Acme' }. Matches the value the dimension emits (usually its name), case-insensitively. Each key must be a real dimension of this set — it's auto-added to the fetch so its column is present."),
+      timezone: z.string().optional().describe("IANA timezone (e.g. 'America/Denver') to bucket date/hour in local time instead of UTC. Upstream is UTC-only; day boundaries shift, which matters — one Adnet advertiser's daily revenue moved 19% between UTC and Mountain. DST-correct. Omit for UTC."),
       raw: z.boolean().optional().default(false).describe("Return the raw, unaggregated hourly rows instead of rolled-up sums. Large — only when you specifically need per-hour detail."),
       testMode: z.boolean().optional().describe("Enable test mode (maps to query param 'test-mode')"),
     }).strict(),
@@ -111,6 +112,7 @@ export function registerReportingTools(server: McpServer): void {
       range: z.object({ startDate: z.string(), endDate: z.string() }),
       groupBy: z.array(z.string()),
       rowsScanned: z.number(),
+      timezone: z.string().optional(),
       filter: z.record(z.string(), z.string()).optional(),
       rowsFetched: z.number().optional(),
       total: z.record(z.number()).optional(),
@@ -119,12 +121,16 @@ export function registerReportingTools(server: McpServer): void {
       rawTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ dimensionSetId, startDate, endDate, groupBy, filter, raw, testMode }, extra) => {
+  }, async ({ dimensionSetId, startDate, endDate, groupBy, filter, timezone, raw, testMode }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
     const v = await validateSession(sessionId);
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
+
+    if (timezone && !isValidTimeZone(timezone)) {
+      return { content: [{ type: "text" as const, text: `Error: '${timezone}' is not a valid IANA timezone (e.g. 'America/Denver', 'UTC').` }] };
+    }
 
     // `date`/`hour` are time fields the API always emits; `level` is row metadata —
     // none of them are passed via `d`. Real dimensions in groupBy ARE, so the API
@@ -137,13 +143,26 @@ export function registerReportingTools(server: McpServer): void {
     const apiDims = [...new Set([...cleanGroupBy, ...filterKeys].filter((g) => !TIME_OR_META.has(g)))];
 
     try {
-      const params: Record<string, unknown> = { startDate, endDate };
+      // Upstream buckets strictly on UTC day boundaries. To bucket in a local tz we
+      // fetch ONE UTC day of padding on each side, rebucket every hourly row's
+      // date/hour into the tz, then trim back to the requested LOCAL range — else the
+      // first/last local day is missing the UTC hours that fall outside the UTC window.
+      const fetchStart = timezone ? shiftUtcDate(startDate, -1) : startDate;
+      const fetchEnd = timezone ? shiftUtcDate(endDate, 1) : endDate;
+      const params: Record<string, unknown> = { startDate: fetchStart, endDate: fetchEnd };
       if (apiDims.length) params.d = apiDims;
       if (testMode !== undefined) params["test-mode"] = testMode;
 
       // Reports can take >10s over a wide range — give them headroom.
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/reports/${dimensionSetId}`, { params, timeoutMs: 60_000 });
-      const fetchedRows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
+      let fetchedRows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
+
+      if (timezone) {
+        // Rebucket UTC date/hour → local, then keep only rows inside the requested
+        // local range (YYYY-MM-DD compares lexicographically).
+        fetchedRows = rebucketRowsToTimezone(fetchedRows, timezone)
+          .filter((r) => String(r.date) >= startDate && String(r.date) <= endDate);
+      }
 
       // Server-side entity filter. Guard: if a filter key is present in NO fetched
       // row, it isn't a dimension of this set — error loudly rather than silently
@@ -178,6 +197,7 @@ export function registerReportingTools(server: McpServer): void {
           range: { startDate, endDate },
           groupBy: cleanGroupBy,
           rowsScanned: rows.length,
+          ...(timezone ? { timezone } : {}),
           ...(filter ? { filter, rowsFetched: fetchedRows.length } : {}),
           raw: kept,
           ...(capped
@@ -196,6 +216,7 @@ export function registerReportingTools(server: McpServer): void {
         range: { startDate, endDate },
         groupBy: cleanGroupBy,
         rowsScanned: rows.length,
+        ...(timezone ? { timezone } : {}),
         ...(filter ? { filter, rowsFetched: fetchedRows.length } : {}),
         ...aggregateReport(rows, cleanGroupBy),
       };
@@ -206,6 +227,53 @@ export function registerReportingTools(server: McpServer): void {
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
+  });
+}
+
+/** True if `tz` is an IANA zone Intl accepts (throws RangeError otherwise). */
+export function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Shift a YYYY-MM-DD date string by whole UTC days. */
+export function shiftUtcDate(date: string, days: number): string {
+  const [y, m, d] = date.split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + days));
+  return t.toISOString().slice(0, 10);
+}
+
+/**
+ * Rebucket each hourly report row from UTC into `tz`, replacing its `date`
+ * (YYYY-MM-DD) and `hour` (00–23) with the local values. Uses Intl with the IANA
+ * zone so DST transitions are handled correctly (a fixed offset would mis-bucket
+ * on transition days). Rows without a usable date/hour pass through unchanged.
+ */
+export function rebucketRowsToTimezone(
+  rows: Record<string, unknown>[],
+  tz: string,
+): Record<string, unknown>[] {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", hour12: false,
+  });
+  return rows.map((row) => {
+    const date = String(row.date ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return row;
+    const [y, mo, d] = date.split("-").map(Number);
+    const hh = Number(row.hour ?? 0);
+    if (!Number.isFinite(hh)) return row;
+    const parts = fmt.formatToParts(new Date(Date.UTC(y, mo - 1, d, hh)));
+    const p: Record<string, string> = {};
+    for (const part of parts) p[part.type] = part.value;
+    // Intl emits "24" for midnight in some runtimes — normalize to "00".
+    const localHour = p.hour === "24" ? "00" : p.hour;
+    return { ...row, date: `${p.year}-${p.month}-${p.day}`, hour: localHour };
   });
 }
 
