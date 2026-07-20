@@ -330,17 +330,17 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 - `get_creative_asset_group` — `GET /api/creative-asset-groups/{id}` — includes field schema defining what data ads must provide
 
 ### Zones (M2)
-- `list_zones` — `GET /api/zones` (paginated)
+- `list_zones` — `GET /api/zones` (paginated); filter by `publisherId`/`channelId`/`siteId`
 - `get_zone` — `GET /api/zones/{id}` — `include: ['parents']` adds parent hierarchy
 - `get_zone_report` — `GET /api/zones/{id}/report` (params: resolution, startDate, endDate)
 
 ### Ads (M2)
-- `list_ads` — `GET /api/ads` (paginated)
+- `list_ads` — `GET /api/ads` (paginated); filter by `adGroupId`/`campaignId`/`advertiserId` (upstream priority in that order)
 - `get_ad` — `GET /api/ads/{id}` — `include: ['parents']` adds parent hierarchy
 - `get_zone_ads` — `GET /api/ads/ad?zoneId=` — ad-serving endpoint, returns { ads, template }. `debug: true` hits `/api/ads/ad/debug` (ad-group match/reject diagnostics)
 
 ### Ad Groups (M2)
-- `list_ad_groups` — `GET /api/ad-groups` (paginated)
+- `list_ad_groups` — `GET /api/ad-groups` (paginated); filter by `campaignId`/`advertiserId`
 - `get_ad_group` — `GET /api/ad-groups/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Creatives (M2)
@@ -348,7 +348,7 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 - `get_creative` — `GET /api/creatives/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Campaigns (M2)
-- `list_campaigns` — `GET /api/campaigns` (paginated)
+- `list_campaigns` — `GET /api/campaigns` (paginated); filter by `advertiserId`
 - `get_campaign` — `GET /api/campaigns/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Channels (M2)
