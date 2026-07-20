@@ -1,0 +1,238 @@
+/**
+ * tools/zoneInventoryTools.ts
+ *
+ * get_zone_targeting_inventory — composite: which ad groups are DIRECTLY targeted
+ * to a zone, and is each fully live (campaign + ad group + a live ad with a viable
+ * creative)? Second sanctioned server-side composite alongside report_query — it
+ * fetches whole-network list sets internally and returns only the compact matched
+ * rollup, so no ad-group rows are ever paged through the LLM.
+ */
+
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
+import { workApiRequest, handleWorkApiError } from "../services/workApi.js";
+import { RESPONSE_SIZE_LIMIT } from "../constants.js";
+
+export type AdGroup = {
+  id: string; name?: string; enabled?: boolean; archived?: boolean;
+  params?: { zoneId?: string[] }; exceptParams?: { zoneId?: string[] };
+  campaignId?: string; creativeAssetGroupId?: string;
+};
+export type Campaign = { enabled?: boolean; archived?: boolean };
+export type Ad = { id?: string; enabled?: boolean; archived?: boolean; creativeId?: string };
+export type Creative = { archived?: boolean };
+export type Mode = "all" | "live" | "off";
+export type Row = {
+  id: string; name: string; archived: boolean;
+  campaign_on: boolean; adgroup_on: boolean; has_enabled_ad: boolean;
+  creative_resolves: boolean; has_live_viable_ad: boolean;
+  fully_live: boolean; off_reason: string[];
+};
+export type Summary = { targeted: number; live: number; off: number; archived: number; conflicting: number };
+
+// A level is "on" only if enabled and not archived. archived is omitted when
+// false, so `!== true` treats a missing key as false.
+const on = (x: { enabled?: boolean; archived?: boolean } | undefined): boolean =>
+  !!x && x.enabled === true && x.archived !== true;
+
+const has = (arr: string[] | undefined, v: string): boolean => Array.isArray(arr) && arr.includes(v);
+
+/** Pull the row array out of an unknown list response (bare array, {data:[]}, {items:[]}). */
+function asRows<T = Record<string, unknown>>(data: unknown): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    for (const k of Object.keys(obj)) if (Array.isArray(obj[k])) return obj[k] as T[];
+  }
+  return [];
+}
+
+/** Unwrap a single-entity response that may be `{ data: {...} }` or the bare object. */
+function asEntity(data: unknown): Record<string, unknown> {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const obj = data as Record<string, unknown>;
+    if (obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)) return obj.data as Record<string, unknown>;
+    return obj;
+  }
+  return {};
+}
+
+/** Split ad groups into those directly targeting the zone and those that both
+ * target and except it (conflicting). exceptParams-only groups are neither. */
+export function selectTargeting(adGroups: AdGroup[], zoneId: string): { targeted: AdGroup[]; conflicting: AdGroup[] } {
+  const targeted: AdGroup[] = [];
+  const conflicting: AdGroup[] = [];
+  for (const ag of adGroups) {
+    const inParams = has(ag.params?.zoneId, zoneId);
+    const inExcept = has(ag.exceptParams?.zoneId, zoneId);
+    if (inParams && inExcept) conflicting.push(ag);
+    else if (inParams) targeted.push(ag);
+  }
+  return { targeted, conflicting };
+}
+
+/** Roll up enabled-state across campaign → ad group → ad → creative for each
+ * targeted ad group. Filters rows by mode; summary is always over the full set. */
+export function rollupZoneTargeting(args: {
+  zoneCag?: string;
+  targeted: AdGroup[];
+  conflicting: AdGroup[];
+  campaigns: Record<string, Campaign>;
+  adsByGroup: Record<string, Ad[]>;
+  creatives: Record<string, Creative>;
+  mode: Mode;
+}): { groups: Row[]; summary: Summary } {
+  const { targeted, conflicting, campaigns, adsByGroup, creatives, mode } = args;
+  // Viable = ad's creative resolves to an existing, non-archived creative.
+  const creativeViable = (creativeId?: string): boolean => {
+    if (creativeId === undefined) return false;
+    const c = creatives[creativeId];
+    return c !== undefined && c.archived !== true;
+  };
+  const creativeResolves = (creativeId?: string): boolean =>
+    creativeId !== undefined && creatives[creativeId] !== undefined;
+
+  const all: Row[] = targeted.map((ag) => {
+    const campaign = ag.campaignId !== undefined ? campaigns[ag.campaignId] : undefined;
+    const ads = adsByGroup[ag.id] ?? [];
+
+    const campaign_on = on(campaign);
+    const adgroup_on = on(ag);
+    const has_enabled_ad = ads.some(on);
+    const creative_resolves = ads.some((a) => creativeResolves(a.creativeId));
+    const has_live_viable_ad = ads.some((a) => on(a) && creativeViable(a.creativeId));
+    const archived = ag.archived === true;
+
+    const off_reason: string[] = [];
+    if (!campaign_on) off_reason.push("campaign");
+    if (!adgroup_on) off_reason.push(archived ? "archived" : "adgroup");
+    if (!has_live_viable_ad) off_reason.push("no_live_viable_ad");
+
+    const fully_live = campaign_on && adgroup_on && has_live_viable_ad;
+    return {
+      id: ag.id, name: ag.name ?? ag.id, archived,
+      campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad,
+      fully_live, off_reason,
+    };
+  });
+
+  const summary: Summary = {
+    targeted: all.length,
+    live: all.filter((r) => r.fully_live).length,
+    off: all.filter((r) => !r.fully_live).length,
+    archived: all.filter((r) => r.archived).length,
+    conflicting: conflicting.length,
+  };
+
+  const groups = mode === "live" ? all.filter((r) => r.fully_live)
+    : mode === "off" ? all.filter((r) => !r.fully_live)
+    : all;
+
+  return { groups, summary };
+}
+
+export function registerZoneInventoryTools(server: McpServer): void {
+  server.registerTool("get_zone_targeting_inventory", {
+    title: "Zone Targeting Inventory",
+    description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached — or where it is off. Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').`,
+    inputSchema: z.object({
+      zoneId: z.string().describe("Zone ID to audit targeting for"),
+      mode: z.enum(["all", "live", "off"]).default("all").describe("Filter the returned groups: all (default), only fully-live, or only not-fully-live. Summary counts always cover the full targeted set."),
+    }).strict(),
+    outputSchema: z.object({
+      zone: z.object({ id: z.string(), name: z.string(), creativeAssetGroupId: z.string().optional(), templateId: z.string().optional() }),
+      mode: z.enum(["all", "live", "off"]),
+      summary: z.object({ targeted: z.number(), live: z.number(), off: z.number(), archived: z.number(), conflicting: z.number() }),
+      groups: z.array(z.record(z.unknown())),
+      conflicting: z.array(z.object({ id: z.string(), name: z.string() })),
+      scan: z.object({ adGroupsScanned: z.number(), campaignsScanned: z.number(), adsScanned: z.number(), creativesScanned: z.number() }),
+      groupsTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ zoneId, mode }, extra) => {
+    const sessionId = await resolveLincxSession(extra?.sessionId);
+    if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
+    const v = await validateSession(sessionId);
+    if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
+    const session = v.session;
+
+    try {
+      // Every list endpoint returns the full network set in one call; fetch in parallel.
+      const [zoneRaw, adGroupsRaw, campaignsRaw, adsRaw, creativesRaw] = await Promise.all([
+        workApiRequest<unknown>(session, "GET", `/api/zones/${zoneId}`),
+        workApiRequest<unknown>(session, "GET", "/api/ad-groups"),
+        workApiRequest<unknown>(session, "GET", "/api/campaigns"),
+        workApiRequest<unknown>(session, "GET", "/api/ads"),
+        workApiRequest<unknown>(session, "GET", "/api/creatives"),
+      ]);
+
+      const zone = asEntity(zoneRaw);
+      if (!zone.id) return { content: [{ type: "text" as const, text: "Error: Resource not found. Double-check the zone ID." }] };
+
+      const adGroups = asRows<AdGroup>(adGroupsRaw);
+      const campaignRows = asRows<{ id: string; enabled?: boolean; archived?: boolean }>(campaignsRaw);
+      const adRows = asRows<Ad & { adGroupId?: string }>(adsRaw);
+      const creativeRows = asRows<{ id: string; archived?: boolean }>(creativesRaw);
+
+      const campaigns: Record<string, Campaign> = {};
+      for (const c of campaignRows) if (c.id) campaigns[c.id] = { enabled: c.enabled, archived: c.archived };
+      const creatives: Record<string, Creative> = {};
+      for (const c of creativeRows) if (c.id) creatives[c.id] = { archived: c.archived };
+      const adsByGroup: Record<string, Ad[]> = {};
+      for (const a of adRows) {
+        if (!a.adGroupId) continue;
+        (adsByGroup[a.adGroupId] ??= []).push({ id: a.id, enabled: a.enabled, archived: a.archived, creativeId: a.creativeId });
+      }
+
+      const { targeted, conflicting } = selectTargeting(adGroups, zoneId);
+      const { groups, summary } = rollupZoneTargeting({
+        zoneCag: zone.creativeAssetGroupId as string | undefined,
+        targeted, conflicting, campaigns, adsByGroup, creatives, mode,
+      });
+
+      const structuredBase = {
+        zone: {
+          id: String(zone.id),
+          name: String(zone.name ?? zone.id),
+          creativeAssetGroupId: zone.creativeAssetGroupId as string | undefined,
+          templateId: zone.templateId as string | undefined,
+        },
+        mode,
+        summary,
+        conflicting: conflicting.map((g) => ({ id: g.id, name: g.name ?? g.id })),
+        scan: {
+          adGroupsScanned: adGroups.length,
+          campaignsScanned: campaignRows.length,
+          adsScanned: adRows.length,
+          creativesScanned: creativeRows.length,
+        },
+      };
+
+      // Cap the groups array so the serialized result stays under the size guard
+      // (carried ~2.5× via content text + structuredContent), keeping the earliest
+      // rows. Mega-zones are rare; graceful degradation, not a hard error.
+      const overhead = JSON.stringify(structuredBase).length + 200;
+      const budget = Math.floor((RESPONSE_SIZE_LIMIT - overhead) / 2.5);
+      const kept: Row[] = [];
+      let used = 0;
+      for (const g of groups) {
+        used += JSON.stringify(g).length + 1;
+        if (used > budget && kept.length > 0) break;
+        kept.push(g);
+      }
+      const groupsTruncated = kept.length < groups.length
+        ? { returned: kept.length, total: groups.length, note: "Groups capped to fit the response size limit. Use mode 'off' or 'live' to narrow, or raise RESPONSE_SIZE_LIMIT." }
+        : undefined;
+
+      const structured = { ...structuredBase, groups: kept, ...(groupsTruncated ? { groupsTruncated } : {}) };
+      const header = `Zone ${structured.zone.name} (${structured.zone.id}) — ${summary.targeted} targeted · ${summary.live} live · ${summary.off} off · ${summary.archived} archived · ${summary.conflicting} conflicting${groupsTruncated ? ` — showing ${kept.length}/${groups.length}` : ""}`;
+      return {
+        content: [{ type: "text" as const, text: `${header}\n\n${JSON.stringify(structured)}` }],
+        structuredContent: structured,
+      };
+    } catch (err) {
+      return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
+    }
+  });
+}
