@@ -92,12 +92,14 @@ export function registerReportingTools(server: McpServer): void {
 - startDate and endDate are REQUIRED (YYYY-MM-DD).
 - Omit groupBy for a single grand total over the whole range.
 - Pass groupBy for breakdowns: ['zone'] = per-zone totals for the range; ['zone','date'] = per-zone per-day; ['advertiser'] = per-advertiser, etc.
+- Pass filter to SCOPE the report to one entity, e.g. { advertiser: 'Acme' } or { zone: 'Primary' } — this is how you answer "how did offer X do" without pulling the whole network. The upstream report has no entity filter, so filtering is applied server-side over the fetched rows; match the value the dimension emits (usually its name). Each filter key must be a real dimension of this set.
 - Only pass raw:true if you genuinely need every hourly row (large; may be truncated).`,
     inputSchema: z.object({
       dimensionSetId: z.string().describe("Dimension set ID to query"),
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").describe("Required. Start date, YYYY-MM-DD (e.g. 2026-05-18)"),
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD").describe("Required. End date, YYYY-MM-DD (e.g. 2026-05-25)"),
       groupBy: z.array(z.string()).optional().describe("Dimension fields to roll up by, e.g. ['zone'] or ['zone','date']. Omit for a grand total. Valid fields are the dimension set's dimensions (zone, template, advertiser, campaign, publisher, date, hour, …)."),
+      filter: z.record(z.string(), z.string()).optional().describe("Scope to one entity: { dimension: value }, e.g. { advertiser: 'Acme' }. Matches the value the dimension emits (usually its name), case-insensitively. Each key must be a real dimension of this set — it's auto-added to the fetch so its column is present."),
       raw: z.boolean().optional().default(false).describe("Return the raw, unaggregated hourly rows instead of rolled-up sums. Large — only when you specifically need per-hour detail."),
       testMode: z.boolean().optional().describe("Enable test mode (maps to query param 'test-mode')"),
     }).strict(),
@@ -109,13 +111,15 @@ export function registerReportingTools(server: McpServer): void {
       range: z.object({ startDate: z.string(), endDate: z.string() }),
       groupBy: z.array(z.string()),
       rowsScanned: z.number(),
+      filter: z.record(z.string(), z.string()).optional(),
+      rowsFetched: z.number().optional(),
       total: z.record(z.number()).optional(),
       groups: z.array(z.record(z.unknown())).optional(),
       raw: z.array(z.record(z.unknown())).optional(),
       rawTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ dimensionSetId, startDate, endDate, groupBy, raw, testMode }, extra) => {
+  }, async ({ dimensionSetId, startDate, endDate, groupBy, filter, raw, testMode }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -127,7 +131,10 @@ export function registerReportingTools(server: McpServer): void {
     // returns rows at that granularity and we sum across time.
     const TIME_OR_META = new Set(["date", "hour", "level"]);
     const cleanGroupBy = (groupBy ?? []).filter((g) => g !== "level");
-    const apiDims = cleanGroupBy.filter((g) => !TIME_OR_META.has(g));
+    // Filter keys must also be requested as dimensions, else their column is absent
+    // from the rows and every row fails the match (would look like "no data").
+    const filterKeys = filter ? Object.keys(filter) : [];
+    const apiDims = [...new Set([...cleanGroupBy, ...filterKeys].filter((g) => !TIME_OR_META.has(g)))];
 
     try {
       const params: Record<string, unknown> = { startDate, endDate };
@@ -136,7 +143,20 @@ export function registerReportingTools(server: McpServer): void {
 
       // Reports can take >10s over a wide range — give them headroom.
       const data = await workApiRequest<unknown>(v.session, "GET", `/api/reports/${dimensionSetId}`, { params, timeoutMs: 60_000 });
-      const rows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
+      const fetchedRows: Record<string, unknown>[] = Array.isArray(data) ? data : [];
+
+      // Server-side entity filter. Guard: if a filter key is present in NO fetched
+      // row, it isn't a dimension of this set — error loudly rather than silently
+      // returning zero (a wrong "no data" answer). If the key IS present but no row
+      // matches the value, hint the values that DO exist so a typo is recoverable.
+      const { rows, missingKeys, valueHints } = filterReportRows(fetchedRows, filter);
+      if (missingKeys.length) {
+        return { content: [{ type: "text" as const, text: `Error: filter key(s) [${missingKeys.join(", ")}] are not dimensions of this set. Call get_dimension_set to see valid dimensions, or use one in groupBy.` }] };
+      }
+      if (filter && fetchedRows.length > 0 && rows.length === 0) {
+        const hint = valueHints.length ? ` Values present in range: ${valueHints.join(" | ")}.` : "";
+        return { content: [{ type: "text" as const, text: `No rows matched filter ${JSON.stringify(filter)} over ${startDate}→${endDate}.${hint}` }] };
+      }
 
       if (raw) {
         // outputSchema forces structuredContent, so the rows appear ~2.4× in the final
@@ -158,6 +178,7 @@ export function registerReportingTools(server: McpServer): void {
           range: { startDate, endDate },
           groupBy: cleanGroupBy,
           rowsScanned: rows.length,
+          ...(filter ? { filter, rowsFetched: fetchedRows.length } : {}),
           raw: kept,
           ...(capped
             ? { rawTruncated: { returned: kept.length, total: rows.length, note: "Raw rows capped to fit the response size limit. Omit 'raw' for server-side aggregated totals, or narrow the date range." } }
@@ -175,6 +196,7 @@ export function registerReportingTools(server: McpServer): void {
         range: { startDate, endDate },
         groupBy: cleanGroupBy,
         rowsScanned: rows.length,
+        ...(filter ? { filter, rowsFetched: fetchedRows.length } : {}),
         ...aggregateReport(rows, cleanGroupBy),
       };
       return {
@@ -185,6 +207,52 @@ export function registerReportingTools(server: McpServer): void {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
   });
+}
+
+/**
+ * Server-side entity filter for report rows. The upstream /api/reports endpoint
+ * has no entity filter (it's scoped only by the dimension set's networkId), so we
+ * fetch and filter here — the filter dimensions are already requested via `d`.
+ *
+ * Returns:
+ *  - rows:       rows matching every {key: value} (case-insensitive string match)
+ *  - missingKeys: filter keys absent from EVERY fetched row → not a dimension of
+ *                 this set. The caller errors on these instead of silently
+ *                 returning zero rows (a wrong "no data" answer).
+ *  - valueHints: when the key exists but nothing matched, the distinct values that
+ *                DO appear for the filter keys (capped), so a typo is recoverable.
+ */
+export function filterReportRows(
+  fetchedRows: Record<string, unknown>[],
+  filter: Record<string, string> | undefined,
+): { rows: Record<string, unknown>[]; missingKeys: string[]; valueHints: string[] } {
+  if (!filter || Object.keys(filter).length === 0) {
+    return { rows: fetchedRows, missingKeys: [], valueHints: [] };
+  }
+  const keys = Object.keys(filter);
+  const present = new Set<string>();
+  for (const row of fetchedRows) {
+    for (const k of keys) if (k in row) present.add(k);
+  }
+  const missingKeys = fetchedRows.length > 0 ? keys.filter((k) => !present.has(k)) : [];
+  if (missingKeys.length) return { rows: [], missingKeys, valueHints: [] };
+
+  const norm = (x: unknown) => String(x ?? "").trim().toLowerCase();
+  const rows = fetchedRows.filter((row) => keys.every((k) => norm(row[k]) === norm(filter[k])));
+
+  let valueHints: string[] = [];
+  if (rows.length === 0) {
+    const seen = new Set<string>();
+    for (const row of fetchedRows) {
+      for (const k of keys) {
+        const val = row[k];
+        if (val !== undefined && val !== null) seen.add(`${k}=${String(val)}`);
+      }
+      if (seen.size >= 50) break;
+    }
+    valueHints = [...seen];
+  }
+  return { rows, missingKeys: [], valueHints };
 }
 
 /** Money metrics rounded to cents; everything else (counts) kept as exact integers. */
