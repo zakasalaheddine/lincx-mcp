@@ -1,0 +1,110 @@
+import { describe, it, expect } from "vitest";
+import { selectTargeting, rollupZoneTargeting, type AdGroup } from "../tools/zoneInventoryTools.js";
+
+const ZONE = "8z7wzb";
+const CAG = "0bckt2";
+
+const ag = (over: Partial<AdGroup> = {}): AdGroup => ({
+  id: "ag1", name: "AG1", enabled: true,
+  params: { zoneId: [ZONE] }, campaignId: "c1", creativeAssetGroupId: CAG,
+  ...over,
+});
+
+describe("selectTargeting", () => {
+  it("keeps groups whose params.zoneId includes the zone", () => {
+    const { targeted, conflicting } = selectTargeting(
+      [ag({ id: "a" }), ag({ id: "b", params: { zoneId: ["other"] } })], ZONE);
+    expect(targeted.map((g) => g.id)).toEqual(["a"]);
+    expect(conflicting).toEqual([]);
+  });
+  it("ignores a group with the zone only in exceptParams", () => {
+    const { targeted } = selectTargeting(
+      [ag({ id: "x", params: { zoneId: ["other"] }, exceptParams: { zoneId: [ZONE] } })], ZONE);
+    expect(targeted).toEqual([]);
+  });
+  it("flags zone-in-both as conflicting, not targeted", () => {
+    const { targeted, conflicting } = selectTargeting(
+      [ag({ id: "y", params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } })], ZONE);
+    expect(targeted).toEqual([]);
+    expect(conflicting.map((g) => g.id)).toEqual(["y"]);
+  });
+});
+
+const base = (over: Partial<Parameters<typeof rollupZoneTargeting>[0]> = {}) =>
+  rollupZoneTargeting({
+    zoneCag: CAG,
+    targeted: [ag()],
+    conflicting: [],
+    campaigns: { c1: { enabled: true } },
+    adsByGroup: { ag1: [{ id: "ad1", enabled: true, creativeId: "cr1" }] },
+    creatives: { cr1: {} },
+    mode: "all",
+    ...over,
+  });
+
+describe("rollupZoneTargeting", () => {
+  it("fully_live when campaign, ad group, and a live+viable ad are all on", () => {
+    const { groups, summary } = base();
+    expect(groups[0].fully_live).toBe(true);
+    expect(groups[0].off_reason).toEqual([]);
+    expect(summary).toMatchObject({ targeted: 1, live: 1, off: 0 });
+  });
+  it("campaign off → off_reason names campaign", () => {
+    const { groups } = base({ campaigns: { c1: { enabled: false } } });
+    expect(groups[0].campaign_on).toBe(false);
+    expect(groups[0].fully_live).toBe(false);
+    expect(groups[0].off_reason).toEqual(["campaign"]);
+  });
+  it("ad group enabled but archived → forced off, off_reason names archived", () => {
+    const { groups, summary } = base({ targeted: [ag({ enabled: true, archived: true })] });
+    expect(groups[0].archived).toBe(true);
+    expect(groups[0].adgroup_on).toBe(false);
+    expect(groups[0].off_reason).toEqual(["archived"]);
+    expect(summary.archived).toBe(1);
+  });
+  it("per-ad conjunction: enabled ad w/ dangling creative + disabled ad w/ valid creative → NOT live-viable", () => {
+    const { groups } = base({
+      adsByGroup: { ag1: [
+        { id: "ad1", enabled: true, creativeId: "missing" },
+        { id: "ad2", enabled: false, creativeId: "cr1" },
+      ] },
+      creatives: { cr1: {} },
+    });
+    expect(groups[0].has_enabled_ad).toBe(true);
+    expect(groups[0].creative_resolves).toBe(true);
+    expect(groups[0].has_live_viable_ad).toBe(false);
+    expect(groups[0].off_reason).toEqual(["no_live_viable_ad"]);
+  });
+  it("archived creative does not count as viable", () => {
+    const { groups } = base({ creatives: { cr1: { archived: true } } });
+    expect(groups[0].has_live_viable_ad).toBe(false);
+  });
+  it("archived ad is not a live ad", () => {
+    const { groups } = base({ adsByGroup: { ag1: [{ id: "ad1", enabled: true, archived: true, creativeId: "cr1" }] } });
+    expect(groups[0].has_live_viable_ad).toBe(false);
+  });
+  it("mode 'off' returns only not-fully-live rows", () => {
+    const { groups } = base({
+      targeted: [ag({ id: "ag1" }), ag({ id: "ag2", campaignId: "c2" })],
+      campaigns: { c1: { enabled: true }, c2: { enabled: false } },
+      adsByGroup: {
+        ag1: [{ id: "ad1", enabled: true, creativeId: "cr1" }],
+        ag2: [{ id: "ad2", enabled: true, creativeId: "cr1" }],
+      },
+      mode: "off",
+    });
+    expect(groups.map((g) => g.id)).toEqual(["ag2"]);
+  });
+  it("summary counts are over the full targeted set regardless of mode filter", () => {
+    const { summary } = base({
+      targeted: [ag({ id: "ag1" }), ag({ id: "ag2", campaignId: "c2" })],
+      campaigns: { c1: { enabled: true }, c2: { enabled: false } },
+      adsByGroup: {
+        ag1: [{ id: "ad1", enabled: true, creativeId: "cr1" }],
+        ag2: [{ id: "ad2", enabled: true, creativeId: "cr1" }],
+      },
+      mode: "live",
+    });
+    expect(summary).toMatchObject({ targeted: 2, live: 1, off: 1 });
+  });
+});
