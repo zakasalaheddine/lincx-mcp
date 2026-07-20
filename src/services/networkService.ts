@@ -52,6 +52,8 @@ export async function fetchUserNetworks(authToken: string): Promise<Network[]> {
       customDimensions: Array.isArray(n.customDimensions)
         ? (n.customDimensions as Array<{ name: string; dateCreated: string }>)
         : [],
+      // Upstream deletes `archived` on unarchive, so absent = active.
+      archived: n.archived === true,
     }));
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {

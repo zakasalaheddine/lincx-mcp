@@ -8,6 +8,8 @@ export interface Network {
   dateUpdated: string;
   userUpdated: string;
   customDimensions: Array<{ name: string; dateCreated: string }>;
+  /** true for archived networks (e.g. "NN - Remove Network" test entries). Absent upstream when active. */
+  archived?: boolean;
 }
 
 export interface Session {
