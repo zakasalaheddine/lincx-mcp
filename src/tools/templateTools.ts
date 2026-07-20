@@ -18,13 +18,17 @@ export function registerTemplateTools(server: McpServer): void {
   // ── list_templates ──────────────────────────────────────────────────────────
   server.registerTool("list_templates", {
     title: "List Templates",
-    description: `List all ad templates available on the active network.
+    description: `List ad templates available on the active network.
 
 Returns an array of template objects. Each template has an id, name, and metadata.
-Use 'get_template' to fetch the full HTML + CSS source of a specific template.`,
-    inputSchema: z.object({ ...paginationShape }).strict(),
+Use 'get_template' to fetch the full HTML + CSS source of a specific template.
+Pass publisherId to enumerate one publisher's templates exhaustively; without it, the whole network is listed.`,
+    inputSchema: z.object({
+      publisherId: z.string().optional().describe("Only templates for this publisher"),
+      ...paginationShape,
+    }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset, fields }, extra) => {
+  }, async ({ limit, offset, fields, publisherId }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -32,7 +36,9 @@ Use 'get_template' to fetch the full HTML + CSS source of a specific template.`,
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
     try {
-      const data = await workApiRequest<unknown>(v.session, "GET", "/api/templates", { params: { limit, offset } });
+      const params: Record<string, unknown> = { limit, offset };
+      if (publisherId !== undefined) params.publisherId = publisherId;
+      const data = await workApiRequest<unknown>(v.session, "GET", "/api/templates", { params });
       const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }));
       return { content: [{ type: "text" as const, text }] };
     } catch (err) {

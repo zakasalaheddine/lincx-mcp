@@ -117,6 +117,7 @@ export function registerReportingTools(server: McpServer): void {
       rowsFetched: z.number().optional(),
       total: z.record(z.number()).optional(),
       groups: z.array(z.record(z.unknown())).optional(),
+      groupsTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
       raw: z.array(z.record(z.unknown())).optional(),
       rawTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
     }),
@@ -211,23 +212,68 @@ export function registerReportingTools(server: McpServer): void {
         };
       }
 
-      const structured = {
+      const base = {
         dimensionSet: dimensionSetId,
         range: { startDate, endDate },
         groupBy: cleanGroupBy,
         rowsScanned: rows.length,
         ...(timezone ? { timezone } : {}),
         ...(filter ? { filter, rowsFetched: fetchedRows.length } : {}),
-        ...aggregateReport(rows, cleanGroupBy),
+      };
+      const { total, groups } = aggregateReport(rows, cleanGroupBy);
+      // Cap the groups array (already sorted by loads/revenue desc, so the top
+      // groups survive) to fit the size guard, mirroring raw mode — instead of
+      // string-truncating into invalid JSON or letting a huge structuredContent hit
+      // the hard guard and nuke the whole response. Grand total is always kept.
+      const { groups: keptGroups, groupsTruncated } = capGroups(base, total, groups);
+      const structured = {
+        ...base,
+        total,
+        ...(keptGroups ? { groups: keptGroups } : {}),
+        ...(groupsTruncated ? { groupsTruncated } : {}),
       };
       return {
-        content: [{ type: "text" as const, text: truncateIfNeeded(JSON.stringify(structured)) }],
+        content: [{ type: "text" as const, text: JSON.stringify(structured) }],
         structuredContent: structured,
       };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
   });
+}
+
+/**
+ * Cap the `groups` array so the serialized report stays under RESPONSE_SIZE_LIMIT,
+ * keeping the highest-ranked groups (aggregateReport already sorts desc). The MCP
+ * result carries the object twice (content text + structuredContent), so budget for
+ * ~2.5× like raw mode. Returns the kept groups and a truncation note when trimmed —
+ * graceful degradation consistent with the list tools' next_offset, instead of a
+ * hard guard error. Returns groups untouched when there are none or all fit.
+ */
+export function capGroups(
+  base: Record<string, unknown>,
+  total: Record<string, number>,
+  groups: Record<string, unknown>[] | undefined,
+): { groups?: Record<string, unknown>[]; groupsTruncated?: { returned: number; total: number; note: string } } {
+  if (!groups) return {};
+  const overhead = JSON.stringify({ ...base, total }).length + 200;
+  const budget = Math.floor((RESPONSE_SIZE_LIMIT - overhead) / 2.5);
+  const kept: Record<string, unknown>[] = [];
+  let used = 0;
+  for (const g of groups) {
+    used += JSON.stringify(g).length + 1;
+    if (used > budget && kept.length > 0) break;
+    kept.push(g);
+  }
+  if (kept.length >= groups.length) return { groups };
+  return {
+    groups: kept,
+    groupsTruncated: {
+      returned: kept.length,
+      total: groups.length,
+      note: "Groups capped to fit the response size limit (kept the top groups by loads/revenue). Narrow the date range, add a filter, use a coarser groupBy, or raise RESPONSE_SIZE_LIMIT.",
+    },
+  };
 }
 
 /** True if `tz` is an IANA zone Intl accepts (throws RangeError otherwise). */
