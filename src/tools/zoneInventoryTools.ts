@@ -132,23 +132,77 @@ export function rollupZoneTargeting(args: {
   return { groups, summary };
 }
 
+export type ZoneMeta = { id: string; name: string; creativeAssetGroupId?: string; templateId?: string };
+export type Inventory = {
+  zone: ZoneMeta; mode: Mode; summary: Summary;
+  groups: Row[]; conflicting: { id: string; name?: string }[];
+  scan: { adGroupsScanned: number; campaignsScanned: number; adsScanned: number; creativesScanned: number };
+};
+
+/** One-line human header (counts + any degradation flag). */
+export function inventoryHeader(s: {
+  zone: ZoneMeta; summary: Summary; namesOmitted?: boolean; complete?: boolean;
+}): string {
+  const { summary: m } = s;
+  const flags = `${m.targeted} targeted · ${m.live} live · ${m.off} off · ${m.archived} archived · ${m.conflicting} conflicting`;
+  const degrade = s.complete === false
+    ? " — INCOMPLETE: too many groups for one response, re-run with mode:'off'/'live' (ids returned, counts exact)"
+    : s.namesOmitted ? " — names omitted to fit; every ad group's id + flags are present"
+    : "";
+  return `Zone ${s.zone.name} (${s.zone.id}) — ${flags}${degrade}`;
+}
+
+/**
+ * Pack the full inventory into a tool result guaranteed to fit `limit`, WITHOUT
+ * ever dropping an ad group (the answer is exhaustive by contract). Degrades in
+ * this order only: (1) full rows with names; (2) rows minus the `name` field
+ * (ids + flags survive, `namesOmitted`); (3) — only for pathological thousands —
+ * ids-only with `complete:false` and an explicit instruction to split by mode.
+ * The toolGuard measures JSON.stringify(result), which is content.text +
+ * structuredContent, so the text stays header-only (no second copy of the rows).
+ */
+export function fitZoneInventory(full: Inventory, limit: number): {
+  content: { type: "text"; text: string }[];
+  structuredContent: Record<string, unknown>;
+} {
+  const wrap = (s: Record<string, unknown> & { zone: ZoneMeta; summary: Summary; namesOmitted?: boolean; complete?: boolean }) => ({
+    content: [{ type: "text" as const, text: inventoryHeader(s) }],
+    structuredContent: s,
+  });
+  const size = (r: unknown) => JSON.stringify(r).length;
+
+  const complete = { ...full, complete: true };
+  const full_ = wrap(complete);
+  if (size(full_) <= limit) return full_;
+
+  const stripped = {
+    ...full, complete: true, namesOmitted: true,
+    groups: full.groups.map(({ name, ...r }) => r),
+    conflicting: full.conflicting.map(({ id }) => ({ id })),
+  };
+  const stripped_ = wrap(stripped);
+  if (size(stripped_) <= limit) return stripped_;
+
+  return wrap({
+    zone: full.zone, mode: full.mode, summary: full.summary,
+    complete: false,
+    note: "Too many targeted ad groups to return in one response. Re-run with mode:'off' or mode:'live' to split — the summary counts are exact. groupIds lists every targeted ad group id so nothing is hidden.",
+    groupIds: full.groups.map((g) => g.id),
+    conflicting: full.conflicting.map(({ id }) => ({ id })),
+    scan: full.scan,
+  });
+}
+
 export function registerZoneInventoryTools(server: McpServer): void {
   server.registerTool("get_zone_targeting_inventory", {
     title: "Zone Targeting Inventory",
-    description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached — or where it is off. Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').`,
+    description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached — or where it is off. Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').
+
+The full result is in structuredContent: { zone, mode, summary, groups[], conflicting[], scan }. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[] }. The content text is a one-line header only (the rows are NOT duplicated there, so the size guard never forces a partial). This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
     inputSchema: z.object({
       zoneId: z.string().describe("Zone ID to audit targeting for"),
       mode: z.enum(["all", "live", "off"]).default("all").describe("Filter the returned groups: all (default), only fully-live, or only not-fully-live. Summary counts always cover the full targeted set."),
     }).strict(),
-    outputSchema: z.object({
-      zone: z.object({ id: z.string(), name: z.string(), creativeAssetGroupId: z.string().optional(), templateId: z.string().optional() }),
-      mode: z.enum(["all", "live", "off"]),
-      summary: z.object({ targeted: z.number(), live: z.number(), off: z.number(), archived: z.number(), conflicting: z.number() }),
-      groups: z.array(z.record(z.unknown())),
-      conflicting: z.array(z.object({ id: z.string(), name: z.string() })),
-      scan: z.object({ adGroupsScanned: z.number(), campaignsScanned: z.number(), adsScanned: z.number(), creativesScanned: z.number() }),
-      groupsTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
-    }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ zoneId, mode }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
@@ -191,7 +245,7 @@ export function registerZoneInventoryTools(server: McpServer): void {
         targeted, conflicting, campaigns, adsByGroup, creatives, mode,
       });
 
-      const structuredBase = {
+      const full: Inventory = {
         zone: {
           id: String(zone.id),
           name: String(zone.name ?? zone.id),
@@ -200,6 +254,7 @@ export function registerZoneInventoryTools(server: McpServer): void {
         },
         mode,
         summary,
+        groups,
         conflicting: conflicting.map((g) => ({ id: g.id, name: g.name ?? g.id })),
         scan: {
           adGroupsScanned: adGroups.length,
@@ -209,28 +264,11 @@ export function registerZoneInventoryTools(server: McpServer): void {
         },
       };
 
-      // Cap the groups array so the serialized result stays under the size guard
-      // (carried ~2.5× via content text + structuredContent), keeping the earliest
-      // rows. Mega-zones are rare; graceful degradation, not a hard error.
-      const overhead = JSON.stringify(structuredBase).length + 200;
-      const budget = Math.floor((RESPONSE_SIZE_LIMIT - overhead) / 2.5);
-      const kept: Row[] = [];
-      let used = 0;
-      for (const g of groups) {
-        used += JSON.stringify(g).length + 1;
-        if (used > budget && kept.length > 0) break;
-        kept.push(g);
-      }
-      const groupsTruncated = kept.length < groups.length
-        ? { returned: kept.length, total: groups.length, note: "Groups capped to fit the response size limit. Use mode 'off' or 'live' to narrow, or raise RESPONSE_SIZE_LIMIT." }
-        : undefined;
-
-      const structured = { ...structuredBase, groups: kept, ...(groupsTruncated ? { groupsTruncated } : {}) };
-      const header = `Zone ${structured.zone.name} (${structured.zone.id}) — ${summary.targeted} targeted · ${summary.live} live · ${summary.off} off · ${summary.archived} archived · ${summary.conflicting} conflicting${groupsTruncated ? ` — showing ${kept.length}/${groups.length}` : ""}`;
-      return {
-        content: [{ type: "text" as const, text: `${header}\n\n${JSON.stringify(structured)}` }],
-        structuredContent: structured,
-      };
+      // Never drop ad groups (the answer is exhaustive by contract). fitZoneInventory
+      // keeps every row and, only if a mega-zone still overflows, sheds the optional
+      // `name` field (ids + flags survive) before ever signalling incompleteness. The
+      // text stays header-only so the rows aren't carried twice under the size guard.
+      return fitZoneInventory(full, RESPONSE_SIZE_LIMIT);
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }

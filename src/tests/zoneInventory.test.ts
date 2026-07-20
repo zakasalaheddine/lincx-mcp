@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { selectTargeting, rollupZoneTargeting, type AdGroup } from "../tools/zoneInventoryTools.js";
+import { selectTargeting, rollupZoneTargeting, fitZoneInventory, type AdGroup, type Inventory, type Row } from "../tools/zoneInventoryTools.js";
 
 const ZONE = "8z7wzb";
 const CAG = "0bckt2";
@@ -106,5 +106,68 @@ describe("rollupZoneTargeting", () => {
       mode: "live",
     });
     expect(summary).toMatchObject({ targeted: 2, live: 1, off: 1 });
+  });
+});
+
+// N off rows with realistic-length names.
+const makeInventory = (n: number): Inventory => {
+  const groups: Row[] = Array.from({ length: n }, (_, i) => ({
+    id: `adg${String(i).padStart(4, "0")}`,
+    name: `Some Advertiser ${i} - Refinance - QL LRE Match [Exchange]`,
+    archived: false, campaign_on: false, adgroup_on: true, has_enabled_ad: true,
+    creative_resolves: true, has_live_viable_ad: true, fully_live: false, off_reason: ["campaign"],
+  }));
+  return {
+    zone: { id: "8z7wzb", name: "Quicken Loans Refinance - Match", creativeAssetGroupId: "0bckt2", templateId: "ayf1pr" },
+    mode: "all",
+    summary: { targeted: n, live: 0, off: n, archived: 0, conflicting: 0 },
+    groups, conflicting: [],
+    scan: { adGroupsScanned: 1150, campaignsScanned: 664, adsScanned: 1331, creativesScanned: 1343 },
+  };
+};
+
+describe("fitZoneInventory (never drops ad groups)", () => {
+  it("returns every row with names when it fits, complete:true", () => {
+    const r = fitZoneInventory(makeInventory(83), 30_000);
+    const s = r.structuredContent as { groups: Row[]; complete: boolean; namesOmitted?: boolean };
+    expect(s.complete).toBe(true);
+    expect(s.namesOmitted).toBeUndefined();
+    expect(s.groups).toHaveLength(83);
+    expect(s.groups[0].name).toBeTruthy();
+    expect(JSON.stringify(r).length).toBeLessThanOrEqual(30_000);
+  });
+
+  it("83 rows fit under the 30k guard with margin — the reported truncation is gone", () => {
+    const r = fitZoneInventory(makeInventory(83), 30_000);
+    const s = r.structuredContent as { groups: Row[]; complete: boolean; namesOmitted?: boolean };
+    // Full result carried once (header-only text + structuredContent) — no second
+    // copy of the rows, so 83 rows fit with room to spare and nothing is dropped.
+    expect(s.namesOmitted).toBeUndefined();
+    expect(s.groups).toHaveLength(83);
+    expect(JSON.stringify(r).length).toBeLessThan(25_000);
+  });
+
+  it("sheds names (not rows) when the full form overflows but ids+flags still fit", () => {
+    const inv = makeInventory(83);
+    const full = JSON.stringify(fitZoneInventory(inv, 10_000_000)).length; // uncapped size
+    // One below the full size forces shedding; stripped (names removed) is smaller, so it fits.
+    const limit = full - 1;
+    const r = fitZoneInventory(inv, limit);
+    const s = r.structuredContent as { groups: Row[]; complete: boolean; namesOmitted?: boolean };
+    expect(s.complete).toBe(true);
+    expect(s.namesOmitted).toBe(true);
+    expect(s.groups).toHaveLength(83); // every ad group still present
+    expect((s.groups[0] as Record<string, unknown>).name).toBeUndefined();
+    expect(s.groups[0].id).toBeTruthy();
+    expect(JSON.stringify(r).length).toBeLessThanOrEqual(limit);
+  });
+
+  it("only as a last resort returns ids-only with complete:false — never a silent partial", () => {
+    const r = fitZoneInventory(makeInventory(2000), 5_000);
+    const s = r.structuredContent as { complete: boolean; groupIds: string[]; groups?: unknown };
+    expect(s.complete).toBe(false);
+    expect(s.groups).toBeUndefined();
+    expect(s.groupIds).toHaveLength(2000); // every id accounted for
+    expect(r.content[0].text).toMatch(/INCOMPLETE/);
   });
 });
