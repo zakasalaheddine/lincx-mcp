@@ -193,6 +193,7 @@ TTLs:
 | `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production. `npm run dev` points this at a Dockerized Redis it starts automatically |
 | `NODE_ENV` | No | `development` | Set to `production` to disable the `/dev/*` debug routes |
 | `PUBLIC_BASE_URL` | No | `http://localhost:<PORT>` | Used when building browser login URLs returned to Claude |
+| `RESPONSE_SIZE_LIMIT` | No | `30000` | Hard per-response character ceiling enforced by `toolGuard`. Raise if your client tolerates larger tool results; floored at 5k. The soft serializer budget (`CHARACTER_LIMIT`) derives from it (−5k) |
 
 There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api/networks`.
 
@@ -320,7 +321,7 @@ per-request tool schema, so they cost nothing per turn.
 Deliberately NOT resources: dimension sets / event-stats keys stay as tools — they're inputs to `report_query` and the model discovers them more reliably via a planned tool call.
 
 ### Templates (M1)
-- `list_templates` — `GET /api/templates` (paginated, limit/offset)
+- `list_templates` — `GET /api/templates` (paginated, limit/offset); filter by `publisherId`
 - `get_template` — `GET /api/templates/{id}` — includes HTML + CSS source; `include: ['parents']` adds parent hierarchy
 - `get_template_versions` — `GET /api/templates/{id}/versions`
 - `get_template_version` — `GET /api/templates/{id}/versions/{version}`
@@ -344,7 +345,7 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 - `get_ad_group` — `GET /api/ad-groups/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Creatives (M2)
-- `list_creatives` — `GET /api/creatives` (paginated)
+- `list_creatives` — `GET /api/creatives` (paginated); filter by `advertiserId`
 - `get_creative` — `GET /api/creatives/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Campaigns (M2)
@@ -352,11 +353,11 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 - `get_campaign` — `GET /api/campaigns/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Channels (M2)
-- `list_channels` — `GET /api/channels` (paginated)
+- `list_channels` — `GET /api/channels` (paginated); filter by `publisherId`
 - `get_channel` — `GET /api/channels/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Sites (M2)
-- `list_sites` — `GET /api/sites` (paginated)
+- `list_sites` — `GET /api/sites` (paginated); filter by `publisherId`/`channelId`
 - `get_site` — `GET /api/sites/{id}` — `include: ['parents']` adds parent hierarchy
 
 ### Publishers (M2)
@@ -369,14 +370,14 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 
 ### Reporting (M3)
 - `get_event_stats_keys` — `GET /api/event-stats` — unique event key-values for last 31 days (use to discover filter dimensions)
-- `report_query` — `GET /api/reports/{dimensionSetId}` with required date range. The upstream API always returns hourly-granular rows; this tool **aggregates server-side** and returns compact rolled-up sums (grand total by default, or grouped by `groupBy` e.g. `['zone']` / `['zone','date']`). `raw: true` returns the unaggregated rows. `filter` (e.g. `{ advertiser: 'Acme' }`) scopes the report to one entity — the upstream endpoint has NO entity filter (scoped only by the dimension set's networkId), so filtering is applied server-side over the fetched rows (`filterReportRows`), which is what keeps a per-offer/hourly pull under the size guard. Filter keys are auto-added to `d`; a key absent from every row errors (not a dimension of the set) rather than silently returning zero. `timezone` (IANA, e.g. `America/Denver`) buckets date/hour in local time — upstream is UTC-only, so the tool fetches ±1 UTC day of padding, rebuckets each hourly row via `Intl` (DST-correct), then trims to the requested local range (`rebucketRowsToTimezone`/`shiftUtcDate`). Matters: one advertiser's daily revenue swung 19% UTC vs Mountain. Server-side rollup keeps a week of data (hundreds of rows) under the response-size limit instead of truncating — the pattern to follow for any high-volume endpoint.
+- `report_query` — `GET /api/reports/{dimensionSetId}` with required date range. The upstream API always returns hourly-granular rows; this tool **aggregates server-side** and returns compact rolled-up sums (grand total by default, or grouped by `groupBy` e.g. `['zone']` / `['zone','date']`). `raw: true` returns the unaggregated rows. `filter` (e.g. `{ advertiser: 'Acme' }`) scopes the report to one entity — the upstream endpoint has NO entity filter (scoped only by the dimension set's networkId), so filtering is applied server-side over the fetched rows (`filterReportRows`), which is what keeps a per-offer/hourly pull under the size guard. Filter keys are auto-added to `d`; a key absent from every row errors (not a dimension of the set) rather than silently returning zero. `timezone` (IANA, e.g. `America/Denver`) buckets date/hour in local time — upstream is UTC-only, so the tool fetches ±1 UTC day of padding, rebuckets each hourly row via `Intl` (DST-correct), then trims to the requested local range (`rebucketRowsToTimezone`/`shiftUtcDate`). Matters: one advertiser's daily revenue swung 19% UTC vs Mountain. When grouped output would still overflow, the `groups` array is capped to the top-ranked groups (by loads/revenue) with a `groupsTruncated` note (`capGroups`) — graceful degradation like the list tools' `next_offset`, never a hard guard error. The hard ceiling is `RESPONSE_SIZE_LIMIT` (env-tunable, default 30k). Server-side rollup keeps a week of data (hundreds of rows) under the response-size limit instead of truncating — the pattern to follow for any high-volume endpoint.
 
 ### Advertisers (M3)
 - `list_advertisers` — `GET /api/advertisers` (paginated)
 - `get_advertiser` — `GET /api/advertisers/{id}`
 
 ### Experiences (M3)
-- `list_experiences` — `GET /api/experiences` (paginated)
+- `list_experiences` — `GET /api/experiences` (paginated); filter by `publisherId`/`channelId`/`siteId`
 - `get_experience` — `GET /api/experiences/{id}`
 
 ---
@@ -461,20 +462,23 @@ redis-cli -u "$REDIS_URL" keys "lincx:session:*" | wc -l
 
 ## Known issues and open work
 
-### 401 on login (priority)
-Login against `ix-id.lincx.la/auth/login` returns 401 even with correct credentials.
-Credentials confirmed correct. Likely causes in order of probability:
-- Identity server expects a different field name (`username` instead of `email`)
-- Missing required headers (`Origin`, `X-Client-ID`, `Referer`, or similar)
-- The endpoint path is wrong (`/auth/login` vs `/api/auth/login` vs `/login`)
-- CORS or same-origin restriction blocking non-browser requests
+### Login 401 — resolved
+The earlier `ix-id.lincx.la/auth/login` 401 no longer reproduces; field testing
+authenticated cleanly end-to-end (OAuth dance + Work API calls). Left here only as
+a pointer: if it resurfaces, add temporary request/response logging in
+`services/auth.ts` (log status + `err.response?.data`, never the password/token)
+and diff against the web app's login request in DevTools.
 
-**To debug:** Add temporary logging in `src/services/auth.ts` before the catch:
-```ts
-console.error("[Auth] Request:", { url: `${IDENTITY_SERVER}/auth/login`, body: { email, password: "***" } });
-console.error("[Auth] Response:", err.response?.status, JSON.stringify(err.response?.data));
-```
-Cross-reference with the actual login request from the Lincx web app (DevTools → Network tab).
+### Response size — access persistence & the guard (field-test Qs)
+- **Do sessions survive redeploys?** Yes. Redis persists to a named volume
+  (`redis-data` in `docker-compose.yml`), so OAuth tokens + Lincx sessions outlive
+  a Coolify redeploy — the connector stays authenticated across iterations. Only
+  rotating Redis (or `auth_logout`) drops access.
+- **Is the 30k guard hard or tunable?** Tunable via `RESPONSE_SIZE_LIMIT` (see the
+  env table). The intended path for a legitimately large pull is server-side
+  narrowing, not a bigger dump: `report_query` `filter` + `groupBy` aggregation
+  (and `groupsTruncated`/`rawTruncated` when still large), and the list tools'
+  `fields` selection + `limit`/`offset` paging with `next_offset`.
 
 ### Network response shape — confirmed
 `GET /api/networks` returns `{ data: [...] }`, each network carrying an `archived`

@@ -1,15 +1,15 @@
-// Soft per-response budget the serializers (listEnvelopeToText / fitEntityToText)
-// aim to stay under by dropping items / eliding fields. Measured in CHARACTERS of
-// serialized JSON — a deliberately rough proxy for tokens (~3–4 chars/token), not
-// an exact token count. Kept below RESPONSE_SIZE_LIMIT so well-formed responses
-// never trip the hard guard.
-export const CHARACTER_LIMIT = 25_000;
+// Hard ceiling (in CHARACTERS of serialized JSON) on a single tool response,
+// enforced by the toolGuard middleware. Responses above this are dropped and
+// replaced with a structured `response_too_large` error so one heavy payload can't
+// wedge the event loop / saturate the SSE stream. Tunable via RESPONSE_SIZE_LIMIT
+// (e.g. raise it if your client tolerates larger tool results); floored at 5k so it
+// can't be set uselessly small. Character count is a rough token proxy (~3–4 chars/token).
+export const RESPONSE_SIZE_LIMIT = Math.max(5_000, Number(process.env.RESPONSE_SIZE_LIMIT) || 30_000);
 
-// Hard ceiling (also in CHARACTERS) on a single serialized tool response, enforced
-// by the toolGuard middleware. Responses above this are dropped and replaced with a
-// structured `response_too_large` error so one heavy payload can't wedge the event
-// loop / saturate the SSE stream.
-export const RESPONSE_SIZE_LIMIT = 30_000;
+// Soft per-response budget the serializers (listEnvelopeToText / fitEntityToText)
+// aim to stay under by dropping items / eliding fields — derived to sit ~5k below
+// the hard ceiling so well-formed responses never trip the guard.
+export const CHARACTER_LIMIT = Math.max(1_000, RESPONSE_SIZE_LIMIT - 5_000);
 
 // 7-day session TTL in Redis / in-memory store
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7;

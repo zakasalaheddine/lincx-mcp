@@ -16,10 +16,15 @@ export function registerExperienceTools(server: McpServer): void {
   // ── list_experiences ─────────────────────────────────────────────────────────
   server.registerTool("list_experiences", {
     title: "List Experiences",
-    description: "List all experiences on the active network with limit/offset pagination. Experiences define the ad delivery context (placement, targeting rules, etc.).",
-    inputSchema: z.object({ ...paginationShape }).strict(),
+    description: "List experiences on the active network with limit/offset pagination. Experiences define the ad delivery context (placement, targeting rules, etc.). Pass a parent filter to enumerate one parent's experiences exhaustively (upstream applies the first of publisherId → channelId → siteId); without a filter, the whole network is listed.",
+    inputSchema: z.object({
+      publisherId: z.string().optional().describe("Only experiences for this publisher"),
+      channelId: z.string().optional().describe("Only experiences in this channel"),
+      siteId: z.string().optional().describe("Only experiences on this site"),
+      ...paginationShape,
+    }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset, fields }, extra) => {
+  }, async ({ limit, offset, fields, publisherId, channelId, siteId }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -27,7 +32,11 @@ export function registerExperienceTools(server: McpServer): void {
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
     try {
-      const data = await workApiRequest<unknown>(v.session, "GET", "/api/experiences", { params: { limit, offset } });
+      const params: Record<string, unknown> = { limit, offset };
+      if (publisherId !== undefined) params.publisherId = publisherId;
+      if (channelId !== undefined) params.channelId = channelId;
+      if (siteId !== undefined) params.siteId = siteId;
+      const data = await workApiRequest<unknown>(v.session, "GET", "/api/experiences", { params });
       const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }));
       return { content: [{ type: "text" as const, text }] };
     } catch (err) {
