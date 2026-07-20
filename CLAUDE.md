@@ -307,7 +307,7 @@ registerYourDomainTools(server);
 - `auth_logout` — destroy session
 
 ### Networks
-- `network_list` — list available networks
+- `network_list` — list available networks (active only by default; `includeArchived`, `limit`/`offset` paging via `next_offset`)
 - `network_switch` — change active network
 - `network_refresh` — re-fetch networks from API
 
@@ -476,10 +476,12 @@ console.error("[Auth] Response:", err.response?.status, JSON.stringify(err.respo
 ```
 Cross-reference with the actual login request from the Lincx web app (DevTools → Network tab).
 
-### Network response shape unconfirmed
-`networkService.ts` handles four possible shapes from `GET /api/networks`:
-`{ networks: [] }` | `{ data: [] }` | `{ items: [] }` | bare `[]`
-The actual shape from the real endpoint is unknown — confirm and simplify the parsing once known.
+### Network response shape — confirmed
+`GET /api/networks` returns `{ data: [...] }`, each network carrying an `archived`
+boolean (absent when active — upstream deletes the flag on unarchive). `getAll`
+returns active + archived together, so `network_list`/`auth_status` filter to
+active by default (`includeArchived` to opt in) and page with `limit`/`offset`.
+`networkService.ts` still accepts the other tolerant shapes; harmless, low priority.
 
 ### Token expiry handling
 authentic-server JWTs expire after ~30 days. `validateSession()` decodes the JWT's

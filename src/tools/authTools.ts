@@ -14,6 +14,7 @@ import {
   unbindMcpSession,
 } from "../services/sessionManager.js";
 import { getSessionStore } from "../services/sessionStore.js";
+import { selectNetworks } from "./networkTools.js";
 
 export function registerAuthTools(server: McpServer): void {
 
@@ -54,14 +55,20 @@ Returns:
   - authenticated (boolean)
   - email (string)
   - active_network: currently selected network ID
-  - networks: accessible networks, slimmed to { id, name, is_active }
+  - networks: accessible networks (active only by default, slimmed to
+    { id, name, is_active, archived }) plus total / archived_hidden /
+    next_offset paging fields
 
-Pass verbose: true to return the full network objects instead of the slim
-fields (still subject to the response-size guard).
+Pass includeArchived: true to include archived networks, limit/offset to page,
+and verbose: true for full network objects. Defaults keep the response small on
+high-network accounts.
 
 Use after 'auth_login' to confirm the session is ready.`,
       inputSchema: z.object({
-        verbose: z.boolean().default(false).describe("Return full network objects instead of slim { id, name, is_active }"),
+        includeArchived: z.boolean().default(false).describe("Include archived networks. Default: active only."),
+        limit: z.number().int().min(1).max(500).default(100).describe("Max networks to return"),
+        offset: z.number().int().min(0).default(0).describe("Skip this many (page with next_offset)"),
+        verbose: z.boolean().default(false).describe("Return full network objects instead of the slim fields"),
       }),
       annotations: {
         readOnlyHint: true,
@@ -70,7 +77,7 @@ Use after 'auth_login' to confirm the session is ready.`,
         openWorldHint: false,
       },
     },
-    async ({ verbose }, extra) => {
+    async ({ includeArchived, limit, offset, verbose }, extra) => {
       const sessionId = await resolveLincxSession(extra?.sessionId);
 
       if (!sessionId) {
@@ -100,18 +107,13 @@ Use after 'auth_login' to confirm the session is ready.`,
         };
       }
 
+      const { active_network_id, ...netView } = selectNetworks(session, { includeArchived, limit, offset, verbose });
       const status = {
         authenticated: true,
         user: session.email,
         email: session.email,
-        active_network: session.active_network,
-        networks: verbose
-          ? session.networks
-          : session.networks.map((n) => ({
-              id: n.id,
-              name: n.name,
-              is_active: n.id === session.active_network,
-            })),
+        active_network: active_network_id,
+        ...netView,
       };
       return {
         content: [{ type: "text" as const, text: JSON.stringify(status) }],
