@@ -17,10 +17,15 @@ export function registerZoneTools(server: McpServer): void {
   // ── list_zones ──────────────────────────────────────────────────────────────
   server.registerTool("list_zones", {
     title: "List Zones",
-    description: `List all zones on the active network. Use get_zone to fetch full config of a specific zone.`,
-    inputSchema: z.object({ ...paginationShape }).strict(),
+    description: `List zones on the active network. Pass a parent filter to enumerate one parent's zones exhaustively (upstream applies the first of publisherId → channelId → siteId; without a filter, the whole network is listed). Use get_zone for full config of a specific zone.`,
+    inputSchema: z.object({
+      publisherId: z.string().optional().describe("Only zones for this publisher"),
+      channelId: z.string().optional().describe("Only zones in this channel"),
+      siteId: z.string().optional().describe("Only zones on this site"),
+      ...paginationShape,
+    }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset, fields }, extra) => {
+  }, async ({ limit, offset, fields, publisherId, channelId, siteId }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -28,7 +33,11 @@ export function registerZoneTools(server: McpServer): void {
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
     try {
-      const data = await workApiRequest<unknown>(v.session, "GET", "/api/zones", { params: { limit, offset } });
+      const params: Record<string, unknown> = { limit, offset };
+      if (publisherId !== undefined) params.publisherId = publisherId;
+      if (channelId !== undefined) params.channelId = channelId;
+      if (siteId !== undefined) params.siteId = siteId;
+      const data = await workApiRequest<unknown>(v.session, "GET", "/api/zones", { params });
       const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }));
       return { content: [{ type: "text" as const, text }] };
     } catch (err) {

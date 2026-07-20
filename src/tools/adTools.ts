@@ -17,10 +17,15 @@ export function registerAdTools(server: McpServer): void {
   // ── list_ads ─────────────────────────────────────────────────────────────────
   server.registerTool("list_ads", {
     title: "List Ads",
-    description: `List all ads on the active network with limit/offset pagination.`,
-    inputSchema: z.object({ ...paginationShape }).strict(),
+    description: `List ads on the active network with limit/offset pagination. Pass a parent filter to enumerate one parent's ads exhaustively (upstream applies the first of adGroupId → campaignId → advertiserId; without a filter, the whole network is listed).`,
+    inputSchema: z.object({
+      adGroupId: z.string().optional().describe("Only ads in this ad group"),
+      campaignId: z.string().optional().describe("Only ads in this campaign"),
+      advertiserId: z.string().optional().describe("Only ads for this advertiser"),
+      ...paginationShape,
+    }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset, fields }, extra) => {
+  }, async ({ limit, offset, fields, adGroupId, campaignId, advertiserId }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -28,7 +33,11 @@ export function registerAdTools(server: McpServer): void {
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
     try {
-      const data = await workApiRequest<unknown>(v.session, "GET", "/api/ads", { params: { limit, offset } });
+      const params: Record<string, unknown> = { limit, offset };
+      if (adGroupId !== undefined) params.adGroupId = adGroupId;
+      if (campaignId !== undefined) params.campaignId = campaignId;
+      if (advertiserId !== undefined) params.advertiserId = advertiserId;
+      const data = await workApiRequest<unknown>(v.session, "GET", "/api/ads", { params });
       const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }));
       return { content: [{ type: "text" as const, text }] };
     } catch (err) {

@@ -16,10 +16,14 @@ export function registerAdGroupTools(server: McpServer): void {
   // ── list_ad_groups ───────────────────────────────────────────────────────────
   server.registerTool("list_ad_groups", {
     title: "List Ad Groups",
-    description: `List all ad groups on the active network with limit/offset pagination.`,
-    inputSchema: z.object({ ...paginationShape }).strict(),
+    description: `List ad groups on the active network with limit/offset pagination. Pass a parent filter to enumerate one parent's ad groups exhaustively (upstream applies the first of campaignId → advertiserId; without a filter, the whole network is listed).`,
+    inputSchema: z.object({
+      advertiserId: z.string().optional().describe("Only ad groups for this advertiser"),
+      campaignId: z.string().optional().describe("Only ad groups in this campaign"),
+      ...paginationShape,
+    }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ limit, offset, fields }, extra) => {
+  }, async ({ limit, offset, fields, advertiserId, campaignId }, extra) => {
     const sessionId = await resolveLincxSession(extra?.sessionId);
     if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
@@ -27,7 +31,10 @@ export function registerAdGroupTools(server: McpServer): void {
     if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
     try {
-      const data = await workApiRequest<unknown>(v.session, "GET", "/api/ad-groups", { params: { limit, offset } });
+      const params: Record<string, unknown> = { limit, offset };
+      if (advertiserId !== undefined) params.advertiserId = advertiserId;
+      if (campaignId !== undefined) params.campaignId = campaignId;
+      const data = await workApiRequest<unknown>(v.session, "GET", "/api/ad-groups", { params });
       const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }));
       return { content: [{ type: "text" as const, text }] };
     } catch (err) {
