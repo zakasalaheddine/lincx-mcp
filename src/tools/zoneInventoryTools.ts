@@ -158,16 +158,19 @@ export function inventoryHeader(s: {
  * this order only: (1) full rows with names; (2) rows minus the `name` field
  * (ids + flags survive, `namesOmitted`); (3) — only for pathological thousands —
  * ids-only with `complete:false` and an explicit instruction to split by mode.
- * The toolGuard measures JSON.stringify(result), which is content.text +
- * structuredContent, so the text stays header-only (no second copy of the rows).
+ *
+ * The rollup is carried in the `content` TEXT (header line + compact JSON), NOT
+ * in structuredContent: MCP hosts (claude.ai included) feed only `content` to the
+ * model — `structuredContent` is delivered but not surfaced, so putting the rows
+ * there alone made the model see only the header. Text is the reliable channel
+ * (same as report_query). No structuredContent → the size guard counts the payload
+ * once, not twice, which is also why more rows fit.
  */
 export function fitZoneInventory(full: Inventory, limit: number): {
   content: { type: "text"; text: string }[];
-  structuredContent: Record<string, unknown>;
 } {
   const wrap = (s: Record<string, unknown> & { zone: ZoneMeta; summary: Summary; namesOmitted?: boolean; complete?: boolean }) => ({
-    content: [{ type: "text" as const, text: inventoryHeader(s) }],
-    structuredContent: s,
+    content: [{ type: "text" as const, text: `${inventoryHeader(s)}\n\n${JSON.stringify(s)}` }],
   });
   const size = (r: unknown) => JSON.stringify(r).length;
 
@@ -198,7 +201,7 @@ export function registerZoneInventoryTools(server: McpServer): void {
     title: "Zone Targeting Inventory",
     description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached — or where it is off. Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').
 
-The full result is in structuredContent: { zone, mode, summary, groups[], conflicting[], scan }. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[] }. The content text is a one-line header only (the rows are NOT duplicated there, so the size guard never forces a partial). This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
+The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[] }. This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
     inputSchema: z.object({
       zoneId: z.string().describe("Zone ID to audit targeting for"),
       mode: z.enum(["all", "live", "off"]).default("all").describe("Filter the returned groups: all (default), only fully-live, or only not-fully-live. Summary counts always cover the full targeted set."),
@@ -267,7 +270,8 @@ The full result is in structuredContent: { zone, mode, summary, groups[], confli
       // Never drop ad groups (the answer is exhaustive by contract). fitZoneInventory
       // keeps every row and, only if a mega-zone still overflows, sheds the optional
       // `name` field (ids + flags survive) before ever signalling incompleteness. The
-      // text stays header-only so the rows aren't carried twice under the size guard.
+      // rollup rides in the content text (header + compact JSON) — the model-visible
+      // channel — never in structuredContent alone.
       return fitZoneInventory(full, RESPONSE_SIZE_LIMIT);
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
