@@ -126,45 +126,56 @@ const makeInventory = (n: number): Inventory => {
   };
 };
 
-describe("fitZoneInventory (never drops ad groups)", () => {
+// The rollup rides in content text: "<header>\n\n<compact JSON>". Parse the JSON
+// the way the model must — this is the model-visible channel (structuredContent is
+// not surfaced by MCP hosts).
+const payload = (r: { content: { type: "text"; text: string }[] }): {
+  groups?: Row[]; groupIds?: string[]; complete: boolean; namesOmitted?: boolean;
+} => JSON.parse(r.content[0].text.split("\n\n").slice(1).join("\n\n"));
+
+describe("fitZoneInventory (never drops ad groups, data in text)", () => {
+  it("carries the rollup in content text, not structuredContent", () => {
+    const r = fitZoneInventory(makeInventory(3), 30_000) as Record<string, unknown>;
+    expect(r.structuredContent).toBeUndefined(); // hosts don't surface it
+    const s = payload(r as { content: { type: "text"; text: string }[] });
+    expect(s.groups).toHaveLength(3);
+  });
+
   it("returns every row with names when it fits, complete:true", () => {
     const r = fitZoneInventory(makeInventory(83), 30_000);
-    const s = r.structuredContent as { groups: Row[]; complete: boolean; namesOmitted?: boolean };
+    const s = payload(r);
     expect(s.complete).toBe(true);
     expect(s.namesOmitted).toBeUndefined();
     expect(s.groups).toHaveLength(83);
-    expect(s.groups[0].name).toBeTruthy();
+    expect(s.groups![0].name).toBeTruthy();
     expect(JSON.stringify(r).length).toBeLessThanOrEqual(30_000);
   });
 
-  it("83 rows fit under the 30k guard with margin — the reported truncation is gone", () => {
+  it("83 rows fit under the 30k guard — the reported truncation is gone", () => {
     const r = fitZoneInventory(makeInventory(83), 30_000);
-    const s = r.structuredContent as { groups: Row[]; complete: boolean; namesOmitted?: boolean };
-    // Full result carried once (header-only text + structuredContent) — no second
-    // copy of the rows, so 83 rows fit with room to spare and nothing is dropped.
+    const s = payload(r);
     expect(s.namesOmitted).toBeUndefined();
     expect(s.groups).toHaveLength(83);
-    expect(JSON.stringify(r).length).toBeLessThan(25_000);
+    expect(JSON.stringify(r).length).toBeLessThan(30_000);
   });
 
   it("sheds names (not rows) when the full form overflows but ids+flags still fit", () => {
     const inv = makeInventory(83);
     const full = JSON.stringify(fitZoneInventory(inv, 10_000_000)).length; // uncapped size
-    // One below the full size forces shedding; stripped (names removed) is smaller, so it fits.
-    const limit = full - 1;
+    const limit = full - 1; // just below full → sheds names (stripped is smaller, fits)
     const r = fitZoneInventory(inv, limit);
-    const s = r.structuredContent as { groups: Row[]; complete: boolean; namesOmitted?: boolean };
+    const s = payload(r);
     expect(s.complete).toBe(true);
     expect(s.namesOmitted).toBe(true);
     expect(s.groups).toHaveLength(83); // every ad group still present
-    expect((s.groups[0] as Record<string, unknown>).name).toBeUndefined();
-    expect(s.groups[0].id).toBeTruthy();
+    expect((s.groups![0] as Record<string, unknown>).name).toBeUndefined();
+    expect(s.groups![0].id).toBeTruthy();
     expect(JSON.stringify(r).length).toBeLessThanOrEqual(limit);
   });
 
   it("only as a last resort returns ids-only with complete:false — never a silent partial", () => {
     const r = fitZoneInventory(makeInventory(2000), 5_000);
-    const s = r.structuredContent as { complete: boolean; groupIds: string[]; groups?: unknown };
+    const s = payload(r);
     expect(s.complete).toBe(false);
     expect(s.groups).toBeUndefined();
     expect(s.groupIds).toHaveLength(2000); // every id accounted for
