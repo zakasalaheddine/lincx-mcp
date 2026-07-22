@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { eligibility, zoneEligibility, adGroupReach, type EligibilityInput } from "../tools/eligibility.js";
+import { eligibility, adServesInZone, zoneEligibility, adGroupReach, type EligibilityInput } from "../tools/eligibility.js";
 import type { AdGroup, Ad } from "../tools/zoneInventoryTools.js";
 
 const ZONE = "8z7wzb";
@@ -50,10 +50,17 @@ describe("eligibility", () => {
     expect(e.conflicts).toEqual(["whitelisted-cag-mismatch"]);
   });
 
-  it("ad-level whitelist: group targets zero zones, an ad names the zone → via includes ad-level-whitelist", () => {
-    const e = eligibility(input({ params: {} }, [{ id: "ad1", params: { zoneId: [ZONE] } }]));
-    expect(e.eligible).toBe(true);
-    expect(e.via).toEqual(["ad-level-whitelist", "zone-selection"]);
+  it("ad-level params do NOT decide group eligibility (per-ad is a later check): an ad whitelisting the zone can't make a group that targets other zones eligible", () => {
+    const e = eligibility(input({ params: { zoneId: ["other"] } }, [{ id: "ad1", params: { zoneId: [ZONE] } }]));
+    expect(e.eligible).toBe(false);
+    expect(e.reasons).toEqual(["targets-other-zones"]);
+    expect(e.via).toEqual(["zone-selection"]); // no ad-level-whitelist in group via
+  });
+
+  it("archived ad group is never eligible (out of service), even if whitelisted + CAG match", () => {
+    const e = eligibility(input({ params: { zoneId: [ZONE] }, archived: true }));
+    expect(e.eligible).toBe(false);
+    expect(e.reasons).toEqual(["archived"]);
   });
 
   it("free radical only within its CAG: zero zones but CAG mismatch → not eligible", () => {
@@ -61,6 +68,21 @@ describe("eligibility", () => {
     expect(e.eligible).toBe(false);
     expect(e.reasons).toEqual(["cag-mismatch"]);
     expect(e.via).toEqual([]);
+  });
+});
+
+describe("adServesInZone (per-ad last targeting check)", () => {
+  it("ad with no params serves wherever its group is eligible", () => {
+    expect(adServesInZone({ id: "a" }, ZONE)).toBe(true);
+  });
+  it("ad blacklisting the zone does not serve there (its siblings still do)", () => {
+    expect(adServesInZone({ id: "a", exceptParams: { zoneId: [ZONE] } }, ZONE)).toBe(false);
+  });
+  it("ad whitelisting only other zones is confined there → does not serve here", () => {
+    expect(adServesInZone({ id: "a", params: { zoneId: ["other"] } }, ZONE)).toBe(false);
+  });
+  it("ad whitelisting this zone serves here", () => {
+    expect(adServesInZone({ id: "a", params: { zoneId: [ZONE] } }, ZONE)).toBe(true);
   });
 });
 

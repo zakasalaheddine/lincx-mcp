@@ -22,7 +22,7 @@ import {
   asRows, asEntity, rollupZoneTargeting,
   type AdGroup, type Ad, type Campaign, type Creative, type Row,
 } from "./zoneInventoryTools.js";
-import { eligibility, zoneEligibility, adGroupReach, type Eligibility } from "./eligibility.js";
+import { eligibility, adServesInZone, zoneEligibility, adGroupReach, type Eligibility } from "./eligibility.js";
 
 type ZoneLite = { id: string; name?: string; creativeAssetGroupId?: string; templateId?: string };
 type TextResult = { content: { type: "text"; text: string }[] };
@@ -69,7 +69,7 @@ async function fetchIndex(session: NonNullable<Awaited<ReturnType<typeof validat
   const adsByGroup: Record<string, Ad[]> = {};
   for (const a of adRows) {
     if (!a.adGroupId) continue;
-    (adsByGroup[a.adGroupId] ??= []).push({ id: a.id, enabled: a.enabled, archived: a.archived, creativeId: a.creativeId, params: a.params });
+    (adsByGroup[a.adGroupId] ??= []).push({ id: a.id, enabled: a.enabled, archived: a.archived, creativeId: a.creativeId, params: a.params, exceptParams: a.exceptParams });
   }
   return {
     zones, adGroups, campaigns, creatives, adsByGroup,
@@ -116,7 +116,7 @@ export function registerZoneEligibilityTools(server: McpServer): void {
   // 1) zone → eligible ad groups (directly targeted + free radicals)
   server.registerTool("get_zone_eligible_ad_groups", {
     title: "Zone Eligible Ad Groups",
-    description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when its creativeAssetGroupId matches the zone's, it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: whitelisted (the group's or an ad's params.zoneId names the zone) OR it targets ZERO zones (open within its CAG). Results split into 'directlyTargeted' (ad-group-whitelisted and not blacklisted — this reconciles to get_zone_targeting_inventory's targeted set; groups that are targeted but config-broken, e.g. CAG mismatch, are KEPT here with eligible:false and their reasons[]/conflicts[], never silently dropped), 'freeRadicals' (eligible via the shared CAG only — they leak in despite no direct targeting), and 'conflicting' (targets AND excepts the zone). directlyTargeted + conflicting reconciles to the inventory tool. Each row carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. Whole-network scan server-side; only the compact result is returned in the content text (header + compact JSON).`,
+    description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when it is NOT archived (archived = out of service), its creativeAssetGroupId matches the zone's, it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: the group's params.zoneId names the zone OR it targets ZERO zones (open within its CAG). Ad-level params/exceptParams are a per-ad LAST check (they decide WHICH ads serve within an eligible group, and feed has_live_viable_ad), not a group-scoping mechanism. Results split into 'directlyTargeted' (ad-group-whitelisted and not blacklisted — this reconciles to get_zone_targeting_inventory's targeted set; groups that are targeted but config-broken, e.g. CAG mismatch, are KEPT here with eligible:false and their reasons[]/conflicts[], never silently dropped), 'freeRadicals' (eligible via the shared CAG only — they leak in despite no direct targeting), and 'conflicting' (targets AND excepts the zone). directlyTargeted + conflicting reconciles to the inventory tool. Each row carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. Whole-network scan server-side; only the compact result is returned in the content text (header + compact JSON).`,
     inputSchema: z.object({ zoneId: z.string().describe("Zone ID to list eligible ad groups for") }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ zoneId }, extra) => {
@@ -160,7 +160,7 @@ export function registerZoneEligibilityTools(server: McpServer): void {
       const agE = asEntity(agRaw);
       if (!agE.id) return err("Error: Resource not found. Double-check the ad group ID.");
       const adGroup: AdGroup = {
-        id: String(agE.id), name: agE.name as string | undefined,
+        id: String(agE.id), name: agE.name as string | undefined, archived: agE.archived as boolean | undefined,
         params: agE.params as AdGroup["params"], exceptParams: agE.exceptParams as AdGroup["exceptParams"],
         creativeAssetGroupId: agE.creativeAssetGroupId as string | undefined,
       };
@@ -195,41 +195,30 @@ export function registerZoneEligibilityTools(server: McpServer): void {
       const zoneLite: ZoneLite = { id: String(zone.id), name: String(zone.name ?? zone.id), creativeAssetGroupId: zone.creativeAssetGroupId as string | undefined };
 
       let ad: (Ad & { adGroupId?: string }) | undefined;
-      let adBlacklisted = false;
-      let adRestrictedElsewhere = false;
       let groupId = adGroupId;
       if (adId) {
         const adRaw = await workApiRequest<unknown>(g.session!, "GET", `/api/ads/${adId}`);
         const adE = asEntity(adRaw);
         if (!adE.id) return err("Error: Resource not found. Double-check the ad ID.");
-        ad = { id: String(adE.id), enabled: adE.enabled as boolean | undefined, archived: adE.archived as boolean | undefined, creativeId: adE.creativeId as string | undefined, params: adE.params as Ad["params"], adGroupId: adE.adGroupId as string | undefined };
+        ad = { id: String(adE.id), enabled: adE.enabled as boolean | undefined, archived: adE.archived as boolean | undefined, creativeId: adE.creativeId as string | undefined, params: adE.params as Ad["params"], exceptParams: adE.exceptParams as Ad["exceptParams"], adGroupId: adE.adGroupId as string | undefined };
         groupId = ad.adGroupId;
         if (!groupId) return err("Error: that ad has no ad group.");
-        // ponytail: per-AD scoping isn't in the group-level core predicate — apply it here
-        // for the single-ad case. Fold into eligibility() if a bulk read ever needs per-ad rules.
-        // (a) ad-level blacklist: zone in the ad's own exceptParams.
-        const adExceptZones = (adE.exceptParams as { zoneId?: string[] } | undefined)?.zoneId;
-        adBlacklisted = Array.isArray(adExceptZones) && adExceptZones.includes(zoneLite.id);
-        // (b) ad-level whitelist is RESTRICTIVE: a non-empty ad params.zoneId that omits this
-        // zone confines the ad elsewhere, even if its group is open (free radical).
-        const adZones = (ad.params?.zoneId) ?? [];
-        adRestrictedElsewhere = adZones.length > 0 && !adZones.includes(zoneLite.id);
       }
       const agRaw = await workApiRequest<unknown>(g.session!, "GET", `/api/ad-groups/${groupId}`);
       const agE = asEntity(agRaw);
       if (!agE.id) return err("Error: Resource not found. Double-check the ad group ID.");
-      const adGroup: AdGroup = { id: String(agE.id), name: agE.name as string | undefined, params: agE.params as AdGroup["params"], exceptParams: agE.exceptParams as AdGroup["exceptParams"], creativeAssetGroupId: agE.creativeAssetGroupId as string | undefined };
+      const adGroup: AdGroup = { id: String(agE.id), name: agE.name as string | undefined, archived: agE.archived as boolean | undefined, params: agE.params as AdGroup["params"], exceptParams: agE.exceptParams as AdGroup["exceptParams"], creativeAssetGroupId: agE.creativeAssetGroupId as string | undefined };
 
-      const idx = await fetchIndex(g.session!);
-      // For an ad, judge only that ad; for a group, all its ads.
-      const ads = ad ? [ad] : (idx.adsByGroup[adGroup.id] ?? []);
-      const verdict = eligibility({ adGroup, zone: zoneLite, ads });
-      const reasons = [
-        ...verdict.reasons,
-        ...(adBlacklisted ? ["ad-blacklisted"] : []),
-        ...(adRestrictedElsewhere ? ["ad-targets-other-zones"] : []),
-      ];
-      const eligible = verdict.eligible && !adBlacklisted && !adRestrictedElsewhere;
+      // Group-level verdict first; ad-level params only narrow WHICH ads serve within it.
+      const verdict = eligibility({ adGroup, zone: zoneLite, ads: [] });
+      const reasons = [...verdict.reasons];
+      let eligible = verdict.eligible;
+      if (ad && verdict.eligible && !adServesInZone(ad, zoneLite.id)) {
+        eligible = false;
+        // Distinguish the per-ad reason (blacklist vs confined-elsewhere).
+        if ((ad.exceptParams?.zoneId ?? []).includes(zoneLite.id)) reasons.push("ad-blacklisted");
+        else reasons.push("ad-targets-other-zones");
+      }
 
       const subject = ad ? `ad ${ad.id}` : `ad group ${adGroup.name ?? adGroup.id} (${adGroup.id})`;
       const header = eligible
