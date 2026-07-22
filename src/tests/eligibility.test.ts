@@ -64,19 +64,35 @@ describe("eligibility", () => {
   });
 });
 
-describe("zoneEligibility (zone → eligible groups, split)", () => {
+describe("zoneEligibility (zone → groups, bucketed by scoping)", () => {
   const groups: AdGroup[] = [
-    { id: "direct", creativeAssetGroupId: CAG, params: { zoneId: [ZONE] } },   // directly targeted
+    { id: "direct", creativeAssetGroupId: CAG, params: { zoneId: [ZONE] } },   // whitelisted, eligible
     { id: "radical", creativeAssetGroupId: CAG, params: {} },                   // free radical
-    { id: "other", creativeAssetGroupId: CAG, params: { zoneId: ["z9"] } },     // scoped out
-    { id: "wrongcag", creativeAssetGroupId: "x", params: {} },                  // not eligible
-    { id: "blocked", creativeAssetGroupId: CAG, params: {}, exceptParams: { zoneId: [ZONE] } }, // blacklisted
+    { id: "other", creativeAssetGroupId: CAG, params: { zoneId: ["z9"] } },     // scoped out → dropped
+    { id: "wrongcag", creativeAssetGroupId: "x", params: {} },                  // not eligible → dropped
+    { id: "cagmiss", creativeAssetGroupId: "x", params: { zoneId: [ZONE] } },   // whitelisted but CAG mismatch
+    { id: "both", creativeAssetGroupId: CAG, params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } }, // targets+excepts
   ];
 
-  it("splits directlyTargeted vs freeRadicals and drops the ineligible", () => {
+  it("directlyTargeted = ad-group-whitelisted & not blacklisted (reconciles to the inventory 83), incl. CAG-mismatch", () => {
     const r = zoneEligibility(groups, zone, {});
-    expect(r.directlyTargeted.map((e) => e.adGroupId)).toEqual(["direct"]);
+    expect(r.directlyTargeted.map((e) => e.adGroupId).sort()).toEqual(["cagmiss", "direct"]);
+  });
+  it("keeps a whitelisted-but-ineligible group in directlyTargeted with its conflict surfaced (no silent drop)", () => {
+    const r = zoneEligibility(groups, zone, {});
+    const cm = r.directlyTargeted.find((e) => e.adGroupId === "cagmiss")!;
+    expect(cm.eligible).toBe(false);
+    expect(cm.conflicts).toEqual(["whitelisted-cag-mismatch"]);
+  });
+  it("freeRadicals = eligible but not ad-group-whitelisted", () => {
+    const r = zoneEligibility(groups, zone, {});
     expect(r.freeRadicals.map((e) => e.adGroupId)).toEqual(["radical"]);
+  });
+  it("targets-and-excepts goes to conflicting, not directlyTargeted", () => {
+    const r = zoneEligibility(groups, zone, {});
+    expect(r.conflicting.map((e) => e.adGroupId)).toEqual(["both"]);
+    expect(r.conflicting[0].conflicts).toContain("targets-and-excepts");
+    expect(r.directlyTargeted.map((e) => e.adGroupId)).not.toContain("both");
   });
 });
 
