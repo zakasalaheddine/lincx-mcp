@@ -32,6 +32,7 @@ describe("selectTargeting", () => {
 
 const base = (over: Partial<Parameters<typeof rollupZoneTargeting>[0]> = {}) =>
   rollupZoneTargeting({
+    zoneId: ZONE,
     zoneCag: CAG,
     targeted: [ag()],
     conflicting: [],
@@ -95,6 +96,32 @@ describe("rollupZoneTargeting", () => {
     });
     expect(groups.map((g) => g.id)).toEqual(["ag2"]);
   });
+  it("scoped_via: a plain whitelisted group (different CAG, no ad-level whitelist) is ad-group-whitelist only", () => {
+    const { groups } = base({
+      targeted: [ag({ creativeAssetGroupId: "other" })],
+      adsByGroup: { ag1: [{ id: "ad1", enabled: true, creativeId: "cr1" }] },
+    });
+    expect(groups[0].scoped_via).toEqual(["ad-group-whitelist"]);
+  });
+  it("scoped_via: an ad in the group also whitelisting the zone adds ad-level-whitelist", () => {
+    const { groups } = base({
+      targeted: [ag({ creativeAssetGroupId: "other" })],
+      adsByGroup: { ag1: [{ id: "ad1", enabled: true, creativeId: "cr1", params: { zoneId: [ZONE] } }] },
+    });
+    expect(groups[0].scoped_via).toEqual(["ad-group-whitelist", "ad-level-whitelist"]);
+  });
+  it("scoped_via: a group sharing the zone's CAG adds zone-selection", () => {
+    const { groups } = base({ targeted: [ag({ creativeAssetGroupId: CAG })] });
+    expect(groups[0].scoped_via).toEqual(["ad-group-whitelist", "zone-selection"]);
+  });
+  it("scoped_via: all three when ad-level whitelist and CAG both apply", () => {
+    const { groups } = base({
+      targeted: [ag({ creativeAssetGroupId: CAG })],
+      adsByGroup: { ag1: [{ id: "ad1", enabled: true, creativeId: "cr1", params: { zoneId: [ZONE] } }] },
+    });
+    expect(groups[0].scoped_via).toEqual(["ad-group-whitelist", "ad-level-whitelist", "zone-selection"]);
+  });
+
   it("summary counts are over the full targeted set regardless of mode filter", () => {
     const { summary } = base({
       targeted: [ag({ id: "ag1" }), ag({ id: "ag2", campaignId: "c2" })],
