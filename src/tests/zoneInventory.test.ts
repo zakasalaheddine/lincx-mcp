@@ -122,6 +122,24 @@ describe("rollupZoneTargeting", () => {
     expect(groups[0].scoped_via).toEqual(["ad-group-whitelist", "ad-level-whitelist", "zone-selection"]);
   });
 
+  it("per-ad zone check: an enabled+viable ad blacklisted from the zone does NOT make the group live there", () => {
+    const { groups } = base({
+      adsByGroup: { ag1: [{ id: "ad1", enabled: true, creativeId: "cr1", exceptParams: { zoneId: [ZONE] } }] },
+    });
+    expect(groups[0].has_live_viable_ad).toBe(false);
+    expect(groups[0].off_reason).toContain("no_live_viable_ad");
+  });
+  it("per-ad zone check: a sibling ad that DOES serve keeps the group live", () => {
+    const { groups } = base({
+      adsByGroup: { ag1: [
+        { id: "ad1", enabled: true, creativeId: "cr1", exceptParams: { zoneId: [ZONE] } }, // hidden here
+        { id: "ad2", enabled: true, creativeId: "cr1" },                                    // serves
+      ] },
+    });
+    expect(groups[0].has_live_viable_ad).toBe(true);
+    expect(groups[0].fully_live).toBe(true);
+  });
+
   it("summary counts are over the full targeted set regardless of mode filter", () => {
     const { summary } = base({
       targeted: [ag({ id: "ag1" }), ag({ id: "ag2", campaignId: "c2" })],

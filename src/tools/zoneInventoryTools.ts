@@ -20,7 +20,7 @@ export type AdGroup = {
   campaignId?: string; creativeAssetGroupId?: string;
 };
 export type Campaign = { enabled?: boolean; archived?: boolean };
-export type Ad = { id?: string; enabled?: boolean; archived?: boolean; creativeId?: string; params?: { zoneId?: string[] } };
+export type Ad = { id?: string; enabled?: boolean; archived?: boolean; creativeId?: string; params?: { zoneId?: string[] }; exceptParams?: { zoneId?: string[] } };
 export type Creative = { archived?: boolean };
 export type Mode = "all" | "live" | "off";
 export type Row = {
@@ -94,6 +94,17 @@ export function rollupZoneTargeting(args: {
   const creativeResolves = (creativeId?: string): boolean =>
     creativeId !== undefined && creatives[creativeId] !== undefined;
 
+  // Per-ad LAST targeting check: an ad is hidden in THIS zone if its own
+  // exceptParams blacklists the zone, or its own non-empty params whitelist omits
+  // it. One hidden ad doesn't sink the group — its siblings still serve.
+  const adServesHere = (a: Ad): boolean => {
+    if (zoneId === undefined) return true;
+    if (has(a.exceptParams?.zoneId, zoneId)) return false;
+    const wl = a.params?.zoneId;
+    if (Array.isArray(wl) && wl.length > 0 && !wl.includes(zoneId)) return false;
+    return true;
+  };
+
   const all: Row[] = targeted.map((ag) => {
     const campaign = ag.campaignId !== undefined ? campaigns[ag.campaignId] : undefined;
     const ads = adsByGroup[ag.id] ?? [];
@@ -102,7 +113,8 @@ export function rollupZoneTargeting(args: {
     const adgroup_on = on(ag);
     const has_enabled_ad = ads.some(on);
     const creative_resolves = ads.some((a) => creativeResolves(a.creativeId));
-    const has_live_viable_ad = ads.some((a) => on(a) && creativeViable(a.creativeId));
+    // Live-viable is zone-specific: only ads that actually serve in this zone count.
+    const has_live_viable_ad = ads.some((a) => adServesHere(a) && on(a) && creativeViable(a.creativeId));
     const archived = ag.archived === true;
 
     const off_reason: string[] = [];
@@ -247,7 +259,7 @@ The result is the text content: a one-line header, then a blank line, then compa
       const adsByGroup: Record<string, Ad[]> = {};
       for (const a of adRows) {
         if (!a.adGroupId) continue;
-        (adsByGroup[a.adGroupId] ??= []).push({ id: a.id, enabled: a.enabled, archived: a.archived, creativeId: a.creativeId, params: a.params });
+        (adsByGroup[a.adGroupId] ??= []).push({ id: a.id, enabled: a.enabled, archived: a.archived, creativeId: a.creativeId, params: a.params, exceptParams: a.exceptParams });
       }
 
       const { targeted, conflicting } = selectTargeting(adGroups, zoneId);

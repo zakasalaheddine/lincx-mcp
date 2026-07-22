@@ -21,9 +21,9 @@ export type Eligibility = {
   adGroupId: string;
   zoneId: string;
   eligible: boolean;
-  via: string[];       // 'ad-group-whitelist' | 'ad-level-whitelist' | 'zone-selection'
+  via: string[];       // 'ad-group-whitelist' | 'zone-selection'
   excluded: boolean;   // blacklisted via exceptParams
-  reasons: string[];   // 'blacklisted' | 'cag-mismatch' | 'targets-other-zones'
+  reasons: string[];   // 'archived' | 'blacklisted' | 'cag-mismatch' | 'targets-other-zones'
   conflicts: string[]; // 'targets-and-excepts' | 'whitelisted-cag-mismatch'
 };
 
@@ -31,23 +31,24 @@ const has = (arr: string[] | undefined, v: string): boolean =>
   Array.isArray(arr) && arr.includes(v);
 
 /**
- * Eligible = CAG match AND not blacklisted AND in scope, where in scope is one
- * of: the group whitelists the zone, an ad whitelists it, or the group targets
- * ZERO zones (open within its CAG → "free radical"). exceptParams.zoneId is a
- * blacklist (the opposite of params) and always wins.
+ * GROUP-level eligibility: can this ad group serve ANY ad in this zone?
+ * Eligible = not archived AND CAG match AND not blacklisted AND in scope, where
+ * in scope = the group whitelists the zone OR targets ZERO zones (open within its
+ * CAG → "free radical"). `exceptParams.zoneId` is a blacklist (the opposite of
+ * params) and always wins. Ad-level params are NOT a group-scoping mechanism —
+ * they only filter WHICH ads serve within an eligible group (see adServesInZone).
  */
-export function eligibility({ adGroup, zone, ads }: EligibilityInput): Eligibility {
+export function eligibility({ adGroup, zone }: EligibilityInput): Eligibility {
   const zoneId = zone.id;
+  const archived = adGroup.archived === true;
   const cagMatch = zone.creativeAssetGroupId !== undefined
     && adGroup.creativeAssetGroupId === zone.creativeAssetGroupId;
   const inParams = has(adGroup.params?.zoneId, zoneId);
   const inExcept = has(adGroup.exceptParams?.zoneId, zoneId);
-  const adLevelWhitelist = ads.some((a) => has(a.params?.zoneId, zoneId));
   const targetsZeroZones = (adGroup.params?.zoneId?.length ?? 0) === 0;
 
   const via: string[] = [];
   if (inParams) via.push("ad-group-whitelist");
-  if (adLevelWhitelist) via.push("ad-level-whitelist");
   if (cagMatch) via.push("zone-selection");
 
   const conflicts: string[] = [];
@@ -56,17 +57,33 @@ export function eligibility({ adGroup, zone, ads }: EligibilityInput): Eligibili
 
   const reasons: string[] = [];
   let eligible = false;
-  if (inExcept) {
+  if (archived) {
+    reasons.push("archived");
+  } else if (inExcept) {
     reasons.push("blacklisted");
   } else if (!cagMatch) {
     reasons.push("cag-mismatch");
-  } else if (inParams || adLevelWhitelist || targetsZeroZones) {
+  } else if (inParams || targetsZeroZones) {
     eligible = true;
   } else {
     reasons.push("targets-other-zones");
   }
 
   return { adGroupId: adGroup.id, zoneId, eligible, via, excluded: inExcept, reasons, conflicts };
+}
+
+/**
+ * Per-ad LAST targeting check, applied only within a group already eligible for
+ * the zone: an ad serves in the zone unless its own `exceptParams.zoneId`
+ * blacklists it there, or its own `params.zoneId` is a non-empty whitelist that
+ * omits the zone (confining that ad to other zones). One blacklisted ad is hidden
+ * while its siblings still serve.
+ */
+export function adServesInZone(ad: Ad, zoneId: string): boolean {
+  if (has(ad.exceptParams?.zoneId, zoneId)) return false;
+  const wl = ad.params?.zoneId;
+  if (Array.isArray(wl) && wl.length > 0 && !wl.includes(zoneId)) return false;
+  return true;
 }
 
 /**
