@@ -39,7 +39,7 @@ const on = (x: { enabled?: boolean; archived?: boolean } | undefined): boolean =
 const has = (arr: string[] | undefined, v: string): boolean => Array.isArray(arr) && arr.includes(v);
 
 /** Pull the row array out of an unknown list response (bare array, {data:[]}, {items:[]}). */
-function asRows<T = Record<string, unknown>>(data: unknown): T[] {
+export function asRows<T = Record<string, unknown>>(data: unknown): T[] {
   if (Array.isArray(data)) return data as T[];
   if (data && typeof data === "object") {
     const obj = data as Record<string, unknown>;
@@ -49,7 +49,7 @@ function asRows<T = Record<string, unknown>>(data: unknown): T[] {
 }
 
 /** Unwrap a single-entity response that may be `{ data: {...} }` or the bare object. */
-function asEntity(data: unknown): Record<string, unknown> {
+export function asEntity(data: unknown): Record<string, unknown> {
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
     if (obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)) return obj.data as Record<string, unknown>;
