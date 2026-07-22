@@ -107,17 +107,37 @@ contradictions, etc.). Empty array = no conflicts.
 
 ### Three thin tools over the one core
 
-1. **`get_zone_eligible_ad_groups(zoneId)`** — flips `get_zone_targeting_inventory`:
-   everything *eligible* in a zone, split `directlyTargeted[]` (any whitelist) vs
-   `freeRadicals[]` (zone-selection only, untargeted), each carrying the existing
-   live rollup (`fully_live`, `off_reason`, …) so the same table renders.
+1. **`get_zone_eligible_ad_groups(zoneId)`** — flips `get_zone_targeting_inventory`.
+   Buckets groups by **how they are scoped, not by whether they end up eligible**,
+   so nothing config-broken vanishes and the result reconciles to the inventory tool:
+   - `directlyTargeted[]` — ad-group-whitelisted and not blacklisted (= the inventory
+     tool's targeted set). Groups that are targeted but config-broken (e.g. CAG
+     mismatch → `eligible:false`) **stay here** with their `reasons`/`conflicts`,
+     never dropped.
+   - `freeRadicals[]` — eligible but not ad-group-whitelisted (leaks in via shared CAG).
+   - `conflicting[]` — targets AND excepts the zone.
+
+   `directlyTargeted + conflicting` reconciles exactly to `get_zone_targeting_inventory`.
+   Each row carries the existing live rollup (`fully_live`, `off_reason`, `scoped_via`, …)
+   plus `eligible`, `via[]`, `reasons[]`, `conflicts[]`.
+
+   > **Why bucket by scoping, not by eligibility:** every `conflicts[]` value forces
+   > `eligible:false`, so filtering to eligible rows would make `conflicts[]` dead on
+   > every emitted row and silently drop whitelisted-but-broken groups — the exact
+   > silent-partial the inventory tool avoids. Keeping the targeted set whole is what
+   > gives `conflicts[]` a surface.
 2. **`get_ad_group_zone_reach(adGroupId)`** — "which zones can this ad group leak
    into": the flip. Direct-target zones + free-radical zones (same CAG, group
    targets zero zones), each with `via` and any `conflicts`.
 3. **`explain_serve(zoneId, { adGroupId | adId })`** — the pair query: is this
    group/ad eligible in this zone, by what path (`via`), and if not, *why not*
    (`reasons`) + any `conflicts`. This is the "why did X serve in this zone"
-   direction — the same join evaluated for a single pair.
+   direction — the same join evaluated for a single pair. For an `adId`, the ad's
+   own params/exceptParams are applied on top of the group verdict: an ad-level
+   **whitelist is restrictive** (a non-empty ad `params.zoneId` that omits the zone
+   confines the ad elsewhere → `ad-targets-other-zones`), and an ad-level blacklist
+   (`ad-blacklisted`) excludes it. These per-ad rules live in the tool layer, not the
+   core (fold into `eligibility()` if a bulk read ever needs per-ad rules).
 
 All three are thin: session guard → the same whole-network GETs
 `get_zone_targeting_inventory` already makes (`/api/zones`, `/api/ad-groups`,
@@ -144,6 +164,13 @@ incomplete).
 - A write/audit tool that acts on `conflicts[]` — this only surfaces them.
 - The team-vs-client access layer itself — the core is *shaped* to accept it
   (network-agnostic inputs), but the layer is not built here.
+
+## To confirm on handback
+
+- **Ad-level whitelist is restrictive** (see `explain_serve`) — assumed, not yet
+  verified against the serving engine.
+- **Archived groups stay `eligible:true`** (the predicate is config-only); the live
+  rollup then marks them off — same treatment as `get_zone_targeting_inventory`.
 
 ## Cadence
 
