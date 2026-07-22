@@ -81,22 +81,25 @@ async function fetchIndex(session: NonNullable<Awaited<ReturnType<typeof validat
 }
 
 /** header + compact JSON in the content text; degrade only by shedding row bodies
- * (never the exact summary counts) if a pathological set overflows the guard. */
-function pack(header: string, payload: Record<string, unknown>, rowKeys: string[]): TextResult {
+ * (never the exact summary counts) if a pathological set overflows the guard.
+ * `rowKeys` maps each row-array key to the field to keep as its id when shedding. */
+function pack(header: string, payload: Record<string, unknown>, rowKeys: Record<string, "id" | "adGroupId" | "zoneId">): TextResult {
   const render = (p: Record<string, unknown>) => ({ content: [{ type: "text" as const, text: `${header}\n\n${JSON.stringify(p)}` }] });
   const full = render(payload);
   if (JSON.stringify(full).length <= RESPONSE_SIZE_LIMIT) return full;
-  // Overflow: replace each row array with its ids + a truncated flag. Summary stays exact.
+  // Overflow: replace each row array with just its ids + a truncated flag. Summary stays exact.
   const shed: Record<string, unknown> = { ...payload, truncated: true };
-  for (const k of rowKeys) {
+  for (const [k, idKey] of Object.entries(rowKeys)) {
     const rows = payload[k];
-    if (Array.isArray(rows)) shed[k] = rows.map((r) => (r as { id?: string; adGroupId?: string; zoneId?: string }).id ?? (r as { adGroupId?: string }).adGroupId ?? (r as { zoneId?: string }).zoneId);
+    if (Array.isArray(rows)) shed[k] = rows.map((r) => (r as Record<string, string>)[idKey]);
   }
   return render(shed);
 }
 
-/** Merge each eligible group's live rollup row with its join verdict (via/conflicts). */
-function enrich(elig: Eligibility[], idx: Index, zoneId: string, zoneCag?: string): (Row & { via: string[]; conflicts: string[] })[] {
+type EnrichedRow = Row & { eligible: boolean; via: string[]; reasons: string[]; conflicts: string[] };
+
+/** Merge each group's live rollup row with its join verdict (eligible/via/reasons/conflicts). */
+function enrich(elig: Eligibility[], idx: Index, zoneId: string, zoneCag?: string): EnrichedRow[] {
   const byId = new Map(elig.map((e) => [e.adGroupId, e]));
   const groups = idx.adGroups.filter((g) => byId.has(g.id));
   const { groups: rows } = rollupZoneTargeting({
@@ -105,7 +108,7 @@ function enrich(elig: Eligibility[], idx: Index, zoneId: string, zoneCag?: strin
   });
   return rows.map((r) => {
     const e = byId.get(r.id)!;
-    return { ...r, via: e.via, conflicts: e.conflicts };
+    return { ...r, eligible: e.eligible, via: e.via, reasons: e.reasons, conflicts: e.conflicts };
   });
 }
 
@@ -113,7 +116,7 @@ export function registerZoneEligibilityTools(server: McpServer): void {
   // 1) zone → eligible ad groups (directly targeted + free radicals)
   server.registerTool("get_zone_eligible_ad_groups", {
     title: "Zone Eligible Ad Groups",
-    description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when its creativeAssetGroupId matches the zone's, it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: whitelisted (the group's or an ad's params.zoneId names the zone) OR it targets ZERO zones (open within its CAG). Results split into 'directlyTargeted' (whitelisted) and 'freeRadicals' (eligible via the shared CAG only — they leak in despite no direct targeting). Each row carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus via[] and any conflicts[]. Whole-network scan server-side; only the compact result is returned in the content text (header + compact JSON).`,
+    description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when its creativeAssetGroupId matches the zone's, it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: whitelisted (the group's or an ad's params.zoneId names the zone) OR it targets ZERO zones (open within its CAG). Results split into 'directlyTargeted' (ad-group-whitelisted and not blacklisted — this reconciles to get_zone_targeting_inventory's targeted set; groups that are targeted but config-broken, e.g. CAG mismatch, are KEPT here with eligible:false and their reasons[]/conflicts[], never silently dropped), 'freeRadicals' (eligible via the shared CAG only — they leak in despite no direct targeting), and 'conflicting' (targets AND excepts the zone). directlyTargeted + conflicting reconciles to the inventory tool. Each row carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. Whole-network scan server-side; only the compact result is returned in the content text (header + compact JSON).`,
     inputSchema: z.object({ zoneId: z.string().describe("Zone ID to list eligible ad groups for") }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ zoneId }, extra) => {
@@ -126,17 +129,20 @@ export function registerZoneEligibilityTools(server: McpServer): void {
       const idx = await fetchIndex(g.session!);
       const zoneLite: ZoneLite = { id: String(zone.id), name: String(zone.name ?? zone.id), creativeAssetGroupId: zone.creativeAssetGroupId as string | undefined, templateId: zone.templateId as string | undefined };
 
-      const { directlyTargeted, freeRadicals } = zoneEligibility(idx.adGroups, zoneLite, idx.adsByGroup);
+      const { directlyTargeted, freeRadicals, conflicting } = zoneEligibility(idx.adGroups, zoneLite, idx.adsByGroup);
       const direct = enrich(directlyTargeted, idx, zoneLite.id, zoneLite.creativeAssetGroupId);
       const radicals = enrich(freeRadicals, idx, zoneLite.id, zoneLite.creativeAssetGroupId);
+      const conflict = enrich(conflicting, idx, zoneLite.id, zoneLite.creativeAssetGroupId);
 
       const summary = {
-        eligible: direct.length + radicals.length,
+        // directlyTargeted + conflicting reconciles to get_zone_targeting_inventory's targeted + conflicting.
         directlyTargeted: direct.length, directlyTargetedLive: direct.filter((r) => r.fully_live).length,
+        directlyTargetedIneligible: direct.filter((r) => !r.eligible).length,
         freeRadicals: radicals.length, freeRadicalsLive: radicals.filter((r) => r.fully_live).length,
+        conflicting: conflict.length,
       };
-      const header = `Zone ${zoneLite.name} (${zoneLite.id}) — ${summary.eligible} eligible · ${summary.directlyTargeted} targeted (${summary.directlyTargetedLive} live) · ${summary.freeRadicals} free radicals (${summary.freeRadicalsLive} live)`;
-      return pack(header, { zone: zoneLite, summary, directlyTargeted: direct, freeRadicals: radicals, scan: idx.scan }, ["directlyTargeted", "freeRadicals"]);
+      const header = `Zone ${zoneLite.name} (${zoneLite.id}) — ${summary.directlyTargeted} targeted (${summary.directlyTargetedLive} live, ${summary.directlyTargetedIneligible} config-ineligible) · ${summary.freeRadicals} free radicals (${summary.freeRadicalsLive} live) · ${summary.conflicting} conflicting`;
+      return pack(header, { zone: zoneLite, summary, directlyTargeted: direct, freeRadicals: radicals, conflicting: conflict, scan: idx.scan }, { directlyTargeted: "id", freeRadicals: "id", conflicting: "id" });
     } catch (e) { return err(handleWorkApiError(e)); }
   });
 
@@ -164,7 +170,7 @@ export function registerZoneEligibilityTools(server: McpServer): void {
       const named = reach.map((e) => ({ ...e, zoneName: idx.zones.find((z) => z.id === e.zoneId)?.name ?? e.zoneId }));
       const direct = named.filter((e) => e.via.includes("ad-group-whitelist") || e.via.includes("ad-level-whitelist")).length;
       const header = `Ad group ${adGroup.name ?? adGroup.id} (${adGroup.id}) reaches ${reach.length} zones — ${direct} targeted · ${reach.length - direct} via shared CAG (free radical)`;
-      return pack(header, { adGroup: { id: adGroup.id, name: adGroup.name, creativeAssetGroupId: adGroup.creativeAssetGroupId }, summary: { reaches: reach.length, targeted: direct, freeRadical: reach.length - direct }, zones: named, scan: idx.scan }, ["zones"]);
+      return pack(header, { adGroup: { id: adGroup.id, name: adGroup.name, creativeAssetGroupId: adGroup.creativeAssetGroupId }, summary: { reaches: reach.length, targeted: direct, freeRadical: reach.length - direct }, zones: named, scan: idx.scan }, { zones: "zoneId" });
     } catch (e) { return err(handleWorkApiError(e)); }
   });
 
@@ -190,6 +196,7 @@ export function registerZoneEligibilityTools(server: McpServer): void {
 
       let ad: (Ad & { adGroupId?: string }) | undefined;
       let adBlacklisted = false;
+      let adRestrictedElsewhere = false;
       let groupId = adGroupId;
       if (adId) {
         const adRaw = await workApiRequest<unknown>(g.session!, "GET", `/api/ads/${adId}`);
@@ -198,11 +205,15 @@ export function registerZoneEligibilityTools(server: McpServer): void {
         ad = { id: String(adE.id), enabled: adE.enabled as boolean | undefined, archived: adE.archived as boolean | undefined, creativeId: adE.creativeId as string | undefined, params: adE.params as Ad["params"], adGroupId: adE.adGroupId as string | undefined };
         groupId = ad.adGroupId;
         if (!groupId) return err("Error: that ad has no ad group.");
-        // ponytail: ad-level blacklist (zone in the ad's own exceptParams) isn't in the
-        // core predicate — check it here for the single-ad case. Upgrade into eligibility()
-        // if a bulk read ever needs per-ad blacklists.
+        // ponytail: per-AD scoping isn't in the group-level core predicate — apply it here
+        // for the single-ad case. Fold into eligibility() if a bulk read ever needs per-ad rules.
+        // (a) ad-level blacklist: zone in the ad's own exceptParams.
         const adExceptZones = (adE.exceptParams as { zoneId?: string[] } | undefined)?.zoneId;
         adBlacklisted = Array.isArray(adExceptZones) && adExceptZones.includes(zoneLite.id);
+        // (b) ad-level whitelist is RESTRICTIVE: a non-empty ad params.zoneId that omits this
+        // zone confines the ad elsewhere, even if its group is open (free radical).
+        const adZones = (ad.params?.zoneId) ?? [];
+        adRestrictedElsewhere = adZones.length > 0 && !adZones.includes(zoneLite.id);
       }
       const agRaw = await workApiRequest<unknown>(g.session!, "GET", `/api/ad-groups/${groupId}`);
       const agE = asEntity(agRaw);
@@ -213,14 +224,18 @@ export function registerZoneEligibilityTools(server: McpServer): void {
       // For an ad, judge only that ad; for a group, all its ads.
       const ads = ad ? [ad] : (idx.adsByGroup[adGroup.id] ?? []);
       const verdict = eligibility({ adGroup, zone: zoneLite, ads });
-      const reasons = adBlacklisted ? [...verdict.reasons, "ad-blacklisted"] : verdict.reasons;
-      const eligible = verdict.eligible && !adBlacklisted;
+      const reasons = [
+        ...verdict.reasons,
+        ...(adBlacklisted ? ["ad-blacklisted"] : []),
+        ...(adRestrictedElsewhere ? ["ad-targets-other-zones"] : []),
+      ];
+      const eligible = verdict.eligible && !adBlacklisted && !adRestrictedElsewhere;
 
       const subject = ad ? `ad ${ad.id}` : `ad group ${adGroup.name ?? adGroup.id} (${adGroup.id})`;
       const header = eligible
         ? `${subject} IS eligible in zone ${zoneLite.name} (${zoneLite.id}) — via ${verdict.via.join(", ")}`
         : `${subject} is NOT eligible in zone ${zoneLite.name} (${zoneLite.id}) — ${reasons.join(", ")}`;
-      return pack(header, { zone: zoneLite, subject: ad ? { adId: ad.id, adGroupId: adGroup.id } : { adGroupId: adGroup.id }, ...verdict, eligible, reasons }, []);
+      return pack(header, { zone: zoneLite, subject: ad ? { adId: ad.id, adGroupId: adGroup.id } : { adGroupId: adGroup.id }, ...verdict, eligible, reasons }, {});
     } catch (e) { return err(handleWorkApiError(e)); }
   });
 }

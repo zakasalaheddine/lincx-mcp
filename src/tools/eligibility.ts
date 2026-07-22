@@ -69,24 +69,32 @@ export function eligibility({ adGroup, zone, ads }: EligibilityInput): Eligibili
   return { adGroupId: adGroup.id, zoneId, eligible, via, excluded: inExcept, reasons, conflicts };
 }
 
-const whitelisted = (e: Eligibility): boolean =>
-  e.via.includes("ad-group-whitelist") || e.via.includes("ad-level-whitelist");
-
-/** zone → the eligible ad groups, split into those directly whitelisted and the
- * free radicals (eligible via shared CAG only, no whitelist). */
+/**
+ * zone → its ad groups bucketed by how they are scoped (NOT by eligibility):
+ * - `directlyTargeted` — ad-group-whitelisted and not blacklisted (= the inventory
+ *   tool's targeted set; reconciles to it). Kept even when NOT eligible (e.g. CAG
+ *   mismatch) so config problems surface via each row's `conflicts`/`reasons`
+ *   instead of silently vanishing.
+ * - `freeRadicals` — eligible but not ad-group-whitelisted (leaks in via shared CAG).
+ * - `conflicting` — ad-group-whitelisted AND blacklisted (targets+excepts the zone).
+ * Groups neither whitelisted nor eligible are dropped (they don't touch the zone).
+ */
 export function zoneEligibility(
   adGroups: AdGroup[],
   zone: { id: string; creativeAssetGroupId?: string },
   adsByGroup: Record<string, Ad[]>,
-): { directlyTargeted: Eligibility[]; freeRadicals: Eligibility[] } {
+): { directlyTargeted: Eligibility[]; freeRadicals: Eligibility[]; conflicting: Eligibility[] } {
   const directlyTargeted: Eligibility[] = [];
   const freeRadicals: Eligibility[] = [];
+  const conflicting: Eligibility[] = [];
   for (const adGroup of adGroups) {
     const e = eligibility({ adGroup, zone, ads: adsByGroup[adGroup.id] ?? [] });
-    if (!e.eligible) continue;
-    (whitelisted(e) ? directlyTargeted : freeRadicals).push(e);
+    const agWhitelist = e.via.includes("ad-group-whitelist");
+    if (agWhitelist && e.excluded) conflicting.push(e);
+    else if (agWhitelist) directlyTargeted.push(e);
+    else if (e.eligible) freeRadicals.push(e);
   }
-  return { directlyTargeted, freeRadicals };
+  return { directlyTargeted, freeRadicals, conflicting };
 }
 
 /** group → every zone it can serve/leak into (the flip of zoneEligibility). */
