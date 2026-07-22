@@ -377,7 +377,7 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 
 ### Zone eligibility join (composite)
 The general eligibility primitive (`tools/eligibility.ts`, pure + network-agnostic): an ad group is **eligible** in a zone when its `creativeAssetGroupId` matches the zone's, it is not blacklisted (`exceptParams.zoneId` = blacklist, the opposite of `params`, and always wins), and it is in scope — whitelisted (group or ad `params.zoneId`) OR it targets **zero** zones (open within its CAG → *free radical*, leaks in with no direct targeting). One pure join, three thin reads (same whole-network scan, compact result in the content text):
-- `get_zone_eligible_ad_groups` — zone → eligible groups, split `directlyTargeted[]` vs `freeRadicals[]`, each with the live rollup (`fully_live`, `off_reason[]`, `scoped_via[]`) plus `via[]`/`conflicts[]`.
+- `get_zone_eligible_ad_groups` — zone → groups bucketed `directlyTargeted[]` (ad-group-whitelisted & not blacklisted — reconciles to the inventory tool's targeted set; config-broken-but-targeted groups stay here with `eligible:false` + `reasons`/`conflicts`, never dropped), `freeRadicals[]` (eligible via shared CAG only), `conflicting[]` (targets+excepts). Each row carries the live rollup (`fully_live`, `off_reason[]`, `scoped_via[]`) plus `eligible`, `via[]`, `reasons[]`, `conflicts[]`.
 - `get_ad_group_zone_reach` — group → every zone it can serve/leak into (the flip).
 - `explain_serve` — (zone, adGroup|ad) pair → eligible? by what `via[]`? if not, `reasons[]` — the "why did X serve here" direction.
 
