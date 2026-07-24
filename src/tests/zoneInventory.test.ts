@@ -121,6 +121,13 @@ describe("rollupZoneTargeting", () => {
     });
     expect(groups[0].scoped_via).toEqual(["ad-group-whitelist", "ad-level-whitelist", "zone-selection"]);
   });
+  it("scoped_via: an ad excluding the zone adds ad-level-blacklist", () => {
+    const { groups } = base({
+      targeted: [ag({ creativeAssetGroupId: "other" })],
+      adsByGroup: { ag1: [{ id: "ad1", enabled: true, creativeId: "cr1", exceptParams: { zoneId: [ZONE] } }] },
+    });
+    expect(groups[0].scoped_via).toEqual(["ad-group-whitelist", "ad-level-blacklist"]);
+  });
 
   it("per-ad zone check: an enabled+viable ad blacklisted from the zone does NOT make the group live there", () => {
     const { groups } = base({
