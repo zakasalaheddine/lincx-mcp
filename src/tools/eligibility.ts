@@ -87,12 +87,98 @@ export function adServesInZone(ad: Ad, zoneId: string): boolean {
 }
 
 /**
+ * OFFER grain: a single (ad group × ad) pair evaluated against a zone. The group
+ * verdict decides whether the pair can be considered at all (filterAdgroups runs
+ * first — an ad-level whitelist can never rescue an ineligible group); the ad's own
+ * params/exceptParams are then the last check.
+ */
+export type Offer = {
+  adGroupId: string;
+  adId: string;
+  zoneId: string;
+  serves: boolean;       // group eligible AND this ad passes its own targeting
+  scoped_via: string[];  // 'ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection'
+  freeRadical: boolean;  // serves via the shared CAG ONLY — no whitelist at either level
+  reasons: string[];     // group reasons + 'ad-blacklisted' | 'ad-targets-other-zones'
+};
+
+/**
+ * Evaluate one (ad group × ad) pair in a zone, on top of an already-computed group
+ * verdict. A **free radical** at this grain is an untargeted ad under an untargeted
+ * group, net of blacklists at BOTH levels — i.e. it renders solely via the shared
+ * CAG. An ad whose own `params.zoneId` names the zone is ad-level-TARGETED, not a
+ * free radical (counting it as one over-counts the CAG leak).
+ */
+export function offerEligibility(
+  group: Eligibility,
+  adGroup: AdGroup,
+  ad: Ad,
+  zone: { id: string; creativeAssetGroupId?: string },
+): Offer {
+  const zoneId = zone.id;
+  const scoped_via: string[] = [];
+  if (has(adGroup.params?.zoneId, zoneId)) scoped_via.push("ad-group-whitelist");
+  if (has(adGroup.exceptParams?.zoneId, zoneId)) scoped_via.push("ad-group-blacklist");
+  if (has(ad.params?.zoneId, zoneId)) scoped_via.push("ad-level-whitelist");
+  if (has(ad.exceptParams?.zoneId, zoneId)) scoped_via.push("ad-level-blacklist");
+  if (zone.creativeAssetGroupId !== undefined && adGroup.creativeAssetGroupId === zone.creativeAssetGroupId) {
+    scoped_via.push("zone-selection");
+  }
+
+  const reasons = [...group.reasons];
+  let serves = group.eligible;
+  if (serves && !adServesInZone(ad, zoneId)) {
+    serves = false;
+    reasons.push(has(ad.exceptParams?.zoneId, zoneId) ? "ad-blacklisted" : "ad-targets-other-zones");
+  }
+
+  const freeRadical = serves
+    && !scoped_via.includes("ad-group-whitelist")
+    && !scoped_via.includes("ad-level-whitelist");
+
+  return { adGroupId: adGroup.id, adId: ad.id ?? "", zoneId, serves, scoped_via, freeRadical, reasons };
+}
+
+export type OfferRollup = {
+  total: number;             // ads in the group
+  serving: number;           // offers that actually serve in this zone
+  freeRadical: number;       // serving via shared CAG only (the true leak count)
+  adLevelTargeted: number;   // ad's own params.zoneId names the zone
+  adLevelBlacklisted: number;// ad's own exceptParams.zoneId excludes the zone
+  confinedElsewhere: number; // ad whitelists only OTHER zones
+  freeRadicalAdIds: string[];
+};
+
+/** Per-group offer-grain counts, so a pure free-radical subset is derivable. */
+export function offerRollup(
+  group: Eligibility,
+  adGroup: AdGroup,
+  ads: Ad[],
+  zone: { id: string; creativeAssetGroupId?: string },
+): OfferRollup {
+  const offers = ads.map((ad) => offerEligibility(group, adGroup, ad, zone));
+  const freeRadicals = offers.filter((o) => o.freeRadical);
+  return {
+    total: offers.length,
+    serving: offers.filter((o) => o.serves).length,
+    freeRadical: freeRadicals.length,
+    adLevelTargeted: offers.filter((o) => o.scoped_via.includes("ad-level-whitelist")).length,
+    adLevelBlacklisted: offers.filter((o) => o.scoped_via.includes("ad-level-blacklist")).length,
+    confinedElsewhere: offers.filter((o) => o.reasons.includes("ad-targets-other-zones")).length,
+    freeRadicalAdIds: freeRadicals.map((o) => o.adId).filter(Boolean),
+  };
+}
+
+/**
  * zone → its ad groups bucketed by how they are scoped (NOT by eligibility):
  * - `directlyTargeted` — ad-group-whitelisted and not blacklisted (= the inventory
  *   tool's targeted set; reconciles to it). Kept even when NOT eligible (e.g. CAG
  *   mismatch) so config problems surface via each row's `conflicts`/`reasons`
  *   instead of silently vanishing.
  * - `freeRadicals` — eligible but not ad-group-whitelisted (leaks in via shared CAG).
+ *   GROUP grain: a group here can still hold zero free-radical OFFERS (e.g. its only
+ *   ad is zone-whitelisted → that ad renders because it is ad-level-targeted, not via
+ *   the CAG). Use `offerRollup` for the offer-grain count.
  * - `conflicting` — ad-group-whitelisted AND blacklisted (targets+excepts the zone).
  * Groups neither whitelisted nor eligible are dropped (they don't touch the zone).
  */

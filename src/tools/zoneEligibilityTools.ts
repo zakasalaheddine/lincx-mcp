@@ -22,7 +22,10 @@ import {
   asRows, asEntity, rollupZoneTargeting,
   type AdGroup, type Ad, type Campaign, type Creative, type Row,
 } from "./zoneInventoryTools.js";
-import { eligibility, adServesInZone, zoneEligibility, adGroupReach, type Eligibility } from "./eligibility.js";
+import {
+  eligibility, zoneEligibility, adGroupReach, offerEligibility, offerRollup,
+  type Eligibility, type OfferRollup,
+} from "./eligibility.js";
 
 type ZoneLite = { id: string; name?: string; creativeAssetGroupId?: string; templateId?: string };
 type TextResult = { content: { type: "text"; text: string }[] };
@@ -96,27 +99,64 @@ function pack(header: string, payload: Record<string, unknown>, rowKeys: Record<
   return render(shed);
 }
 
-type EnrichedRow = Row & { eligible: boolean; via: string[]; reasons: string[]; conflicts: string[] };
+export type EnrichedRow = Row & {
+  eligible: boolean; via: string[]; reasons: string[]; conflicts: string[]; offers: OfferRollup;
+};
 
-/** Merge each group's live rollup row with its join verdict (eligible/via/reasons/conflicts). */
+/** Merge each group's live rollup row with its join verdict (eligible/via/reasons/
+ * conflicts) and its offer-grain (ad group × ad) counts. */
 function enrich(elig: Eligibility[], idx: Index, zoneId: string, zoneCag?: string): EnrichedRow[] {
   const byId = new Map(elig.map((e) => [e.adGroupId, e]));
   const groups = idx.adGroups.filter((g) => byId.has(g.id));
+  const groupById = new Map(groups.map((g) => [g.id, g]));
+  const zone = { id: zoneId, creativeAssetGroupId: zoneCag };
   const { groups: rows } = rollupZoneTargeting({
     zoneId, zoneCag, targeted: groups, conflicting: [],
     campaigns: idx.campaigns, adsByGroup: idx.adsByGroup, creatives: idx.creatives, mode: "all",
   });
   return rows.map((r) => {
     const e = byId.get(r.id)!;
-    return { ...r, eligible: e.eligible, via: e.via, reasons: e.reasons, conflicts: e.conflicts };
+    const offers = offerRollup(e, groupById.get(r.id)!, idx.adsByGroup[r.id] ?? [], zone);
+    return { ...r, eligible: e.eligible, via: e.via, reasons: e.reasons, conflicts: e.conflicts, offers };
   });
+}
+
+type OfferCount = Exclude<keyof OfferRollup, "freeRadicalAdIds">;
+
+/**
+ * Counts for get_zone_eligible_ad_groups, exported for tests. Grain matters:
+ * `freeRadical*` is summed over the free-radical bucket ONLY — a directly-targeted
+ * group's offers always carry `ad-group-whitelist`, and a conflicting group is never
+ * eligible, so neither can hold a free-radical offer. The ad-level totals cover both
+ * SERVING buckets (direct + radicals); `conflicting` is excluded because nothing in it
+ * serves. `directlyTargeted + conflicting` still reconciles to get_zone_targeting_inventory.
+ */
+export function summarizeEligibility(direct: EnrichedRow[], radicals: EnrichedRow[], conflict: EnrichedRow[]) {
+  const sum = (rows: EnrichedRow[], k: OfferCount) => rows.reduce((n, r) => n + r.offers[k], 0);
+  return {
+    directlyTargeted: direct.length,
+    directlyTargetedLive: direct.filter((r) => r.fully_live).length,
+    directlyTargetedIneligible: direct.filter((r) => !r.eligible).length,
+    freeRadicalGroups: radicals.length,
+    freeRadicalGroupsLive: radicals.filter((r) => r.fully_live).length,
+    // Offer grain (ad group × ad) — the true CAG-leak count. A free-radical GROUP
+    // whose only ad is zone-whitelisted contributes 0 free-radical offers.
+    freeRadicalOffers: sum(radicals, "freeRadical"),
+    adLevelTargetedOffers: sum(direct, "adLevelTargeted") + sum(radicals, "adLevelTargeted"),
+    adLevelBlacklistedOffers: sum(direct, "adLevelBlacklisted") + sum(radicals, "adLevelBlacklisted"),
+    conflicting: conflict.length,
+  };
 }
 
 export function registerZoneEligibilityTools(server: McpServer): void {
   // 1) zone → eligible ad groups (directly targeted + free radicals)
   server.registerTool("get_zone_eligible_ad_groups", {
     title: "Zone Eligible Ad Groups",
-    description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when it is NOT archived (archived = out of service), its creativeAssetGroupId matches the zone's, it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: the group's params.zoneId names the zone OR it targets ZERO zones (open within its CAG). Ad-level params/exceptParams are a per-ad LAST check (they decide WHICH ads serve within an eligible group, and feed has_live_viable_ad), not a group-scoping mechanism. Results split into 'directlyTargeted' (ad-group-whitelisted and not blacklisted — this reconciles to get_zone_targeting_inventory's targeted set; groups that are targeted but config-broken, e.g. CAG mismatch, are KEPT here with eligible:false and their reasons[]/conflicts[], never silently dropped), 'freeRadicals' (eligible via the shared CAG only — they leak in despite no direct targeting), and 'conflicting' (targets AND excepts the zone). directlyTargeted + conflicting reconciles to the inventory tool. Each row carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. Whole-network scan server-side; only the compact result is returned in the content text (header + compact JSON).`,
+    description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when it is NOT archived (archived = out of service), its creativeAssetGroupId matches the zone's, it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: the group's params.zoneId names the zone OR it targets ZERO zones (open within its CAG). Ad-level params/exceptParams are a per-ad LAST check (filterAdgroups runs first, so an ad-level whitelist can never rescue an ineligible group) — they decide WHICH ads serve within an eligible group, feed has_live_viable_ad, and drive the offer-grain counts below. Results split into 'directlyTargeted' (ad-group-whitelisted and not blacklisted — this reconciles to get_zone_targeting_inventory's targeted set; groups that are targeted but config-broken, e.g. CAG mismatch, are KEPT here with eligible:false and their reasons[]/conflicts[], never silently dropped), 'freeRadicals' (eligible via the shared CAG only — they leak in despite no direct targeting), and 'conflicting' (targets AND excepts the zone). directlyTargeted + conflicting reconciles to the inventory tool.
+
+FREE RADICALS ARE REPORTED AT TWO GRAINS. The 'freeRadicals' row set is GROUP grain (summary.freeRadicalGroups): ad groups eligible only via the shared CAG. The true leak count is OFFER grain — an (ad group × ad) pair that serves solely via the CAG, i.e. an untargeted ad (empty params.zoneId) under an untargeted group, net of blacklists at BOTH levels (summary.freeRadicalOffers). An untargeted group whose only ad is zone-whitelisted is 1 free-radical GROUP but 0 free-radical OFFERS — that ad renders because it is ad-level-targeted, not via the CAG. Every row carries offers: { total, serving, freeRadical, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, freeRadicalAdIds[] } so a pure free-radical subset is derivable; summary also totals adLevelTargetedOffers and adLevelBlacklistedOffers.
+
+Each row also carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. Whole-network scan server-side; only the compact result is returned in the content text (header + compact JSON).`,
     inputSchema: z.object({ zoneId: z.string().describe("Zone ID to list eligible ad groups for") }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ zoneId }, extra) => {
@@ -134,14 +174,8 @@ export function registerZoneEligibilityTools(server: McpServer): void {
       const radicals = enrich(freeRadicals, idx, zoneLite.id, zoneLite.creativeAssetGroupId);
       const conflict = enrich(conflicting, idx, zoneLite.id, zoneLite.creativeAssetGroupId);
 
-      const summary = {
-        // directlyTargeted + conflicting reconciles to get_zone_targeting_inventory's targeted + conflicting.
-        directlyTargeted: direct.length, directlyTargetedLive: direct.filter((r) => r.fully_live).length,
-        directlyTargetedIneligible: direct.filter((r) => !r.eligible).length,
-        freeRadicals: radicals.length, freeRadicalsLive: radicals.filter((r) => r.fully_live).length,
-        conflicting: conflict.length,
-      };
-      const header = `Zone ${zoneLite.name} (${zoneLite.id}) — ${summary.directlyTargeted} targeted (${summary.directlyTargetedLive} live, ${summary.directlyTargetedIneligible} config-ineligible) · ${summary.freeRadicals} free radicals (${summary.freeRadicalsLive} live) · ${summary.conflicting} conflicting`;
+      const summary = summarizeEligibility(direct, radicals, conflict);
+      const header = `Zone ${zoneLite.name} (${zoneLite.id}) — ${summary.directlyTargeted} targeted (${summary.directlyTargetedLive} live, ${summary.directlyTargetedIneligible} config-ineligible) · ${summary.freeRadicalGroups} free-radical groups (${summary.freeRadicalGroupsLive} live) / ${summary.freeRadicalOffers} free-radical offers · ${summary.conflicting} conflicting`;
       return pack(header, { zone: zoneLite, summary, directlyTargeted: direct, freeRadicals: radicals, conflicting: conflict, scan: idx.scan }, { directlyTargeted: "id", freeRadicals: "id", conflicting: "id" });
     } catch (e) { return err(handleWorkApiError(e)); }
   });
@@ -168,7 +202,7 @@ export function registerZoneEligibilityTools(server: McpServer): void {
       const ads = idx.adsByGroup[adGroup.id] ?? [];
       const reach = adGroupReach(adGroup, idx.zones, ads);
       const named = reach.map((e) => ({ ...e, zoneName: idx.zones.find((z) => z.id === e.zoneId)?.name ?? e.zoneId }));
-      const direct = named.filter((e) => e.via.includes("ad-group-whitelist") || e.via.includes("ad-level-whitelist")).length;
+      const direct = named.filter((e) => e.via.includes("ad-group-whitelist")).length;
       const header = `Ad group ${adGroup.name ?? adGroup.id} (${adGroup.id}) reaches ${reach.length} zones — ${direct} targeted · ${reach.length - direct} via shared CAG (free radical)`;
       return pack(header, { adGroup: { id: adGroup.id, name: adGroup.name, creativeAssetGroupId: adGroup.creativeAssetGroupId }, summary: { reaches: reach.length, targeted: direct, freeRadical: reach.length - direct }, zones: named, scan: idx.scan }, { zones: "zoneId" });
     } catch (e) { return err(handleWorkApiError(e)); }
@@ -177,7 +211,7 @@ export function registerZoneEligibilityTools(server: McpServer): void {
   // 3) (zone, adGroup|ad) pair → why did/​didn't X serve here
   server.registerTool("explain_serve", {
     title: "Explain Serve",
-    description: `Explain, for a single (zone, ad group OR ad) pair, whether it is eligible to serve in the zone, by what path (via[]), and if not, why not (reasons[]) — the "why did X serve in this zone?" direction of the eligibility join. Pass exactly one of adGroupId or adId (an adId is resolved to its ad group; its own ad-level whitelist/blacklist for the zone is also reported). Returns the single eligibility verdict with any conflicts[]. Whole-network scan server-side.`,
+    description: `Explain, for a single (zone, ad group OR ad) pair, whether it is eligible to serve in the zone, by what path (via[]), and if not, why not (reasons[]) — the "why did X serve in this zone?" direction of the eligibility join. Pass exactly one of adGroupId or adId (an adId is resolved to its ad group; its own ad-level whitelist/blacklist for the zone is also reported). With an adId the answer is at the OFFER grain (ad group × ad): it adds offer: { scoped_via[] — 'ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection' — and freeRadical, true only when the pair serves via the shared CAG alone (untargeted group AND untargeted ad, net of blacklists at both levels)}. Returns the single eligibility verdict with any conflicts[]. Whole-network scan server-side.`,
     inputSchema: z.object({
       zoneId: z.string().describe("Zone ID to explain serving in"),
       adGroupId: z.string().optional().describe("Ad group ID to explain (omit if passing adId)"),
@@ -211,20 +245,23 @@ export function registerZoneEligibilityTools(server: McpServer): void {
 
       // Group-level verdict first; ad-level params only narrow WHICH ads serve within it.
       const verdict = eligibility({ adGroup, zone: zoneLite, ads: [] });
-      const reasons = [...verdict.reasons];
-      let eligible = verdict.eligible;
-      if (ad && verdict.eligible && !adServesInZone(ad, zoneLite.id)) {
-        eligible = false;
-        // Distinguish the per-ad reason (blacklist vs confined-elsewhere).
-        if ((ad.exceptParams?.zoneId ?? []).includes(zoneLite.id)) reasons.push("ad-blacklisted");
-        else reasons.push("ad-targets-other-zones");
-      }
+      // With an adId, evaluate the OFFER grain on top: scoped_via at both levels and
+      // whether this pair is a free radical (serves via the shared CAG alone).
+      const offer = ad ? offerEligibility(verdict, adGroup, ad, zoneLite) : undefined;
+      const reasons = offer ? offer.reasons : verdict.reasons;
+      const eligible = offer ? offer.serves : verdict.eligible;
 
       const subject = ad ? `ad ${ad.id}` : `ad group ${adGroup.name ?? adGroup.id} (${adGroup.id})`;
+      const path = offer ? offer.scoped_via.join(", ") : verdict.via.join(", ");
       const header = eligible
-        ? `${subject} IS eligible in zone ${zoneLite.name} (${zoneLite.id}) — via ${verdict.via.join(", ")}`
+        ? `${subject} IS eligible in zone ${zoneLite.name} (${zoneLite.id}) — via ${path}${offer?.freeRadical ? " (free radical: shared CAG only)" : ""}`
         : `${subject} is NOT eligible in zone ${zoneLite.name} (${zoneLite.id}) — ${reasons.join(", ")}`;
-      return pack(header, { zone: zoneLite, subject: ad ? { adId: ad.id, adGroupId: adGroup.id } : { adGroupId: adGroup.id }, ...verdict, eligible, reasons }, {});
+      return pack(header, {
+        zone: zoneLite,
+        subject: ad ? { adId: ad.id, adGroupId: adGroup.id } : { adGroupId: adGroup.id },
+        ...verdict, eligible, reasons,
+        ...(offer ? { offer: { scoped_via: offer.scoped_via, freeRadical: offer.freeRadical } } : {}),
+      }, {});
     } catch (e) { return err(handleWorkApiError(e)); }
   });
 }

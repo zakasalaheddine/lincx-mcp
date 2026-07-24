@@ -39,6 +39,7 @@ selected row is scoped to the zone*, as an array because more than one can apply
 |---|---|
 | `ad-group-whitelist` | `zone ∈ adGroup.params.zoneId` — always present (it's the selection criterion) |
 | `ad-level-whitelist` | some ad in the group has `zone ∈ ad.params.zoneId` |
+| `ad-level-blacklist` | some ad in the group has `zone ∈ ad.exceptParams.zoneId` (that ad is hidden here; siblings still serve) |
 | `zone-selection` | `zone.creativeAssetGroupId === adGroup.creativeAssetGroupId` (CAG match) |
 
 Pure `rollupZoneTargeting` already has `adsByGroup` and the zone CAG in scope, so
@@ -87,9 +88,15 @@ An ad group is **eligible** to serve in a zone when **all** hold:
    An ad group that targets *some other* zone(s) but not this one is **scoped
    out** (`reasons: ['targets-other-zones']`), not a free radical.
 
-**Free radical** = eligible with `via === ['zone-selection']` only (no whitelist)
-because the group targets zero zones. This is the leak the reviewer scoped
-earlier: renders via the shared CAG despite no direct targeting.
+**Free radical (group grain)** = eligible with `via === ['zone-selection']` only
+(no whitelist) because the group targets zero zones. This is the leak the reviewer
+scoped earlier: renders via the shared CAG despite no direct targeting.
+
+> **Note (2026-07-24 refinement):** point 3's "ad-level whitelist puts the group in
+> scope" is WRONG and is not implemented — `filterAdgroups()` runs before
+> `filterAds()`, so an ad-level whitelist can never rescue an ineligible group. The
+> implemented predicate is group-level only (whitelist OR zero zones); ad-level
+> params/exceptParams are the per-ad LAST check. See Part 3 for the offer grain.
 
 ### `conflicts[]` (reserved, populate the obvious now)
 
@@ -146,6 +153,55 @@ core → compact text + rollup envelope. Same size-fit discipline as the invento
 tool (never drop rows; shed `name`, then ids-only, before signalling
 incomplete).
 
+---
+
+## Part 3 — free radicals at the OFFER grain (2026-07-24, reviewer refinement)
+
+The group-level bucket in Part 2 is correct **for group eligibility**, but it
+over-counts the CAG leak. A "free radical" is properly an **offer** = an
+`(ad group × ad)` pair eligible in the zone *solely* via the shared CAG:
+
+> untargeted ad group **AND** untargeted ad, net of blacklists at **both** levels.
+
+An untargeted ad group whose only ad is zone-whitelisted is **0 free radicals**,
+not 1 — that ad renders because it is *ad-level-targeted*, not via the CAG.
+
+Confirmed in the serving code: ad-level `params.zoneId` (whitelist) and
+`exceptParams.zoneId` (blanket blacklist) both exist and evaluate in `filterAds()`,
+symmetric with the ad-group level; `filterAdgroups()` runs first, so an ad-level
+whitelist can never make an ineligible group eligible.
+
+```ts
+// tools/eligibility.ts
+type Offer = {
+  adGroupId: string; adId: string; zoneId: string;
+  serves: boolean;       // group eligible AND ad passes its own targeting
+  scoped_via: string[];  // 'ad-group-whitelist' | 'ad-group-blacklist'
+                         // | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection'
+  freeRadical: boolean;  // serves && no whitelist at EITHER level
+  reasons: string[];     // group reasons + 'ad-blacklisted' | 'ad-targets-other-zones'
+};
+function offerEligibility(group: Eligibility, adGroup, ad, zone): Offer
+function offerRollup(group, adGroup, ads, zone): OfferRollup  // per-group counts
+```
+
+`OfferRollup` = `{ total, serving, freeRadical, adLevelTargeted, adLevelBlacklisted,
+confinedElsewhere, freeRadicalAdIds[] }`, attached as `offers` to every row of
+`get_zone_eligible_ad_groups` (all three buckets) so a **pure free-radical subset**
+is derivable client-side. Summary gains `freeRadicalGroups` (was `freeRadicals`),
+`freeRadicalGroupsLive`, `freeRadicalOffers`, `adLevelTargetedOffers`,
+`adLevelBlacklistedOffers`.
+
+`explain_serve` with an `adId` now returns the offer verdict
+(`offer: { scoped_via[], freeRadical }`) instead of only appending a per-ad reason.
+
+**The reconciliation invariant is unaffected:** `directlyTargeted + conflicting`
+still equals `get_zone_targeting_inventory`'s targeted set. This only refines the
+`freeRadicals` side and adds annotation.
+
+`get_zone_targeting_inventory` stays group grain — its `scoped_via` only gains
+`ad-level-blacklist` (Part 1's table).
+
 ## Files
 
 - `src/tools/zoneInventoryTools.ts` — Part 1 (`scoped_via` in `Row` + rollup).
@@ -159,16 +215,18 @@ incomplete).
 
 ## Out of scope (built to extend)
 
-- Ad-level rollup depth inside `get_zone_eligible_ad_groups` beyond what the
-  existing inventory rollup already gives.
+- ~~Ad-level rollup depth inside `get_zone_eligible_ad_groups`~~ — promoted to
+  Part 3 (offer grain). Still out of scope: emitting full per-offer ROWS (only
+  counts + `freeRadicalAdIds[]` are returned, to keep the response compact).
 - A write/audit tool that acts on `conflicts[]` — this only surfaces them.
 - The team-vs-client access layer itself — the core is *shaped* to accept it
   (network-agnostic inputs), but the layer is not built here.
 
 ## To confirm on handback
 
-- **Ad-level whitelist is restrictive** (see `explain_serve`) — assumed, not yet
-  verified against the serving engine.
+- ~~**Ad-level whitelist is restrictive**~~ — CONFIRMED in `filterAds()` (2026-07-24):
+  ad-level `params.zoneId` / `exceptParams.zoneId` are symmetric with the ad-group
+  level, and `filterAdgroups()` runs first.
 - **Archived groups stay `eligible:true`** (the predicate is config-only); the live
   rollup then marks them off — same treatment as `get_zone_targeting_inventory`.
 
