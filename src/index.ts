@@ -31,6 +31,7 @@ import { registerExperienceTools } from "./tools/experienceTools.js";
 import { registerReportingTools } from "./tools/reportingTools.js";
 import { registerZoneInventoryTools } from "./tools/zoneInventoryTools.js";
 import { registerZoneEligibilityTools } from "./tools/zoneEligibilityTools.js";
+import { registerAnalysisTools } from "./tools/analysisTools.js";
 import { registerResources } from "./tools/resources.js";
 import { mcpLimiter } from "./middleware/rateLimit.js";
 import { installToolGuards } from "./middleware/toolGuard.js";
@@ -73,6 +74,7 @@ function createMcpServer(): McpServer {
   registerReportingTools(server);
   registerZoneInventoryTools(server);
   registerZoneEligibilityTools(server);
+  registerAnalysisTools(server);
   registerResources(server);
 
   // Wrap every registered tool handler with the response-size guard + metrics

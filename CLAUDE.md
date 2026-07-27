@@ -385,6 +385,17 @@ The general eligibility primitive (`tools/eligibility.ts`, pure + network-agnost
 
 `conflicts[]` surfaces config contradictions (`targets-and-excepts`, `whitelisted-cag-mismatch`), reserved for more signals later.
 
+### Zone Tier Analysis
+- `create_analysis` — `POST /api/analysis`. Queues an async job (202 + QUEUED doc); `analysisType` is `offerTiering` (creative performance tiers) or `rankedOfferOptimization` (which creative belongs in which rank slot). **`noLLM` defaults to `true`** — the Work API's deterministic engine runs (aggregation → reliability-weighted CPM → waterfall rank collapse → percentile tier banding) and the narrative fields come back empty on purpose, for the *calling* agent to write. That is the split: the numbers are the platform's, the prose is the client's, and the analysis prompt lives in a skill (`lincx-analysis` in lincx-marketplace) where it can be iterated without redeploying this server. Pass `noLLM: false` to also get the server-side Gemini pass.
+- `get_analysis` — `GET /api/analysis/{id}`. The poll target — no polling tool exists here by design (that would be orchestration). Returns `header\n\ncompact JSON`, same channel as `get_zone_targeting_inventory`. `queued`/`running` docs carry no `input`/`output` at all and get a `note` telling the caller to poll again — the most common shape, not an edge case.
+- `list_analyses` — `GET /api/analysis`. Newest-first, **cursor-paged not offset-paged** (`cursor` = the `_id` of the last row; `next_cursor` returned on a full page). Summary fields only.
+
+`fitAnalysis` (exported, unit-tested in `src/tests/analysisFit.test.ts`) always drops `output.rawResponse` and `input.prompt`, then sheds input sections in a fixed order — `rankDistribution` → `zoneMetrics` → the ranked-optimization context (duplicated into `output.json` by the API's finalize step) → the non-monetizing/default-tier lists → `localTiers` last, since that peer comparison is what carries the narrative. Whatever it drops lands in an `omitted[]` array, and `output.json` (the tier verdict) is never shed: a silently partial tier table is one the model completes with invented rows.
+
+Two gotchas worth knowing before you touch these:
+- **Access is allowlisted upstream** by email (`server/analysis-allowlist.js` in lincx-core), separate from network permissions. A 403 here is not a network-context problem.
+- **`POST /api/analysis` derives `networkId` from the zone**, ignoring the injected query param, while `GET /api/analysis` *filters* by it. Creating an analysis for a zone outside the active network therefore succeeds and then never appears in `list_analyses` — `create_analysis` compares the two and returns a `note` when they diverge.
+
 ### Advertisers (M3)
 - `list_advertisers` — `GET /api/advertisers` (paginated)
 - `get_advertiser` — `GET /api/advertisers/{id}`
