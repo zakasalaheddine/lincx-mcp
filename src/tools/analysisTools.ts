@@ -22,7 +22,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded } from "../services/workApi.js";
+import { workApiRequest, handleWorkApiError } from "../services/workApi.js";
 import { RESPONSE_SIZE_LIMIT } from "../constants.js";
 import { READONLY_ANNOTATIONS } from "./_shared.js";
 
@@ -151,16 +151,20 @@ export function fitAnalysis(doc: AnalysisDoc, limit: number): { content: { type:
   };
   if (size(minimal) <= limit) return wrap(minimal);
 
-  // output.json itself is oversized: truncate as a string rather than emit
-  // half-parsed tier tables the model would read as the full picture.
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: truncateIfNeeded(`${header(trimmed)}\n\n${JSON.stringify(minimal)}`),
-      },
-    ],
-  };
+  // `output.json` alone busts the budget (a wide zone's tier tables can). Drop it
+  // too rather than string-slicing the JSON: a sliced payload is unparseable, and
+  // half a tier table is one the model finishes from imagination.
+  return wrap({
+    _id: trimmed._id,
+    status: trimmed.status,
+    analysisType: trimmed.analysisType,
+    networkId: trimmed.networkId,
+    request: trimmed.request,
+    error: trimmed.error,
+    complete: false,
+    omitted: [...omitted, "input", "output"],
+    note: "Result exceeded the response limit even after shedding every input section. Re-run over a shorter date range, or read this analysis by id from the Work API directly.",
+  });
 }
 
 export function registerAnalysisTools(server: McpServer): void {
@@ -267,9 +271,28 @@ Pages by cursor, not offset: pass the '_id' of the last row you received as 'cur
       const res = await workApiRequest<{ data?: AnalysisDoc[] }>(v.session, "GET", "/api/analysis", { params });
 
       const data = Array.isArray(res?.data) ? res.data : [];
-      const envelope: Record<string, unknown> = { count: data.length, data };
-      if (data.length === limit) envelope.next_cursor = data[data.length - 1]?._id;
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(JSON.stringify(envelope)) }] };
+
+      // Drop whole rows, never slice the JSON — and recompute next_cursor from the
+      // LAST KEPT row. Cursor paging is `_id < cursor`, so a cursor taken from a
+      // row that was then dropped skips those jobs permanently.
+      let kept = data;
+      const envelope = (): Record<string, unknown> => {
+        const e: Record<string, unknown> = { count: kept.length, data: kept };
+        if (data.length === limit) e.next_cursor = kept[kept.length - 1]?._id;
+        if (kept.length < data.length) {
+          e.note = `${data.length - kept.length} row(s) dropped for size; next_cursor resumes from the last row returned.`;
+        }
+        return e;
+      };
+      while (kept.length > 1 && JSON.stringify(envelope()).length > RESPONSE_SIZE_LIMIT) {
+        kept = kept.slice(0, -1);
+      }
+      // A single row can still be oversized (a large `request.scope`); shrink it to
+      // identity rather than emit sliced JSON.
+      if (JSON.stringify(envelope()).length > RESPONSE_SIZE_LIMIT) {
+        kept = kept.map((r) => ({ _id: r._id, status: r.status, analysisType: r.analysisType }));
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(envelope()) }] };
     } catch (err) {
       return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
     }
