@@ -134,6 +134,23 @@ describe("fitAnalysis", () => {
     expect(parsed.note).toMatch(/omitted/i);
   });
 
+  it("drops output.json too rather than slicing it into unparseable JSON", () => {
+    // A wide zone's tier tables can bust the budget on their own — the branch the
+    // earlier limit sweep never reached, because its fixture output was tiny.
+    const doc = succeeded();
+    doc.output.json = {
+      tier_grouping: { recommended_tier_count: 3 },
+      tier_tables: { TIER_1: creatives(400) },
+    } as never;
+    const parsed = parse(fitAnalysis(doc, 5_000));
+
+    expect(parsed.complete).toBe(false);
+    expect(parsed.output).toBeUndefined();
+    expect(parsed.omitted).toContain("output");
+    expect(parsed.request.zoneId).toBe("abc123");
+    expect(parsed.note).toMatch(/shorter date range/);
+  });
+
   it("emits a header line and parseable JSON for every branch", () => {
     for (const limit of [30_000, 12_000, 6_000, 3_000, 1_000]) {
       const result = fitAnalysis(succeeded({ creatives: 200, ranks: 800 }), limit);
