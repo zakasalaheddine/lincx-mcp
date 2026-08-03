@@ -385,6 +385,28 @@ The general eligibility primitive (`tools/eligibility.ts`, pure + network-agnost
 
 `conflicts[]` surfaces config contradictions (`targets-and-excepts`, `whitelisted-cag-mismatch`), reserved for more signals later.
 
+**`scoped_via` is one shared enum** (`SCOPED_VIA` in `tools/eligibility.ts`) across every
+tool that emits the field — `ad-group-whitelist`, `ad-group-blacklist`, `ad-level-whitelist`,
+`ad-level-blacklist`, `zone-selection`. The group-grain rollup in `zoneInventoryTools` was
+missing `ad-group-blacklist`; same field name over two domains is a trap for a consumer
+reading the tools together. `Eligibility.via` is a *different, narrower* field (why the group
+is eligible: whitelist / CAG) and deliberately stays at two values.
+
+**`get_zone_eligible_ad_groups` pages, it does not degrade.** An eligibility row is ~560
+chars (the inventory row plus `eligible`/`via`/`reasons`/`conflicts`/`offers`), so the
+review fixture — 83 targeted + 124 free radicals — is ~118k against a 30k guard; even a
+single-bucket, names-omitted response is ~48k. Shedding row bodies (the old behavior) threw
+away the offer payload that is the entire reason to call the tool. `fitEligibility`
+(exported, tested in `src/tests/eligibilityFit.test.ts`) instead returns FULL rows and pages:
+`bucket` (`all` | `directlyTargeted` | `freeRadicals` | `conflicting`) narrows the rows,
+`offset` walks them, and the response carries `page: { bucket, offset, returned, total,
+next_offset? }` plus `complete`. Paging runs over one flat list (the selected buckets
+concatenated in fixed order) so `offset` is unambiguous even for `bucket:'all'`. `summary` is
+always exact over the whole set regardless of `bucket`/`offset` — with `bucket:'all'` and
+`complete:true` the arrays match the summary counts one-for-one. Only a single row larger
+than the whole budget falls back to ids-only + `complete:false`. `complete:false` (not
+`truncated`) is the family-wide "not the whole answer" flag, matching `fitZoneInventory`.
+
 ### Zone Tier Analysis
 - `create_analysis` — `POST /api/analysis`. Queues an async job (202 + QUEUED doc); `analysisType` is `offerTiering` (creative performance tiers) or `rankedOfferOptimization` (which creative belongs in which rank slot). **`noLLM` defaults to `true`** — the Work API's deterministic engine runs (aggregation → reliability-weighted CPM → waterfall rank collapse → percentile tier banding) and the narrative fields come back empty on purpose, for the *calling* agent to write. That is the split: the numbers are the platform's, the prose is the client's, and the analysis prompt lives in a skill (`lincx-analysis` in lincx-marketplace) where it can be iterated without redeploying this server. Pass `noLLM: false` to also get the server-side Gemini pass.
 - `get_analysis` — `GET /api/analysis/{id}`. The poll target — no polling tool exists here by design (that would be orchestration). Returns `header\n\ncompact JSON`, same channel as `get_zone_targeting_inventory`. `queued`/`running` docs carry no `input`/`output` at all and get a `note` telling the caller to poll again — the most common shape, not an edge case.

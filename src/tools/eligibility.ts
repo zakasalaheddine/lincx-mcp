@@ -31,6 +31,23 @@ const has = (arr: string[] | undefined, v: string): boolean =>
   Array.isArray(arr) && arr.includes(v);
 
 /**
+ * The single `scoped_via` domain — HOW a group/offer is scoped to a zone. Shared
+ * by every tool that emits the field (the group-grain rollup in
+ * zoneInventoryTools and the offer grain in `offerEligibility`) so a consumer
+ * reading them together never sees the same field name over two different
+ * enums. NOT the same field as `Eligibility.via`, which is the narrower
+ * "why is this group eligible" path (whitelist / CAG) and stays as-is.
+ */
+export const SCOPED_VIA = [
+  "ad-group-whitelist",
+  "ad-group-blacklist",
+  "ad-level-whitelist",
+  "ad-level-blacklist",
+  "zone-selection",
+] as const;
+export type ScopedVia = (typeof SCOPED_VIA)[number];
+
+/**
  * GROUP-level eligibility: can this ad group serve ANY ad in this zone?
  * Eligible = not archived AND CAG match AND not blacklisted AND in scope, where
  * in scope = the group whitelists the zone OR targets ZERO zones (open within its
@@ -97,7 +114,7 @@ export type Offer = {
   adId: string;
   zoneId: string;
   serves: boolean;       // group eligible AND this ad passes its own targeting
-  scoped_via: string[];  // 'ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection'
+  scoped_via: ScopedVia[]; // shared SCOPED_VIA domain (same enum the group-grain rollup uses)
   freeRadical: boolean;  // serves via the shared CAG ONLY — no whitelist at either level
   reasons: string[];     // group reasons + 'ad-blacklisted' | 'ad-targets-other-zones'
 };
@@ -116,7 +133,7 @@ export function offerEligibility(
   zone: { id: string; creativeAssetGroupId?: string },
 ): Offer {
   const zoneId = zone.id;
-  const scoped_via: string[] = [];
+  const scoped_via: ScopedVia[] = [];
   if (has(adGroup.params?.zoneId, zoneId)) scoped_via.push("ad-group-whitelist");
   if (has(adGroup.exceptParams?.zoneId, zoneId)) scoped_via.push("ad-group-blacklist");
   if (has(ad.params?.zoneId, zoneId)) scoped_via.push("ad-level-whitelist");

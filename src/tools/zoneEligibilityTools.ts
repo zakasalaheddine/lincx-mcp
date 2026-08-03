@@ -85,13 +85,16 @@ async function fetchIndex(session: NonNullable<Awaited<ReturnType<typeof validat
 
 /** header + compact JSON in the content text; degrade only by shedding row bodies
  * (never the exact summary counts) if a pathological set overflows the guard.
- * `rowKeys` maps each row-array key to the field to keep as its id when shedding. */
+ * `rowKeys` maps each row-array key to the field to keep as its id when shedding.
+ * Used by the two small tools (reach / explain_serve); the eligibility rollup
+ * pages instead — see fitEligibility. `complete:false` is the shared "this is
+ * not the whole answer" flag across the whole family (was `truncated`). */
 function pack(header: string, payload: Record<string, unknown>, rowKeys: Record<string, "id" | "adGroupId" | "zoneId">): TextResult {
   const render = (p: Record<string, unknown>) => ({ content: [{ type: "text" as const, text: `${header}\n\n${JSON.stringify(p)}` }] });
   const full = render(payload);
   if (JSON.stringify(full).length <= RESPONSE_SIZE_LIMIT) return full;
-  // Overflow: replace each row array with just its ids + a truncated flag. Summary stays exact.
-  const shed: Record<string, unknown> = { ...payload, truncated: true };
+  // Overflow: replace each row array with just its ids + complete:false. Summary stays exact.
+  const shed: Record<string, unknown> = { ...payload, complete: false };
   for (const [k, idKey] of Object.entries(rowKeys)) {
     const rows = payload[k];
     if (Array.isArray(rows)) shed[k] = rows.map((r) => (r as Record<string, string>)[idKey]);
@@ -148,6 +151,93 @@ export function summarizeEligibility(direct: EnrichedRow[], radicals: EnrichedRo
   };
 }
 
+export type Bucket = "all" | "directlyTargeted" | "freeRadicals" | "conflicting";
+const BUCKETS = ["directlyTargeted", "freeRadicals", "conflicting"] as const;
+export type EligibilityPayload = {
+  zone: ZoneLite;
+  summary: ReturnType<typeof summarizeEligibility>;
+  directlyTargeted: EnrichedRow[]; freeRadicals: EnrichedRow[]; conflicting: EnrichedRow[];
+  scan: Index["scan"];
+};
+type Page = { bucket: Bucket; offset: number; returned: number; total: number; next_offset?: number };
+
+/** One-line human header: exact counts always, plus the page state when paged. */
+export function eligibilityHeader(zone: ZoneLite, s: EligibilityPayload["summary"], page?: Page): string {
+  const counts = `${s.directlyTargeted} targeted (${s.directlyTargetedLive} live, ${s.directlyTargetedIneligible} config-ineligible) · ${s.freeRadicalGroups} free-radical groups (${s.freeRadicalGroupsLive} live) / ${s.freeRadicalOffers} free-radical offers · ${s.conflicting} conflicting`;
+  const paged = page?.next_offset !== undefined
+    ? ` — PARTIAL PAGE: rows ${page.offset}–${page.offset + page.returned - 1} of ${page.total} for bucket '${page.bucket}'; re-run with offset:${page.next_offset} (same bucket) for the rest. Summary counts above are exact for the WHOLE set.`
+    : "";
+  return `Zone ${zone.name} (${zone.id}) — ${counts}${paged}`;
+}
+
+/**
+ * Pack the eligibility rollup into a result that fits `limit`, WITHOUT ever
+ * degrading a returned row's field set — the offer-grain payload (`offers`,
+ * `scoped_via`, `via`, `reasons`, `conflicts`) is the reason to call this tool, so
+ * shedding it is worse than returning fewer rows. Every returned row is complete;
+ * rows that don't fit are reachable via `offset` (the list-tool `next_offset`
+ * idiom), and `summary` is always exact over the FULL set regardless of paging.
+ *
+ * Paging runs over ONE flat list — the selected buckets concatenated in fixed
+ * order — so `offset`/`next_offset` is a single unambiguous index even for
+ * bucket:'all'. Rows are re-split into their named arrays for the response.
+ *
+ * Last resort only (a single row larger than the whole budget): ids-only with
+ * complete:false. Never a silent partial: `complete` and `page.next_offset` say so.
+ */
+export function fitEligibility(full: EligibilityPayload, bucket: Bucket, offset: number, limit: number): TextResult {
+  const flat: { bucket: (typeof BUCKETS)[number]; row: EnrichedRow }[] = [];
+  for (const b of BUCKETS) {
+    if (bucket !== "all" && bucket !== b) continue;
+    for (const row of full[b]) flat.push({ bucket: b, row });
+  }
+  const window = flat.slice(Math.max(0, offset));
+
+  const render = (body: Record<string, unknown>, page?: Page): TextResult => ({
+    content: [{ type: "text" as const, text: `${eligibilityHeader(full.zone, full.summary, page)}\n\n${JSON.stringify(body)}` }],
+  });
+
+  const build = (n: number): { result: TextResult; size: number } => {
+    const slice = window.slice(0, n);
+    const page: Page = {
+      bucket, offset, returned: slice.length, total: flat.length,
+      ...(offset + slice.length < flat.length ? { next_offset: offset + slice.length } : {}),
+    };
+    // complete = nothing left in the SELECTED slice. With bucket:'all' + offset:0
+    // that also means the arrays match the summary counts one-for-one.
+    const complete = page.next_offset === undefined;
+    const body: Record<string, unknown> = { zone: full.zone, summary: full.summary, page, complete };
+    for (const b of BUCKETS) {
+      if (bucket !== "all" && bucket !== b) continue;
+      body[b] = slice.filter((s) => s.bucket === b).map((s) => s.row);
+    }
+    body.scan = full.scan;
+    const result = render(body, page);
+    return { result, size: JSON.stringify(result).length };
+  };
+
+  const whole = build(window.length);
+  if (whole.size <= limit) return whole.result;
+
+  // Largest prefix that fits. Rows vary in size, so binary-search rather than assume.
+  let lo = 0, hi = window.length, best: TextResult | null = null;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (mid === 0) { lo = 1; continue; }
+    const attempt = build(mid);
+    if (attempt.size <= limit) { best = attempt.result; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  if (best) return best;
+
+  // Pathological: even one full row overflows the budget. Ids only, flagged.
+  return render({
+    zone: full.zone, summary: full.summary, bucket, complete: false,
+    note: "A single ad-group row exceeds the response budget, so only ids are returned. Re-run with bucket:'freeRadicals' | 'directlyTargeted' | 'conflicting' to narrow, or use explain_serve for one (zone, ad group) pair. Summary counts are exact.",
+    ids: window.map((s) => s.row.id),
+    scan: full.scan,
+  });
+}
+
 export function registerZoneEligibilityTools(server: McpServer): void {
   // 1) zone → eligible ad groups (directly targeted + free radicals)
   server.registerTool("get_zone_eligible_ad_groups", {
@@ -156,10 +246,18 @@ export function registerZoneEligibilityTools(server: McpServer): void {
 
 FREE RADICALS ARE REPORTED AT TWO GRAINS. The 'freeRadicals' row set is GROUP grain (summary.freeRadicalGroups): ad groups eligible only via the shared CAG. The true leak count is OFFER grain — an (ad group × ad) pair that serves solely via the CAG, i.e. an untargeted ad (empty params.zoneId) under an untargeted group, net of blacklists at BOTH levels (summary.freeRadicalOffers). An untargeted group whose only ad is zone-whitelisted is 1 free-radical GROUP but 0 free-radical OFFERS — that ad renders because it is ad-level-targeted, not via the CAG. Every row carries offers: { total, serving, freeRadical, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, freeRadicalAdIds[] } so a pure free-radical subset is derivable; summary also totals adLevelTargetedOffers and adLevelBlacklistedOffers.
 
-Each row also carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. Whole-network scan server-side; only the compact result is returned in the content text (header + compact JSON).`,
-    inputSchema: z.object({ zoneId: z.string().describe("Zone ID to list eligible ad groups for") }).strict(),
+Each row also carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. scoped_via uses the SAME five-value enum as get_zone_targeting_inventory and explain_serve ('ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection').
+
+EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A zone with too many groups for one response is PAGED, not degraded: use bucket to select one bucket (e.g. bucket:'freeRadicals' for a pure free-radical subset) and offset to walk the rest. The response carries page: { bucket, offset, returned, total, next_offset? } and complete (true when nothing is left in the selected slice). summary is ALWAYS exact over the full set, regardless of bucket/offset — so with bucket:'all' and complete:true the arrays match the summary counts one-for-one. Whole-network scan server-side; compact result in the content text (header + compact JSON).`,
+    inputSchema: z.object({
+      zoneId: z.string().describe("Zone ID to list eligible ad groups for"),
+      bucket: z.enum(["all", "directlyTargeted", "freeRadicals", "conflicting"]).default("all")
+        .describe("Which bucket(s) to return rows for. Summary counts always cover the full set; this only narrows the ROWS so a large zone fits in one response (e.g. 'freeRadicals' for a pure free-radical subset)."),
+      offset: z.number().int().min(0).default(0)
+        .describe("Row offset within the selected bucket(s) — pass the next_offset from a previous call to continue."),
+    }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ zoneId }, extra) => {
+  }, async ({ zoneId, bucket, offset }, extra) => {
     const g = await guard(extra);
     if (!g.ok) return g.result;
     try {
@@ -175,8 +273,10 @@ Each row also carries the same live rollup as get_zone_targeting_inventory (camp
       const conflict = enrich(conflicting, idx, zoneLite.id, zoneLite.creativeAssetGroupId);
 
       const summary = summarizeEligibility(direct, radicals, conflict);
-      const header = `Zone ${zoneLite.name} (${zoneLite.id}) — ${summary.directlyTargeted} targeted (${summary.directlyTargetedLive} live, ${summary.directlyTargetedIneligible} config-ineligible) · ${summary.freeRadicalGroups} free-radical groups (${summary.freeRadicalGroupsLive} live) / ${summary.freeRadicalOffers} free-radical offers · ${summary.conflicting} conflicting`;
-      return pack(header, { zone: zoneLite, summary, directlyTargeted: direct, freeRadicals: radicals, conflicting: conflict, scan: idx.scan }, { directlyTargeted: "id", freeRadicals: "id", conflicting: "id" });
+      return fitEligibility(
+        { zone: zoneLite, summary, directlyTargeted: direct, freeRadicals: radicals, conflicting: conflict, scan: idx.scan },
+        bucket, offset, RESPONSE_SIZE_LIMIT,
+      );
     } catch (e) { return err(handleWorkApiError(e)); }
   });
 

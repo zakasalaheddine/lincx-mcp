@@ -13,6 +13,9 @@ import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError } from "../services/workApi.js";
 import { RESPONSE_SIZE_LIMIT } from "../constants.js";
+// Type-only (erased at compile) — keeps the one shared scoped_via enum without a
+// runtime import cycle: eligibility.ts imports the entity types from here.
+import type { ScopedVia } from "./eligibility.js";
 
 export type AdGroup = {
   id: string; name?: string; enabled?: boolean; archived?: boolean;
@@ -27,7 +30,7 @@ export type Row = {
   id: string; name: string; archived: boolean;
   campaign_on: boolean; adgroup_on: boolean; has_enabled_ad: boolean;
   creative_resolves: boolean; has_live_viable_ad: boolean;
-  fully_live: boolean; off_reason: string[]; scoped_via: string[];
+  fully_live: boolean; off_reason: string[]; scoped_via: ScopedVia[];
 };
 export type Summary = { targeted: number; live: number; off: number; archived: number; conflicting: number };
 
@@ -125,8 +128,10 @@ export function rollupZoneTargeting(args: {
     const fully_live = campaign_on && adgroup_on && has_live_viable_ad;
 
     // How this already-selected group is scoped to the zone (annotate-only).
-    const scoped_via: string[] = [];
+    // Same SCOPED_VIA domain as the offer grain — one enum across both tools.
+    const scoped_via: ScopedVia[] = [];
     if (zoneId !== undefined && has(ag.params?.zoneId, zoneId)) scoped_via.push("ad-group-whitelist");
+    if (zoneId !== undefined && has(ag.exceptParams?.zoneId, zoneId)) scoped_via.push("ad-group-blacklist");
     if (zoneId !== undefined && ads.some((a) => has(a.params?.zoneId, zoneId))) scoped_via.push("ad-level-whitelist");
     if (zoneId !== undefined && ads.some((a) => has(a.exceptParams?.zoneId, zoneId))) scoped_via.push("ad-level-blacklist");
     if (zoneCag !== undefined && ag.creativeAssetGroupId === zoneCag) scoped_via.push("zone-selection");
@@ -222,7 +227,7 @@ export function registerZoneInventoryTools(server: McpServer): void {
     title: "Zone Targeting Inventory",
     description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached — or where it is off. Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').
 
-The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[], scoped_via[] }. scoped_via lists HOW the group is scoped to the zone (annotate-only, the row set is unchanged): 'ad-group-whitelist' (the group's params.zoneId names the zone — always present), 'ad-level-whitelist' (one of its ads also whitelists the zone), 'ad-level-blacklist' (one of its ads excludes the zone via ad.exceptParams.zoneId — that ad is hidden here, siblings still serve), 'zone-selection' (the group shares the zone's creativeAssetGroupId). For per-(ad group × ad) offer-grain scoping and free-radical counts, use get_zone_eligible_ad_groups. This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
+The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[], scoped_via[] }. scoped_via lists HOW the group is scoped to the zone (annotate-only, the row set is unchanged). It uses ONE shared enum across every tool that emits the field — 'ad-group-whitelist' (the group's params.zoneId names the zone — always present on a targeted row), 'ad-group-blacklist' (the group's exceptParams.zoneId excludes the zone; such a group is reported under 'conflicting' here, so this value is rare on a targeted row and common on the eligibility tool's conflicting rows), 'ad-level-whitelist' (one of its ads also whitelists the zone), 'ad-level-blacklist' (one of its ads excludes the zone via ad.exceptParams.zoneId — that ad is hidden here, siblings still serve), 'zone-selection' (the group shares the zone's creativeAssetGroupId). Same five values, same meaning, in get_zone_eligible_ad_groups and explain_serve. For per-(ad group × ad) offer-grain scoping and free-radical counts, use get_zone_eligible_ad_groups. This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
     inputSchema: z.object({
       zoneId: z.string().describe("Zone ID to audit targeting for"),
       mode: z.enum(["all", "live", "off"]).default("all").describe("Filter the returned groups: all (default), only fully-live, or only not-fully-live. Summary counts always cover the full targeted set."),
