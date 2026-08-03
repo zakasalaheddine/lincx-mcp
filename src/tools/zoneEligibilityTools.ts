@@ -91,7 +91,7 @@ async function fetchIndex(session: NonNullable<Awaited<ReturnType<typeof validat
  * not the whole answer" flag across the whole family (was `truncated`). */
 function pack(header: string, payload: Record<string, unknown>, rowKeys: Record<string, "id" | "adGroupId" | "zoneId">): TextResult {
   const render = (p: Record<string, unknown>) => ({ content: [{ type: "text" as const, text: `${header}\n\n${JSON.stringify(p)}` }] });
-  const full = render(payload);
+  const full = render({ ...payload, complete: true });
   if (JSON.stringify(full).length <= RESPONSE_SIZE_LIMIT) return full;
   // Overflow: replace each row array with just its ids + complete:false. Summary stays exact.
   const shed: Record<string, unknown> = { ...payload, complete: false };
@@ -203,9 +203,11 @@ export function fitEligibility(full: EligibilityPayload, bucket: Bucket, offset:
       bucket, offset, returned: slice.length, total: flat.length,
       ...(offset + slice.length < flat.length ? { next_offset: offset + slice.length } : {}),
     };
-    // complete = nothing left in the SELECTED slice. With bucket:'all' + offset:0
-    // that also means the arrays match the summary counts one-for-one.
-    const complete = page.next_offset === undefined;
+    // complete = this response holds the ENTIRE selected slice — nothing before it
+    // (offset 0) and nothing after it (no next_offset). Offset-relative "nothing
+    // left" would report complete:true on a tail page holding 37 of 207 rows, and a
+    // reconciliation check against `summary` would then read as a regression.
+    const complete = offset === 0 && page.next_offset === undefined;
     const body: Record<string, unknown> = { zone: full.zone, summary: full.summary, page, complete };
     for (const b of BUCKETS) {
       if (bucket !== "all" && bucket !== b) continue;
@@ -248,7 +250,7 @@ FREE RADICALS ARE REPORTED AT TWO GRAINS. The 'freeRadicals' row set is GROUP gr
 
 Each row also carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. scoped_via uses the SAME five-value enum as get_zone_targeting_inventory and explain_serve ('ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection').
 
-EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A zone with too many groups for one response is PAGED, not degraded: use bucket to select one bucket (e.g. bucket:'freeRadicals' for a pure free-radical subset) and offset to walk the rest. The response carries page: { bucket, offset, returned, total, next_offset? } and complete (true when nothing is left in the selected slice). summary is ALWAYS exact over the full set, regardless of bucket/offset — so with bucket:'all' and complete:true the arrays match the summary counts one-for-one. Whole-network scan server-side; compact result in the content text (header + compact JSON).`,
+EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A zone with too many groups for one response is PAGED, not degraded: use bucket to select one bucket (e.g. bucket:'freeRadicals' for a pure free-radical subset) and offset to walk the rest. The response carries page: { bucket, offset, returned, total, next_offset? } and complete (true only when this ONE response holds the entire selected slice — offset 0 and no next_offset). summary is ALWAYS exact over the full set, regardless of bucket/offset — so with bucket:'all' and complete:true the arrays match the summary counts one-for-one. The only case where a row body is not returned is pathological (a single ad group whose row alone exceeds the whole response budget): then ids are returned with complete:false and a note, never a silent partial. Whole-network scan server-side; compact result in the content text (header + compact JSON).`,
     inputSchema: z.object({
       zoneId: z.string().describe("Zone ID to list eligible ad groups for"),
       bucket: z.enum(["all", "directlyTargeted", "freeRadicals", "conflicting"]).default("all")

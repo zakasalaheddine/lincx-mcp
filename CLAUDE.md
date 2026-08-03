@@ -401,7 +401,11 @@ away the offer payload that is the entire reason to call the tool. `fitEligibili
 `bucket` (`all` | `directlyTargeted` | `freeRadicals` | `conflicting`) narrows the rows,
 `offset` walks them, and the response carries `page: { bucket, offset, returned, total,
 next_offset? }` plus `complete`. Paging runs over one flat list (the selected buckets
-concatenated in fixed order) so `offset` is unambiguous even for `bucket:'all'`. `summary` is
+concatenated in fixed order) so `offset` is unambiguous even for `bucket:'all'`. `complete` is
+absolute, not offset-relative — true only when the one response holds the entire selected
+slice (`offset === 0 && next_offset === undefined`); an offset-relative flag would say
+`complete:true` on a tail page holding 37 of 207 rows, and a reconciliation check against
+`summary` would then read as a regression. `summary` is
 always exact over the whole set regardless of `bucket`/`offset` — with `bucket:'all'` and
 `complete:true` the arrays match the summary counts one-for-one. Only a single row larger
 than the whole budget falls back to ids-only + `complete:false`. `complete:false` (not

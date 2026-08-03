@@ -159,11 +159,36 @@ describe("fitEligibility — review fixture scale, 83 + 124 (B5)", () => {
     }
   });
 
-  it("an offset past the end returns an empty, complete page (never an error)", () => {
+  it("an offset past the end returns an empty page (never an error), and never claims complete", () => {
     const { json } = parse(fitEligibility(full, "all", 999, LIMIT));
-    expect(json.complete).toBe(true);
     expect(json.page.returned).toBe(0);
     expect(json.directlyTargeted).toEqual([]);
+    expect(json.complete).toBe(false); // 0 rows is not the whole answer
+  });
+
+  it("a TAIL page never claims complete — complete means this one response holds everything", () => {
+    // Walk to the last page: it has no next_offset but is only a slice of 207.
+    let offset = 0, last: Record<string, any> | undefined;
+    while (true) {
+      const { json } = parse(fitEligibility(full, "all", offset, LIMIT));
+      last = json;
+      if (json.page.next_offset === undefined) break;
+      offset = json.page.next_offset;
+    }
+    expect(offset).toBeGreaterThan(0);
+    expect(last!.page.returned).toBeLessThan(last!.page.total);
+    expect(last!.complete).toBe(false);
+  });
+
+  it("complete:true implies the arrays equal the full selected slice (the B1/B2 key)", () => {
+    for (const bucket of ["all", "directlyTargeted", "freeRadicals", "conflicting"] as Bucket[]) {
+      for (const offset of [0, 5, 90, 999]) {
+        const { json } = parse(fitEligibility(full, bucket, offset, LIMIT));
+        if (!json.complete) continue;
+        expect(json.page.offset).toBe(0);
+        expect(json.page.returned).toBe(json.page.total);
+      }
+    }
   });
 });
 
