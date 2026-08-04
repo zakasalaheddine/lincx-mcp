@@ -93,6 +93,20 @@ describe("dotted field paths", () => {
     const env = buildListEnvelope(rows, { limit: 25, offset: 0, fields: ["params.zoneId"] });
     expect(env.unknown_fields).toBeUndefined();
   });
+
+  it("judges paths against the whole collection, not the page — a sparse field is not 'unknown'", () => {
+    // exceptParams.zoneId exists on exactly one row, far outside the first page.
+    const sparse = [
+      ...Array.from({ length: 100 }, (_, i) => ({ id: `a${i}`, params: { zoneId: ["z"] } })),
+      { id: "rare", params: { zoneId: ["z"] }, exceptParams: { zoneId: ["z9"] } },
+    ];
+    const page1 = buildListEnvelope(sparse, { limit: 100, offset: 0, fields: ["params.zoneId", "exceptParams.zoneId"] });
+    // No row on page 1 carries it, but it is real — flagging it would abort a sweep.
+    expect(page1.unknown_fields).toBeUndefined();
+
+    const bogus = buildListEnvelope(sparse, { limit: 100, offset: 0, fields: ["exceptParams.nope"] });
+    expect(bogus.unknown_fields).toEqual(["exceptParams.nope"]); // genuinely absent everywhere
+  });
 });
 
 describe("listEnvelopeToText", () => {

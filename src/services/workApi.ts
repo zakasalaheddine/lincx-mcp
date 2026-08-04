@@ -216,12 +216,21 @@ function projectListItem(item: unknown, extraFields: string[]): unknown {
   return out;
 }
 
-/** Requested fields that matched NO row in the page. A silently-absent field reads
- * as "this row has no such data" when it actually means "you asked for the wrong
- * path" — the quiet failure mode of `fields`. */
-function unmatchedFields(page: unknown[], extraFields: string[]): string[] {
+/**
+ * Requested fields that matched NO row. A silently-absent field reads as "this row
+ * has no such data" when it actually means "you asked for the wrong path" — the
+ * quiet failure mode of `fields`.
+ *
+ * Scope matters: this is evaluated over every row FETCHED (the whole collection on
+ * the full-set path), not over the returned page. A sparse-but-real field — e.g.
+ * `exceptParams.zoneId`, which most ad groups don't carry — can easily be absent
+ * from all 100 rows of one page while being perfectly valid. Flagging that would
+ * fire a false "your path is wrong" mid-sweep, which is worse than the silence it
+ * replaced. Across a whole collection, a path matching nothing really is wrong.
+ */
+function unmatchedFields(rows: unknown[], extraFields: string[]): string[] {
   if (extraFields.includes("*")) return [];
-  return extraFields.filter((f) => !page.some((it) =>
+  return extraFields.filter((f) => !rows.some((it) =>
     it !== null && typeof it === "object" && !Array.isArray(it) && resolvePath(it as Record<string, unknown>, f).has));
 }
 
@@ -271,7 +280,9 @@ export function buildListEnvelope(
 
   const projected = page.map((it) => projectListItem(it, fields));
   const hasMore = offset + page.length < realTotal;
-  const unknown = unmatchedFields(page, fields);
+  // Judge the field paths against everything we fetched, not just this page —
+  // upstreamPaginated is the only case where the page IS all we have.
+  const unknown = unmatchedFields(upstreamPaginated ? page : items, fields);
   return {
     items: projected,
     total: realTotal,
