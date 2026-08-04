@@ -94,6 +94,14 @@ describe("dotted field paths", () => {
     expect(env.unknown_fields).toBeUndefined();
   });
 
+  it("an empty collection reports nothing unknown — no rows is no evidence", () => {
+    // Field-found on network 6s31vy (0 ads): every requested field flagged, including
+    // adGroupId, which reads as "your paths are wrong" when the truth is "no rows".
+    const env = buildListEnvelope([], { limit: 100, offset: 0, fields: ["params.zoneId", "adGroupId"] });
+    expect(env.total).toBe(0);
+    expect(env.unknown_fields).toBeUndefined();
+  });
+
   it("judges paths against the whole collection, not the page — a sparse field is not 'unknown'", () => {
     // exceptParams.zoneId exists on exactly one row, far outside the first page.
     const sparse = [

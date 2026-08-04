@@ -230,6 +230,12 @@ function projectListItem(item: unknown, extraFields: string[]): unknown {
  */
 function unmatchedFields(rows: unknown[], extraFields: string[]): string[] {
   if (extraFields.includes("*")) return [];
+  // An EMPTY collection would flag every requested field, including obviously-valid
+  // ones — vacuously true and actively misleading, since "no row carries this path"
+  // reads as "your path is wrong" when the truth is "there are no rows". Field-found
+  // on network 6s31vy (Lincx Sandbox, 0 ads), which flagged both params.zoneId and
+  // adGroupId. No rows means no evidence either way.
+  if (rows.length === 0) return [];
   return extraFields.filter((f) => !rows.some((it) =>
     it !== null && typeof it === "object" && !Array.isArray(it) && resolvePath(it as Record<string, unknown>, f).has));
 }
