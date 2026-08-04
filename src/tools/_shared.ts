@@ -17,7 +17,7 @@ export const paginationShape = {
   fields: z
     .array(z.string())
     .optional()
-    .describe("Extra item fields to include beyond { id, name } plus status fields. Use ['*'] to return full rows (still size-capped)."),
+    .describe("Extra item fields to include beyond { id, name } plus status fields. Dotted paths are supported and project just the leaf under its dotted key — e.g. ['params.zoneId'] returns { \"params.zoneId\": [...] } without the rest of params, which is the difference between a walkable sweep and an oversized one on rows with large arrays. Any requested field that matched no row on the page is reported back in the envelope's unknown_fields, so a wrong path is never silently empty. Use ['*'] to return full rows (still size-capped)."),
 } as const;
 
 /**

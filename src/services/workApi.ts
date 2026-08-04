@@ -163,10 +163,27 @@ export interface ListEnvelope {
   offset: number;
   has_more: boolean;
   next_offset: number | null;
+  /** Requested `fields` that matched no row on this page — present only when non-empty. */
+  unknown_fields?: string[];
 }
 
 // Status-ish fields worth surfacing in a list projection (at most 2 are kept).
 const STATUS_FIELDS = ["status", "is_active", "active", "enabled", "state", "archived"];
+
+/** Resolve a possibly-dotted field path ("params.zoneId") against a row.
+ * Returns `undefined` when any segment is missing — callers distinguish a real
+ * undefined value from "path not present" via `has`. */
+function resolvePath(obj: Record<string, unknown>, path: string): { has: boolean; value: unknown } {
+  if (!path.includes(".")) return path in obj ? { has: true, value: obj[path] } : { has: false, value: undefined };
+  let node: unknown = obj;
+  for (const seg of path.split(".")) {
+    if (node === null || typeof node !== "object" || Array.isArray(node) || !(seg in (node as Record<string, unknown>))) {
+      return { has: false, value: undefined };
+    }
+    node = (node as Record<string, unknown>)[seg];
+  }
+  return { has: true, value: node };
+}
 
 function projectListItem(item: unknown, extraFields: string[]): unknown {
   if (typeof item !== "object" || item === null || Array.isArray(item)) return item;
@@ -186,13 +203,26 @@ function projectListItem(item: unknown, extraFields: string[]): unknown {
     if (statusAdded >= 2) break;
     if (s in obj) { keep.push(s); statusAdded++; }
   }
-  for (const f of extraFields) {
-    if (f in obj && !keep.includes(f)) keep.push(f);
-  }
-
   const out: Record<string, unknown> = {};
   for (const k of keep) out[k] = obj[k];
+  // Dotted paths ("params.zoneId") project the leaf under its dotted key — that is
+  // what makes a whole-network sweep affordable: pulling params.zoneId instead of
+  // params can be two orders of magnitude smaller on rows with runaway arrays.
+  for (const f of extraFields) {
+    if (f in out) continue;
+    const { has, value } = resolvePath(obj, f);
+    if (has) out[f] = value;
+  }
   return out;
+}
+
+/** Requested fields that matched NO row in the page. A silently-absent field reads
+ * as "this row has no such data" when it actually means "you asked for the wrong
+ * path" — the quiet failure mode of `fields`. */
+function unmatchedFields(page: unknown[], extraFields: string[]): string[] {
+  if (extraFields.includes("*")) return [];
+  return extraFields.filter((f) => !page.some((it) =>
+    it !== null && typeof it === "object" && !Array.isArray(it) && resolvePath(it as Record<string, unknown>, f).has));
 }
 
 /**
@@ -241,6 +271,7 @@ export function buildListEnvelope(
 
   const projected = page.map((it) => projectListItem(it, fields));
   const hasMore = offset + page.length < realTotal;
+  const unknown = unmatchedFields(page, fields);
   return {
     items: projected,
     total: realTotal,
@@ -248,6 +279,7 @@ export function buildListEnvelope(
     offset,
     has_more: hasMore,
     next_offset: hasMore ? offset + page.length : null,
+    ...(unknown.length > 0 ? { unknown_fields: unknown } : {}),
   };
 }
 
@@ -334,30 +366,41 @@ export function fitEntityToText(data: unknown): string {
   // Deep clone — data came from JSON (no cycles/functions), so this is safe.
   const clone: unknown = JSON.parse(text);
 
-  type Leaf = { parent: Record<string, unknown> | unknown[]; key: string | number; path: string; length: number };
+  type Leaf = { parent: Record<string, unknown> | unknown[]; key: string | number; path: string; length: number; marker: string };
   const leaves: Leaf[] = [];
   const walk = (node: unknown, path: string): void => {
     if (Array.isArray(node)) {
       node.forEach((v, i) => {
         const p = `${path}[${i}]`;
-        if (typeof v === "string") leaves.push({ parent: node, key: i, path: p, length: v.length });
+        if (typeof v === "string") leaves.push({ parent: node, key: i, path: p, length: v.length, marker: `[elided: ${v.length} chars]` });
         else if (v && typeof v === "object") walk(v, p);
       });
     } else if (node && typeof node === "object") {
       for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
         const p = path ? `${path}.${k}` : k;
-        if (typeof v === "string") leaves.push({ parent: node as Record<string, unknown>, key: k, path: p, length: v.length });
-        else if (v && typeof v === "object") walk(v, p);
+        if (typeof v === "string") {
+          leaves.push({ parent: node as Record<string, unknown>, key: k, path: p, length: v.length, marker: `[elided: ${v.length} chars]` });
+        } else if (Array.isArray(v)) {
+          // A big array of SMALL strings (field-found: an ad group with 20k zone ids
+          // in params.zoneId, 232KB) has no large string leaf to shed, so a
+          // string-only pass could not shrink it and the caller got no data at all.
+          // Shed the array as a unit, keeping its size visible.
+          const len = JSON.stringify(v).length;
+          leaves.push({ parent: node as Record<string, unknown>, key: k, path: p, length: len, marker: `[elided: ${v.length} items, ${len} chars]` });
+          walk(v, p);
+        } else if (v && typeof v === "object") walk(v, p);
       }
     }
   };
   walk(clone, "");
   leaves.sort((a, b) => b.length - a.length);
 
-  // Elide the largest string leaf, re-measure, repeat — never over-elide in a batch.
+  // Elide the largest leaf, re-measure, repeat — never over-elide in a batch.
+  // Shedding a parent array first makes its own children unreachable; harmless,
+  // since assigning into the detached child only mutates garbage.
   const elided: string[] = [];
   for (const leaf of leaves) {
-    (leaf.parent as Record<string | number, unknown>)[leaf.key] = `[elided: ${leaf.length} chars]`;
+    (leaf.parent as Record<string | number, unknown>)[leaf.key] = leaf.marker;
     elided.push(leaf.path);
     text = JSON.stringify(clone);
     if (text.length <= budget) break;
@@ -365,7 +408,7 @@ export function fitEntityToText(data: unknown): string {
 
   const note = {
     elided,
-    reason: `Response exceeded ${CHARACTER_LIMIT} chars; large string fields were elided. Fetch full content via the entity's resource URI (lincx://{entity}/{id}) or a more specific tool.`,
+    reason: `Response exceeded ${CHARACTER_LIMIT} chars; the largest string and array fields were elided (the rest of the entity is intact). Fetch full content via the entity's resource URI (lincx://{entity}/{id}) or a more specific tool.`,
   };
 
   if (clone && typeof clone === "object" && !Array.isArray(clone)) {

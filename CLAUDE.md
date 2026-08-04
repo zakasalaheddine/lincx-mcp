@@ -541,6 +541,20 @@ an `{ id, _omitted }` stub for that row, sets `truncated.returned: 0` +
 collection). The list family keeps `truncated`/`has_more`/`next_offset` as its contract —
 `complete` is the zone-composite family's flag, where there is no cursor to page with.
 
+### `fields` takes dotted paths; a wrong path is reported, not silent — fixed
+`fields: ['params.zoneId']` used to match nothing and return no error: rows came back
+looking clean with the data absent, and there was no way to shrink a page below the
+parent object. Paths now resolve segment-by-segment and project the leaf under its
+dotted key (`{"params.zoneId": [...]}`), and any requested field matching zero rows on
+the page comes back in the envelope's `unknown_fields`. This is what makes a
+whole-network sweep affordable on a collection holding a runaway array.
+
+`fitEntityToText` also elides large ARRAYS, not just large strings. An entity whose bulk
+is 20k short strings (`ducqqp`, 232KB of `params.zoneId`) had no string leaf big enough
+to shed, so the caller previously got a bare `_truncated` note with no entity data at
+all; the array is now shed as a unit (`[elided: N items, M chars]`) and every other
+field survives.
+
 ### Network response shape — confirmed
 `GET /api/networks` returns `{ data: [...] }`, each network carrying an `archived`
 boolean (absent when active — upstream deletes the flag on unarchive). `getAll`

@@ -56,6 +56,45 @@ describe("buildListEnvelope", () => {
   });
 });
 
+/**
+ * Field-found 2026-08-04: fields:["params.zoneId"] returned NEITHER field and no
+ * error — the row came back looking clean with the data silently absent, and the
+ * only way to shrink a page (the whole point on a collection holding a 232KB row)
+ * was unavailable.
+ */
+describe("dotted field paths", () => {
+  const rows = [
+    { id: "a", name: "A", params: { zoneId: ["z1", "z2"], other: 1 }, exceptParams: {} },
+    { id: "b", name: "B", params: {}, exceptParams: { zoneId: ["z9"] } },
+  ];
+
+  it("projects the leaf under its dotted key, not the whole parent object", () => {
+    const env = buildListEnvelope(rows, { limit: 25, offset: 0, fields: ["params.zoneId", "exceptParams.zoneId"] });
+    const [a, b] = env.items as Record<string, unknown>[];
+    expect(a["params.zoneId"]).toEqual(["z1", "z2"]);
+    expect(a.params).toBeUndefined();          // the heavy parent is NOT included
+    expect(a["exceptParams.zoneId"]).toBeUndefined(); // absent on this row, fine
+    expect(b["exceptParams.zoneId"]).toEqual(["z9"]);
+  });
+
+  it("dotted selection is dramatically smaller than pulling the parent", () => {
+    const fat = [{ id: "x", name: "X", params: { zoneId: ["z1"], junk: Array.from({ length: 5000 }, (_, i) => `j${i}`) } }];
+    const dotted = JSON.stringify(buildListEnvelope(fat, { limit: 25, offset: 0, fields: ["params.zoneId"] })).length;
+    const parent = JSON.stringify(buildListEnvelope(fat, { limit: 25, offset: 0, fields: ["params"] })).length;
+    expect(dotted).toBeLessThan(parent / 10);
+  });
+
+  it("flags a requested field that matched no row instead of failing silently", () => {
+    const env = buildListEnvelope(rows, { limit: 25, offset: 0, fields: ["params.zoneId", "nope", "params.missing"] });
+    expect(env.unknown_fields).toEqual(["nope", "params.missing"]);
+  });
+
+  it("omits unknown_fields entirely when every requested field matched", () => {
+    const env = buildListEnvelope(rows, { limit: 25, offset: 0, fields: ["params.zoneId"] });
+    expect(env.unknown_fields).toBeUndefined();
+  });
+});
+
 describe("listEnvelopeToText", () => {
   it("returns compact (non-indented) JSON when under the limit", () => {
     const env = buildListEnvelope([{ id: "1", name: "a" }], { limit: 25, offset: 0 });
