@@ -348,6 +348,28 @@ describe("inert ad-level whitelist (dead config, the Adnet shape)", () => {
     expect(b.freeRadicals).toEqual([]);
   });
 
+  /**
+   * The bucket keys on `!eligible`, NOT on CAG match — so every ineligibility cause can
+   * land here, each distinguishable by `reasons[]`. Asked live on 2026-08-04: every inert
+   * row on Adnet came back `via: ["zone-selection"]`, which raised the question of whether
+   * cag-mismatch was structurally unreachable rather than merely absent. It is reachable;
+   * Adnet has none.
+   */
+  it("admits every ineligibility cause, distinguishable by reasons[]", () => {
+    const wrongCag: AdGroup = { id: "othercag", creativeAssetGroupId: "different", params: { zoneId: ["z9"] } };
+    const archived: AdGroup = { id: "gone", creativeAssetGroupId: CAG, params: { zoneId: ["z9"] }, archived: true };
+    const wl: Ad = { id: "a", params: { zoneId: [ZONE] } };
+
+    const b = zoneEligibility([wrongCag, archived], zone, { othercag: [wl], gone: [wl] });
+    expect(b.inertWhitelists.map((e) => e.adGroupId).sort()).toEqual(["gone", "othercag"]);
+
+    const byId = new Map(b.inertWhitelists.map((e) => [e.adGroupId, e]));
+    expect(byId.get("othercag")!.reasons).toEqual(["cag-mismatch"]);
+    expect(byId.get("othercag")!.via).toEqual([]);          // no zone-selection — the tell
+    expect(byId.get("gone")!.reasons).toEqual(["archived"]);
+    for (const e of b.inertWhitelists) expect(e.conflicts).toContain("inert-ad-level-whitelist");
+  });
+
   it("an out-of-scope group with no whitelisted ad is still dropped (no noise)", () => {
     const plain: Ad = { id: "ordinary" };
     const b = zoneEligibility([roofing], zone, { p3a87b: [plain] });
