@@ -383,7 +383,21 @@ The general eligibility primitive (`tools/eligibility.ts`, pure + network-agnost
 
 **Free radicals have two grains.** GROUP grain = the `freeRadicals[]` row set (`summary.freeRadicalGroups`): groups eligible only via the shared CAG. OFFER grain = `(ad group × ad)` pairs that serve *solely* via the CAG — untargeted ad **and** untargeted group, net of blacklists at both levels (`summary.freeRadicalOffers`, `offerEligibility`/`offerRollup` in `tools/eligibility.ts`). Group grain **over-counts the leak**: an untargeted group whose only ad is zone-whitelisted is 1 free-radical group but **0** free-radical offers — that ad renders because it is ad-level-TARGETED, not via the CAG. Every row carries `offers: { total, serving, freeRadical, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, freeRadicalAdIds[] }` so a pure free-radical subset is derivable. The reconciliation invariant (`directlyTargeted + conflicting` = the inventory tool's targeted set) is untouched by this.
 
-`conflicts[]` surfaces config contradictions (`targets-and-excepts`, `whitelisted-cag-mismatch`), reserved for more signals later.
+`conflicts[]` surfaces config contradictions (`targets-and-excepts`, `whitelisted-cag-mismatch`,
+`inert-ad-level-whitelist`), and stays open for more signals.
+
+**Inert ad-level whitelists (`inertWhitelists` bucket).** An ad whose `params.zoneId` names a
+zone its GROUP cannot reach is dead config: `filterAdgroups()` drops the group before
+`filterAds()` is consulted, so the whitelist never fires while the UI reads as "this ad is
+targeted here". Field-found on Adnet (`xvret6`) 2026-08-04 — 18 ads across 8 groups, 6 of them
+live, from a Facebook-zone carve-out rolled out on the ads while the parent groups were never
+scoped to `upd39v`. These groups were previously **dropped from every bucket**, so the defect
+was invisible to the tools that exist to find it. `zoneEligibility` now returns a fourth
+bucket for them and `offerEligibility` sets `conflicts: ['inert-ad-level-whitelist']`;
+`offerRollup` counts `inertWhitelisted` + `inertWhitelistedAdIds[]`, and the summary totals
+`inertWhitelistGroups` / `inertWhitelistOffers`. Nothing in the bucket serves, and it is
+disjoint from `directlyTargeted`/`conflicting` by construction (an inert group is neither
+ad-group-whitelisted nor eligible), so the reconciliation invariant is untouched.
 
 **`scoped_via` is one shared enum** (`SCOPED_VIA` in `tools/eligibility.ts`) across every
 tool that emits the field — `ad-group-whitelist`, `ad-group-blacklist`, `ad-level-whitelist`,

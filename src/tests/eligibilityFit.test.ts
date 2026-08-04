@@ -18,7 +18,7 @@ const CAG = "0bckt2";
 
 const offers = (o: Partial<OfferRollup> = {}): OfferRollup => ({
   total: 3, serving: 3, freeRadical: 0, adLevelTargeted: 0, adLevelBlacklisted: 0,
-  confinedElsewhere: 0, freeRadicalAdIds: [], ...o,
+  confinedElsewhere: 0, inertWhitelisted: 0, freeRadicalAdIds: [], inertWhitelistedAdIds: [], ...o,
 });
 
 const row = (id: string, targeted: boolean): EnrichedRow => ({
@@ -32,14 +32,20 @@ const row = (id: string, targeted: boolean): EnrichedRow => ({
   offers: targeted ? offers() : offers({ freeRadical: 3, freeRadicalAdIds: ["ad000001", "ad000002", "ad000003"] }),
 });
 
-const payload = (nDirect: number, nRadical: number, nConflict = 0): EligibilityPayload => {
+const payload = (nDirect: number, nRadical: number, nConflict = 0, nInert = 0): EligibilityPayload => {
   const direct = Array.from({ length: nDirect }, (_, i) => row(`d${i}`, true));
   const radicals = Array.from({ length: nRadical }, (_, i) => row(`r${i}`, false));
   const conflict = Array.from({ length: nConflict }, (_, i) => row(`c${i}`, true));
+  const inert = Array.from({ length: nInert }, (_, i) => ({
+    ...row(`i${i}`, false),
+    eligible: false, reasons: ["targets-other-zones"], conflicts: ["inert-ad-level-whitelist"],
+    scoped_via: ["ad-level-whitelist", "zone-selection"],
+    offers: offers({ serving: 0, adLevelTargeted: 1, inertWhitelisted: 1, inertWhitelistedAdIds: ["adX"] }),
+  }));
   return {
     zone: { id: ZONE, name: "Some Zone Name", creativeAssetGroupId: CAG, templateId: "tpl1" },
-    summary: summarizeEligibility(direct, radicals, conflict),
-    directlyTargeted: direct, freeRadicals: radicals, conflicting: conflict,
+    summary: summarizeEligibility(direct, radicals, conflict, inert),
+    directlyTargeted: direct, freeRadicals: radicals, conflicting: conflict, inertWhitelists: inert,
     scan: { zonesScanned: 300, adGroupsScanned: 900, campaignsScanned: 400, adsScanned: 3000, creativesScanned: 1344 },
   };
 };
@@ -58,7 +64,7 @@ function walk(full: EligibilityPayload, bucket: Bucket) {
   let pages = 0;
   while (offset !== undefined) {
     const { json } = parse(fitEligibility(full, bucket, offset, LIMIT));
-    for (const k of ["directlyTargeted", "freeRadicals", "conflicting"]) {
+    for (const k of ["directlyTargeted", "freeRadicals", "conflicting", "inertWhitelists"]) {
       if (Array.isArray(json[k])) rows.push(...(json[k] as EnrichedRow[]));
     }
     offset = json.page?.next_offset;
@@ -90,6 +96,47 @@ describe("fitEligibility — small zone fits in one call (B1–B4)", () => {
   it("header states exact counts and no page warning", () => {
     expect(header).toContain("5 targeted");
     expect(header).not.toContain("PARTIAL PAGE");
+  });
+});
+
+describe("fitEligibility — the inertWhitelists bucket", () => {
+  const full = payload(5, 4, 1, 3);
+
+  it("is selectable on its own and returns only inert rows", () => {
+    const { json } = parse(fitEligibility(full, "inertWhitelists", 0, LIMIT));
+    expect(json.inertWhitelists).toHaveLength(3);
+    expect(json.directlyTargeted).toBeUndefined();
+    expect(json.page.total).toBe(3);
+    for (const r of json.inertWhitelists) {
+      expect(r.conflicts).toContain("inert-ad-level-whitelist");
+      expect(r.offers.inertWhitelisted).toBe(1);
+      expect(r.eligible).toBe(false);      // nothing here serves
+      expect(r.offers.serving).toBe(0);
+    }
+  });
+
+  it("counts at both grains in the summary and rides in bucket:'all'", () => {
+    const { header, json } = parse(fitEligibility(full, "all", 0, LIMIT));
+    expect(json.summary.inertWhitelistGroups).toBe(3);
+    expect(json.summary.inertWhitelistOffers).toBe(3);
+    expect(json.page.total).toBe(13);     // 5 + 4 + 1 + 3
+    expect(header).toContain("INERT ad-level whitelists");
+  });
+
+  it("stays out of the reconciliation buckets", () => {
+    const { json } = parse(fitEligibility(full, "all", 0, LIMIT));
+    const ids = (k: string) => (json[k] as { id: string }[]).map((r) => r.id);
+    for (const id of ids("inertWhitelists")) {
+      expect(ids("directlyTargeted")).not.toContain(id);
+      expect(ids("conflicting")).not.toContain(id);
+    }
+    // directlyTargeted + conflicting is unchanged by the new bucket.
+    expect(json.summary.directlyTargeted + json.summary.conflicting).toBe(6);
+  });
+
+  it("says nothing in the header when there is no dead config", () => {
+    const { header } = parse(fitEligibility(payload(5, 4, 1, 0), "all", 0, LIMIT));
+    expect(header).not.toContain("INERT");
   });
 });
 

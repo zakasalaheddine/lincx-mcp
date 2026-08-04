@@ -301,6 +301,76 @@ describe("D3 — the host row survives, the offer count does not", () => {
   });
 });
 
+/**
+ * Field-found on Adnet (`xvret6`) 2026-08-04: 18 ads across 8 groups whitelist a zone
+ * their parent group cannot reach — e.g. group `p3a87b` (Roofing) targets six zones not
+ * including `upd39v`, while four of its ads name `upd39v`. filterAdgroups() drops the
+ * group before filterAds() is consulted, so the whitelist never fires. Six of the eight
+ * groups are live, and the config reads as "this ad is targeted here" while doing nothing.
+ *
+ * Before this signal those groups were dropped from every bucket — the defect was
+ * undiscoverable through the tools that exist to find exactly this.
+ */
+describe("inert ad-level whitelist (dead config, the Adnet shape)", () => {
+  const roofing: AdGroup = {
+    id: "p3a87b", name: "Roofing", creativeAssetGroupId: CAG,
+    params: { zoneId: ["kbh7fx", "hh4x9w", "bietyv"] },   // does NOT include the zone
+  };
+  const escaping: Ad = { id: "vk5xdn", params: { zoneId: [ZONE] } }; // names the zone anyway
+
+  it("the offer carries the conflict and does not serve", () => {
+    const v = eligibility({ adGroup: roofing, zone, ads: [escaping] });
+    const o = offerEligibility(v, roofing, escaping, zone);
+    expect(v.eligible).toBe(false);
+    expect(o.serves).toBe(false);
+    expect(o.conflicts).toEqual(["inert-ad-level-whitelist"]);
+    expect(o.scoped_via).toContain("ad-level-whitelist");
+    expect(o.reasons).toContain("targets-other-zones");
+    expect(o.freeRadical).toBe(false);
+  });
+
+  it("a whitelist under an ELIGIBLE group is not inert (narrowing, the common idiom)", () => {
+    const targeted: AdGroup = { id: "1oby5f", creativeAssetGroupId: CAG, params: { zoneId: [ZONE, "hh4x9w"] } };
+    const narrowing: Ad = { id: "sk868g", params: { zoneId: [ZONE] } };
+    const v = eligibility({ adGroup: targeted, zone, ads: [narrowing] });
+    const o = offerEligibility(v, targeted, narrowing, zone);
+    expect(o.serves).toBe(true);
+    expect(o.conflicts).toEqual([]);
+  });
+
+  it("the group surfaces in its own bucket instead of being dropped", () => {
+    const b = zoneEligibility([roofing], zone, { p3a87b: [escaping] });
+    expect(b.inertWhitelists.map((e) => e.adGroupId)).toEqual(["p3a87b"]);
+    expect(b.inertWhitelists[0].conflicts).toContain("inert-ad-level-whitelist");
+    // …and stays out of every reconciliation bucket.
+    expect(b.directlyTargeted).toEqual([]);
+    expect(b.conflicting).toEqual([]);
+    expect(b.freeRadicals).toEqual([]);
+  });
+
+  it("an out-of-scope group with no whitelisted ad is still dropped (no noise)", () => {
+    const plain: Ad = { id: "ordinary" };
+    const b = zoneEligibility([roofing], zone, { p3a87b: [plain] });
+    expect(b.inertWhitelists).toEqual([]);
+  });
+
+  it("rolls up per group, counting only the dead ads", () => {
+    const ads: Ad[] = [
+      { id: "vk5xdn", params: { zoneId: [ZONE] } },   // inert
+      { id: "2j5j7q", params: { zoneId: [ZONE] } },   // inert
+      { id: "elsewhere", params: { zoneId: ["hh4x9w"] } }, // confined to a zone the group does target
+      { id: "plain" },                                 // nothing
+    ];
+    const v = eligibility({ adGroup: roofing, zone, ads });
+    const r = offerRollup(v, roofing, ads, zone);
+    expect(r.total).toBe(4);
+    expect(r.serving).toBe(0);          // group can't reach the zone — nothing serves
+    expect(r.inertWhitelisted).toBe(2);
+    expect(r.inertWhitelistedAdIds).toEqual(["vk5xdn", "2j5j7q"]);
+    expect(r.freeRadical).toBe(0);
+  });
+});
+
 /** C3 — scoped_via is ONE enum across the tools that emit it. */
 describe("C3 — shared scoped_via domain", () => {
   const inventoryRow = (over: Partial<AdGroup>, ads: Ad[]) => rollupZoneTargeting({

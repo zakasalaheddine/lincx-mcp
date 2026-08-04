@@ -117,6 +117,7 @@ export type Offer = {
   scoped_via: ScopedVia[]; // shared SCOPED_VIA domain (same enum the group-grain rollup uses)
   freeRadical: boolean;  // serves via the shared CAG ONLY — no whitelist at either level
   reasons: string[];     // group reasons + 'ad-blacklisted' | 'ad-targets-other-zones'
+  conflicts: string[];   // 'inert-ad-level-whitelist'
 };
 
 /**
@@ -153,7 +154,17 @@ export function offerEligibility(
     && !scoped_via.includes("ad-group-whitelist")
     && !scoped_via.includes("ad-level-whitelist");
 
-  return { adGroupId: adGroup.id, adId: ad.id ?? "", zoneId, serves, scoped_via, freeRadical, reasons };
+  // An ad-level whitelist naming a zone its GROUP cannot reach never fires —
+  // filterAdgroups() drops the group before filterAds() is consulted. The config
+  // reads as "this ad is targeted here" and does nothing. Field-found on Adnet:
+  // 18 ads across 8 groups, 6 of them live, where a Facebook-zone carve-out was
+  // rolled out on the ads but the parent group was never scoped to that zone.
+  const conflicts: string[] = [];
+  if (scoped_via.includes("ad-level-whitelist") && !group.eligible) {
+    conflicts.push("inert-ad-level-whitelist");
+  }
+
+  return { adGroupId: adGroup.id, adId: ad.id ?? "", zoneId, serves, scoped_via, freeRadical, reasons, conflicts };
 }
 
 export type OfferRollup = {
@@ -163,7 +174,9 @@ export type OfferRollup = {
   adLevelTargeted: number;   // ad's own params.zoneId names the zone
   adLevelBlacklisted: number;// ad's own exceptParams.zoneId excludes the zone
   confinedElsewhere: number; // ad whitelists only OTHER zones
+  inertWhitelisted: number;  // ad whitelists THIS zone but its group can't reach it — dead config
   freeRadicalAdIds: string[];
+  inertWhitelistedAdIds: string[];
 };
 
 /** Per-group offer-grain counts, so a pure free-radical subset is derivable. */
@@ -175,6 +188,7 @@ export function offerRollup(
 ): OfferRollup {
   const offers = ads.map((ad) => offerEligibility(group, adGroup, ad, zone));
   const freeRadicals = offers.filter((o) => o.freeRadical);
+  const inert = offers.filter((o) => o.conflicts.includes("inert-ad-level-whitelist"));
   return {
     total: offers.length,
     serving: offers.filter((o) => o.serves).length,
@@ -182,7 +196,9 @@ export function offerRollup(
     adLevelTargeted: offers.filter((o) => o.scoped_via.includes("ad-level-whitelist")).length,
     adLevelBlacklisted: offers.filter((o) => o.scoped_via.includes("ad-level-blacklist")).length,
     confinedElsewhere: offers.filter((o) => o.reasons.includes("ad-targets-other-zones")).length,
+    inertWhitelisted: inert.length,
     freeRadicalAdIds: freeRadicals.map((o) => o.adId).filter(Boolean),
+    inertWhitelistedAdIds: inert.map((o) => o.adId).filter(Boolean),
   };
 }
 
@@ -197,24 +213,37 @@ export function offerRollup(
  *   ad is zone-whitelisted → that ad renders because it is ad-level-targeted, not via
  *   the CAG). Use `offerRollup` for the offer-grain count.
  * - `conflicting` — ad-group-whitelisted AND blacklisted (targets+excepts the zone).
- * Groups neither whitelisted nor eligible are dropped (they don't touch the zone).
+ * - `inertWhitelists` — NOT in scope for the zone, yet one of its ads whitelists the
+ *   zone. Nothing here serves; it is a pure config-defect bucket. Without it these
+ *   groups are dropped, and a dead ad-level whitelist is undiscoverable — the config
+ *   reads as "targeted here" in the UI and does nothing.
+ * Groups that neither touch the zone nor hold an inert whitelist are dropped.
+ *
+ * The reconciliation invariant is untouched: `inertWhitelists` groups are, by
+ * construction, neither ad-group-whitelisted nor eligible, so they cannot appear in
+ * `directlyTargeted` or `conflicting`.
  */
 export function zoneEligibility(
   adGroups: AdGroup[],
   zone: { id: string; creativeAssetGroupId?: string },
   adsByGroup: Record<string, Ad[]>,
-): { directlyTargeted: Eligibility[]; freeRadicals: Eligibility[]; conflicting: Eligibility[] } {
+): { directlyTargeted: Eligibility[]; freeRadicals: Eligibility[]; conflicting: Eligibility[]; inertWhitelists: Eligibility[] } {
   const directlyTargeted: Eligibility[] = [];
   const freeRadicals: Eligibility[] = [];
   const conflicting: Eligibility[] = [];
+  const inertWhitelists: Eligibility[] = [];
   for (const adGroup of adGroups) {
-    const e = eligibility({ adGroup, zone, ads: adsByGroup[adGroup.id] ?? [] });
+    const ads = adsByGroup[adGroup.id] ?? [];
+    const e = eligibility({ adGroup, zone, ads });
     const agWhitelist = e.via.includes("ad-group-whitelist");
     if (agWhitelist && e.excluded) conflicting.push(e);
     else if (agWhitelist) directlyTargeted.push(e);
     else if (e.eligible) freeRadicals.push(e);
+    else if (ads.some((ad) => has(ad.params?.zoneId, zone.id))) {
+      inertWhitelists.push({ ...e, conflicts: [...e.conflicts, "inert-ad-level-whitelist"] });
+    }
   }
-  return { directlyTargeted, freeRadicals, conflicting };
+  return { directlyTargeted, freeRadicals, conflicting, inertWhitelists };
 }
 
 /** group → every zone it can serve/leak into (the flip of zoneEligibility). */
