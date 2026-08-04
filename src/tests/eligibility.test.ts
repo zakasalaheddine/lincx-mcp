@@ -4,7 +4,7 @@ import {
   SCOPED_VIA,
   type EligibilityInput, type OfferRollup,
 } from "../tools/eligibility.js";
-import { rollupZoneTargeting } from "../tools/zoneInventoryTools.js";
+import { rollupZoneTargeting, selectTargeting } from "../tools/zoneInventoryTools.js";
 import { summarizeEligibility, type EnrichedRow } from "../tools/zoneEligibilityTools.js";
 import type { AdGroup, Ad } from "../tools/zoneInventoryTools.js";
 
@@ -121,6 +121,33 @@ describe("zoneEligibility (zone → groups, bucketed by scoping)", () => {
     expect(r.conflicting.map((e) => e.adGroupId)).toEqual(["both"]);
     expect(r.conflicting[0].conflicts).toContain("targets-and-excepts");
     expect(r.directlyTargeted.map((e) => e.adGroupId)).not.toContain("both");
+  });
+
+  /**
+   * The A1 reconciliation with `conflicting` NON-EMPTY — the case production data
+   * cannot reach (an exhaustive 1150-group sweep of network 7jdz0n on 2026-08-04
+   * found no ad group naming the same zone in params.zoneId and exceptParams.zoneId).
+   *
+   * Note the exact identity: the two tools bucket a conflicting group the SAME way,
+   * so it is in NEITHER tool's targeted set. `directlyTargeted + conflicting ==
+   * inventory groups[]` therefore only holds while conflicting is 0 — the honest
+   * invariant is per-bucket set equality.
+   */
+  it("A1 — the two tools agree bucket-for-bucket when conflicting is non-empty", () => {
+    const { targeted, conflicting } = selectTargeting(groups, ZONE);
+    const r = zoneEligibility(groups, zone, {});
+
+    const ids = (xs: { id?: string; adGroupId?: string }[]) =>
+      xs.map((x) => x.id ?? x.adGroupId).sort();
+
+    expect(ids(r.directlyTargeted)).toEqual(ids(targeted));       // same targeted set
+    expect(ids(r.conflicting)).toEqual(ids(conflicting));         // same conflicting set
+    expect(r.conflicting.length).toBeGreaterThan(0);              // the case prod can't reach
+    // Disjoint: a group is never in both buckets.
+    expect(ids(r.directlyTargeted).filter((id) => ids(r.conflicting).includes(id))).toEqual([]);
+    // And the sum identity as usually stated holds only because the inventory tool
+    // reports conflicting separately from groups[] — assert both halves, not the sum.
+    expect(r.directlyTargeted.length + r.conflicting.length).toBe(targeted.length + conflicting.length);
   });
 });
 
