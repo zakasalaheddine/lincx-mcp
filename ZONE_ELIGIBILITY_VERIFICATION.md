@@ -1,22 +1,28 @@
 # Lincx MCP — Zone Eligibility Tooling Verification Log
 
-**Network:** `7jdz0n` (Core Digital)
-**Zones under test:** `8z7wzb` (Quicken Loans Refinance – Match, CAG `0bckt2`), `6wahzt` (Quicken Loans – Listicle – SmartSeniorSavings, CAG `fab2jc`)
+**Primary network:** `7jdz0n` (Core Digital) · **Second network:** `xvret6` (Adnet) · **Probed:** 25 of 63 non-test networks
+**Zones under test:** `8z7wzb` (Quicken Loans Refinance – Match, CAG `0bckt2`), `6wahzt` (Quicken Loans – Listicle – SmartSeniorSavings, CAG `fab2jc`), `upd39v` (Adnet — USA Consumer | Senior Listicle – Facebook, CAG `6j5glr`)
 **Tools under test:** `get_zone_targeting_inventory`, `get_zone_eligible_ad_groups`, `explain_serve`, `get_ad_group_zone_reach`, plus `get_ad`, `get_ad_group`, `get_zone`, `list_ads`, `list_ad_groups`, `list_zones`
-**Dates of run:** 2026-08-03 (passes 0, A–F) and 2026-08-04 (passes G–I, defect fixes, exhaustive sweeps)
+**Dates of run:** 2026-08-03 (passes 0, A–F) and 2026-08-04 (passes G–L: defect fixes, exhaustive sweeps, cross-network probe, new signal)
 **Format:** each section reproduces the verification prompt as issued, followed by the result reported back from live API calls.
 
 ---
 
 ## Executive summary
 
-Nine verification passes were run against the zone-eligibility tooling on production network `7jdz0n`. Every assertion with live data behind it passes.
+Thirteen verification passes were run against the zone-eligibility tooling, across two production networks and a probe of 25 more. Every assertion with live data behind it passes.
 
-The 08-04 session materially changed the status of the three items the 08-03 log left open. Two of them — the `ad-level-whitelist` and `ad-group-blacklist` enum branches — moved from **UNEXERCISED (no fixture found)** to **CONFIRMED ABSENT NETWORK-WIDE**, established by exhaustive sweeps of all 1,150 ad groups and all 1,331 ads rather than by inference from two zones. That is a terminal result: no further reading closes them, and both are already pinned by unit tests.
+The 08-04 session closed two of the three items the 08-03 log left open, and moved the third:
 
-Reaching that result required fixing four tooling defects found during the sweeps, three of them blockers. All are shipped and verified live.
+- **`ad-level-whitelist` is now exercised live** on Adnet (`adLevelTargetedOffers: 23`, pass K) — it was unreachable on Core Digital, which has no ad-level whitelists at all across 1,331 ads.
+- **`ad-group-blacklist` / `conflicts[]` is CONFIRMED ABSENT** rather than untested — an exhaustive sweep of all 1,150 Core Digital ad groups found no group naming the same zone in both `params.zoneId` and `exceptParams.zoneId`.
+- **The D3 shape specifically** — a zone-whitelisted ad under an *untargeted* group — was not observed in either network. Across 25 Adnet groups holding ad-level whitelists, every one is itself directly targeted.
 
-Two assertions in the original set were also found to be **worded in a way that will produce false failures** once fixtures exist. Both are corrected below (E1 and A1).
+Reaching those results required fixing **eight tooling defects**, three of them blockers that stopped a sweep outright. All are shipped and verified live.
+
+The passes also produced a finding that was not on the assertion list: **18 ads across 8 Adnet groups carry an ad-level whitelist naming a zone their parent group cannot reach**, so the whitelist never fires. Six of the eight are live groups. That class of dead config was previously invisible to every tool — the groups were dropped from all buckets — and is now surfaced by the `inertWhitelists` bucket shipped in `bf885e9` (pass L).
+
+Two assertions in the original set were found to be **worded in a way that will produce false failures** once fixtures exist. Both are corrected below (E1 and A1).
 
 ### Results at a glance
 
@@ -39,6 +45,17 @@ Two assertions in the original set were also found to be **worded in a way that 
 | J | Cross-network probe for ad-level whitelists (25 of 63 networks) | **PASS** — 6 candidate networks found |
 | K | Adnet (`xvret6`) — `ad-level-whitelist` + `adLevelTargeted` exercised live | **PASS** — C3 now 4 of 5 |
 | L | `inertWhitelists` bucket + `inert-ad-level-whitelist` signal, live on Adnet + regression on Core Digital | **PASS** |
+
+### The four items raised on 2026-08-03, and where each landed
+
+| # | Raised | Status |
+|---|---|---|
+| 1 | **Truncation eats the offer payload.** `8z7wzb` returned `truncated: true` with every row collapsed to a bare id — no `offers`, no `scoped_via`, no `freeRadicalAdIds` — and no way to re-run narrower | **FIXED.** A row is ~560 chars, so 83 + 124 rows is ~118k against a 30k guard; even one bucket with names omitted is ~48k, so narrowing alone could never fit. The tool now **pages full rows** instead of shedding them: `bucket` (`all`/`directlyTargeted`/`freeRadicals`/`conflicting`/`inertWhitelists`) and `offset`, with `page: {offset, returned, total, next_offset?}` and `complete`. Every returned row keeps its full field set at any zone size. Verified pass B |
+| 2 | **Can't validate the free-radical exclusion** — Core Digital reports `adLevelTargetedOffers: 0` on every zone. Which zone was it tested against? | **ANSWERED — Adnet `xvret6`, zone `upd39v`.** `adLevelTargetedOffers: 23`. Groups `1oby5f` and `x26b1q` each show `adLevelTargeted: 1` with `freeRadical: 0` — the exclusion doing its job on live data. Core Digital could never show it: **zero ads network-wide carry `params.zoneId`** (1,331 ads, pass I). Caveat below on what is still unexercised |
+| 3 | **`adLevelBlacklistedOffers: 2` on `8z7wzb` but the zone was truncated** — can't see which two | **VISIBLE NOW.** `get_zone_eligible_ad_groups(zoneId="8z7wzb", bucket="freeRadicals")` returns them with full rows: `yq4z1t` (`adLevelBlacklisted: 1`, `freeRadical: 0`, `scoped_via: ["ad-level-blacklist","zone-selection"]`) and `4leo31` (`adLevelBlacklisted: 1`, `freeRadical: 1`, `freeRadicalAdIds: ["8mc6pd"]`; the blacklisted sibling is `pxdj47`, whose `exceptParams.zoneId` names `8z7wzb`) |
+| 4 | **`freeRadicalGroups` should be renamed** — the free radical is the offer, the group is the *host*; a host with 0 free-radical offers reads like a live problem. Plus a split: host with `freeRadical: 0` but ads present is a standing trap | **NOT DONE — the one open ask.** Proposal: rename `freeRadicalGroups`/`freeRadicalGroupsLive` to `freeRadicalHosts`/`freeRadicalHostsLive` and keep `freeRadicalOffers` as the live-leak number; add `standingTrapHosts` for hosts with `freeRadical: 0` and `total > 0`. Derivable from `offers` today; naming is the substantive half |
+
+**What is still unexercised on item 2**, stated precisely: the *counter* and the enum value are confirmed, but the **D3 shape** is not — a whitelisted ad under an untargeted group, which is where group-grain over-counts. In Adnet all 25 groups holding whitelisted ads are directly targeted; in Core Digital no ad-level whitelists exist. Ad-level whitelists appear in exactly two idioms, neither of them D3: **narrowing** (ad's zones ⊆ group's, 17 groups / 41 ads) and **inert escapes** (ad names a zone the group can't reach, 8 groups / 18 ads). Closing D3 needs a purpose-built fixture: an untargeted group on the zone's CAG with ≥1 untargeted ad and ≥1 zone-whitelisted ad.
 
 ### Key confirmations
 
@@ -65,6 +82,8 @@ Two assertions in the original set were also found to be **worded in a way that 
 5. **`ddbbai` — open question for the platform team.** It is simultaneously the network's most-blocklisted zone and a whitelist target on five groups (`ow6ets`, `ple7fj`, `quc2qz`, `t8fngw`, `9l1inq`). Not a tooling issue; worth a config review.
 6. **Inert ad-level whitelists on Adnet — operational bug, still open as a config fix.** 18 ads across 8 groups whitelist a zone their parent group cannot reach, so the whitelist never fires (`filterAdgroups()` runs first). Six are live groups — Roofing, Windows, HELOC, Auto Insurance, Timeshare Exit, Solar Exit — where a `| fbz` ad names `upd39v` under a parent scoped to `hh4x9w` but not `upd39v`. Reads as a Facebook-zone carve-out rolled out across verticals with `upd39v` missed on the parent. **The tooling side is closed** — `bf885e9` added the `inertWhitelists` bucket and the `inert-ad-level-whitelist` conflict, verified in pass L. **The config side is not**: the six groups still serve nothing on `upd39v`. Fix is to add `upd39v` to each parent group's `params.zoneId`, or drop the dead ad-level whitelists. Worth re-running pass L on other networks to size the pattern.
 7. **`ducqqp` data hygiene.** 232,813 bytes in one ad group, of which `params.zip` is 8,931 ZIP codes / 71,449 chars. Now handled gracefully by the tooling, but the underlying record is worth investigating.
+8. **`freeRadicalGroups` rename + standing-trap split — open, awaiting a decision.** See item 4 in the table above. Small change, but it touches a field consumers already read, so worth agreeing on the names before shipping.
+9. **Dangling zone reference — a class the zone-keyed sweep cannot see.** Ad `db0fu3` (archived, group `vc6nqy`) whitelists `lx84p7`, a zone that does not exist in Adnet — `get_zone` returns not found. This is why the hand count was 18 escapes and the tool reports 17: a zone-keyed sweep can only ask about zones that exist. Worse than inert in principle: `adServesInZone` treats a non-empty whitelist as *confining*, so an ad whose whitelist names only a dead zone serves in **zero** zones network-wide, showing up as `confinedElsewhere` everywhere and indistinguishable from an ad legitimately confined elsewhere. Detection today is a two-sweep diff (ad-referenced zone ids vs `list_zones`). If it turns out to be more than this one archived ad, the fix belongs in the tooling — `fetchIndex` already loads every zone, so a `dangling-zone-ref` conflict costs nothing extra.
 
 ---
 
@@ -85,7 +104,8 @@ All shipped to `main` and verified live in pass G.
 
 **Behavioural changes introduced by the fixes:**
 
-- `get_zone_eligible_ad_groups` gained `bucket` (`all` \| `directlyTargeted` \| `freeRadicals` \| `conflicting`) and `offset`, and returns `page: { bucket, offset, returned, total, next_offset? }` plus `complete`.
+- `get_zone_eligible_ad_groups` gained `bucket` (`all` \| `directlyTargeted` \| `freeRadicals` \| `conflicting` \| `inertWhitelists`) and `offset`, and returns `page: { bucket, offset, returned, total, next_offset? }` plus `complete`.
+- A fourth bucket, `inertWhitelists`, with the `inert-ad-level-whitelist` conflict at offer grain, `offers.inertWhitelisted` + `inertWhitelistedAdIds[]` per group, and `summary.inertWhitelistGroups` / `inertWhitelistOffers` (`bf885e9`).
 - `truncated` became `complete: false` in the zone-composite family. The `list_*` family deliberately keeps `truncated` / `has_more` / `next_offset` — it has a cursor to continue with, which the composites don't.
 - `fields` accepts dotted paths, projecting the leaf under its dotted key (`{"params.zoneId": [...]}`).
 - Envelopes carry `unknown_fields` when a requested path matches no row in the collection.
@@ -233,7 +253,9 @@ One transport error (`Error: terminated`) occurred on `bucket:"all", offset:47`;
 2. **`get_zone_eligible_ad_groups`** (207 rows) — `ad-group-whitelist`, `ad-level-blacklist`, `zone-selection`. `ad-level-blacklist` came from exactly two free-radical rows, `yq4z1t` and `4leo31`.
 3. **`explain_serve(6wahzt, adId="jzhvyr")`** — `zone-selection`, at `offer.scoped_via`.
 
-**Coverage:** 3 of 5 values exercised. `ad-group-blacklist` and `ad-level-whitelist` were never emitted — now known to be **structurally absent from the network** (passes H and I), not merely unobserved. C3 confirms nothing outside the enum is emitted.
+**Coverage at the time of this pass:** 3 of 5 values. `ad-group-blacklist` and `ad-level-whitelist` were never emitted — known from passes H and I to be **structurally absent from this network**, not merely unobserved. C3 confirms nothing outside the enum is emitted.
+
+> **Superseded by pass K:** `ad-level-whitelist` is emitted on Adnet (`upd39v`), taking coverage to **4 of 5**. Only `ad-group-blacklist` remains unreachable on live data anywhere probed.
 
 **`via` (kept separate):** `ad-group-whitelist` and `zone-selection` only — 2 values, as designed.
 
@@ -603,13 +625,43 @@ The reviewer's client listed only four `bucket` values and no inert fields — a
 | total rows, `bucket:"all"` | 11 |
 | adFeedCount (serving parameter) | 10 |
 
+### Zone `upd39v` — Adnet, USA Consumer | Senior Listicle – Facebook (CAG `6j5glr`)
+
+| metric | value |
+|---|---|
+| directlyTargeted | 18 |
+| directlyTargetedLive | 15 |
+| directlyTargetedIneligible | 0 |
+| freeRadicalGroups | 0 |
+| freeRadicalOffers | 0 |
+| adLevelTargetedOffers | **23** |
+| adLevelBlacklistedOffers | 28 |
+| conflicting | 0 |
+| inertWhitelistGroups | **6** |
+| inertWhitelistOffers | **15** |
+| total rows, `bucket:"all"` | 24 |
+
+### Inert ad-level whitelists across Adnet (13 candidate zones swept)
+
+| zone | name | groups | inert offers |
+|---|---|---|---|
+| `upd39v` | USA - Consumer \| Senior Listicle - Facebook | 6 | 15 |
+| `hh4x9w` | USA - Consumer - Listicle \| Tight Money - Taboola | 1 | 1 |
+| `zk8hmm` | SunValue - Listicle - Decline Page | 1 | 1 |
+| `kbh7fx`, `so4ieh`, `dz1827`, `bietyv`, `8uc7xk`, `i82olb`, `ez69a6`, `wv9x2h`, `b17agb` | — | 0 | 0 |
+| `lx84p7` | **does not exist** — `get_zone` returns not found | — | dangling reference (see open item 9) |
+
+**Total: 17 inert offers across 7 groups and 3 zones, every one `reasons: ["targets-other-zones"]`.** No `cag-mismatch` and no `archived` cause anywhere — both are reachable in the bucket (pinned in `src/tests/eligibility.test.ts`, "admits every ineligibility cause"), so those zeroes are facts about Adnet, not artifacts of the bucket. Candidate zones were derived from the union of every ad's `params.zoneId` — a zone no ad names cannot hold an inert whitelist.
+
 ### Network-wide sweep totals
 
 | collection | rows swept | result |
 |---|---|---|
-| ad groups | 1,150 of 1,150 | 0 targets-and-excepts |
-| ads | 1,331 of 1,331 | 0 ad-level zone whitelists |
-| zones | 359 of 359 | 6 share CAG `fab2jc` |
+| Core Digital ad groups | 1,150 of 1,150 | 0 targets-and-excepts |
+| Core Digital ads | 1,331 of 1,331 | 0 ad-level zone whitelists |
+| Core Digital zones | 359 of 359 | 6 share CAG `fab2jc` |
+| Adnet ads | 488 of 488 | 59 whitelisted ads / 25 groups / 13 distinct zones referenced |
+| Networks probed for ad-level whitelists | 25 of 63 | 6 carry them |
 
 ### Zones sharing CAG `fab2jc`
 
@@ -636,5 +688,8 @@ The reviewer's client listed only four `bucket` values and no inert fields — a
 | `next_offset` stall | `src/tests/listEnvelope.test.ts` — "a single row bigger than the whole budget" |
 | Dotted paths + `unknown_fields` | `src/tests/listEnvelope.test.ts` — "dotted field paths" |
 | Array elision on entities | `src/tests/fitEntity.test.ts` — "elides a huge array of small strings" |
+| Inert whitelist vs narrowing (the distinction that matters) | `src/tests/eligibility.test.ts` — "inert ad-level whitelist (dead config, the Adnet shape)", 6 cases |
+| Every ineligibility cause reachable in `inertWhitelists` | `src/tests/eligibility.test.ts` — "admits every ineligibility cause, distinguishable by reasons[]" |
+| `inertWhitelists` bucket, paging + summary + header suppression | `src/tests/eligibilityFit.test.ts` — "the inertWhitelists bucket", 4 cases |
 
-Full suite: 185 tests, all passing as of commit `092de78`.
+Full suite: 196 tests, all passing as of commit `8faa7cc`.
