@@ -270,16 +270,34 @@ export function listEnvelopeToText(env: ListEnvelope): string {
     kept.pop();
   }
 
-  const next = env.offset + kept.length;
+  // A single row bigger than the whole budget leaves kept empty. Returning
+  // next_offset = offset then makes the documented "page until next_offset is
+  // absent" walk loop forever on that row, which is worse than any truncation:
+  // the caller can never reach row offset+1. Replace the poison row with an
+  // identifying stub and advance past it, so the walk always terminates and the
+  // skipped id is named rather than silently swallowed.
+  const oversized = kept.length === 0 && fetched > 0;
+  if (oversized) {
+    const first = env.items[0] as Record<string, unknown> | undefined;
+    kept.push({
+      id: first?.id,
+      _omitted: "This row alone exceeds the response budget; fetch it with get_<entity> or a narrower 'fields'.",
+    });
+  }
+
+  const next = env.offset + (oversized ? 1 : kept.length);
   const result = {
     ...env,
     items: kept,
     has_more: true,
     next_offset: next,
     truncated: {
-      returned: kept.length,
+      returned: oversized ? 0 : kept.length,
       fetched,
-      reason: `Response exceeded ${CHARACTER_LIMIT} chars. Returned ${kept.length} of ${fetched} fetched items; request offset=${next} to continue, or pass a narrower 'fields'.`,
+      ...(oversized ? { skipped_oversized: (env.items[0] as Record<string, unknown> | undefined)?.id } : {}),
+      reason: oversized
+        ? `One row exceeds the ${CHARACTER_LIMIT}-char budget on its own, so no full item fit. Its id is returned as a stub and next_offset advances past it — request offset=${next} to continue, or pass a narrower 'fields'.`
+        : `Response exceeded ${CHARACTER_LIMIT} chars. Returned ${kept.length} of ${fetched} fetched items; request offset=${next} to continue, or pass a narrower 'fields'.`,
     },
   };
   return JSON.stringify(result);

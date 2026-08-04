@@ -79,4 +79,49 @@ describe("listEnvelopeToText", () => {
     expect(parsed.next_offset).toBe(parsed.items.length);
     expect(parsed.truncated.fetched).toBe(200);
   });
+
+  /**
+   * Field-found 2026-08-04: ad group `ducqqp` serializes to 232KB on its own, so no
+   * full item fit, kept.length hit 0, and next_offset came back EQUAL to the requested
+   * offset. "Page until next_offset is absent" then loops forever on that row and the
+   * rest of the collection is unreachable. The walk must always advance.
+   */
+  describe("a single row bigger than the whole budget", () => {
+    const poison = (id: string) => ({ id, name: "n", params: { zoneId: Array.from({ length: 20_000 }, (_, i) => `z${i}`) } });
+
+    it("advances next_offset past the poison row instead of stalling", () => {
+      // Exactly the field shape: the poison row sits AT the requested offset.
+      const items = [{ id: "first", name: "a" }, poison("ducqqp"), { id: "next", name: "b" }];
+      const env = buildListEnvelope(items, { limit: 100, offset: 1, fields: ["params"] });
+      const parsed = JSON.parse(listEnvelopeToText(env));
+      expect(parsed.next_offset).toBe(2);          // was 1 — the stall
+      expect(parsed.next_offset).toBeGreaterThan(env.offset);
+    });
+
+    it("names the skipped row rather than swallowing it, and stays under the limit", () => {
+      const env = buildListEnvelope([poison("ducqqp")], { limit: 100, offset: 0, fields: ["params"] });
+      const text = listEnvelopeToText(env);
+      const parsed = JSON.parse(text);
+      expect(text.length).toBeLessThanOrEqual(25_000);
+      expect(parsed.items).toHaveLength(1);
+      expect(parsed.items[0].id).toBe("ducqqp");
+      expect(parsed.items[0]._omitted).toBeDefined();
+      expect(parsed.truncated.returned).toBe(0);   // no FULL row was returned
+      expect(parsed.truncated.skipped_oversized).toBe("ducqqp");
+    });
+
+    it("a full walk terminates even when the collection is all poison rows", () => {
+      const items = [poison("a"), poison("b"), poison("c")];
+      const seen: string[] = [];
+      let offset: number | null = 0;
+      let guard = 0;
+      while (offset !== null) {
+        if (++guard > 10) throw new Error("walk did not terminate");
+        const parsed = JSON.parse(listEnvelopeToText(buildListEnvelope(items, { limit: 100, offset, fields: ["params"] })));
+        for (const it of parsed.items) seen.push(it.id);
+        offset = parsed.has_more ? parsed.next_offset : null;
+      }
+      expect(seen).toEqual(["a", "b", "c"]); // every id reachable, none repeated
+    });
+  });
 });

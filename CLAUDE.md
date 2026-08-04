@@ -530,6 +530,17 @@ and diff against the web app's login request in DevTools.
   (and `groupsTruncated`/`rawTruncated` when still large), and the list tools'
   `fields` selection + `limit`/`offset` paging with `next_offset`.
 
+### List paging never stalls on one oversized row — fixed
+`listEnvelopeToText` drops trailing items to fit `CHARACTER_LIMIT`. A single row larger
+than the whole budget (field-found: ad group `ducqqp`, 232KB of `params.zoneId`) emptied
+`kept`, so `next_offset = offset + 0 = offset` and the documented "page until `next_offset`
+is absent" walk looped forever — every row past the poison one unreachable. It now returns
+an `{ id, _omitted }` stub for that row, sets `truncated.returned: 0` +
+`truncated.skipped_oversized: <id>`, and advances `next_offset` by 1. Pinned in
+`src/tests/listEnvelope.test.ts` (including a walk-terminates test over an all-poison
+collection). The list family keeps `truncated`/`has_more`/`next_offset` as its contract —
+`complete` is the zone-composite family's flag, where there is no cursor to page with.
+
 ### Network response shape — confirmed
 `GET /api/networks` returns `{ data: [...] }`, each network carrying an `archived`
 boolean (absent when active — upstream deletes the flag on unarchive). `getAll`
