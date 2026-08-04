@@ -17,7 +17,7 @@ export const paginationShape = {
   fields: z
     .array(z.string())
     .optional()
-    .describe("Extra item fields to include beyond { id, name } plus status fields. Dotted paths are supported and project just the leaf under its dotted key — e.g. ['params.zoneId'] returns { \"params.zoneId\": [...] } without the rest of params, which is the difference between a walkable sweep and an oversized one on rows with large arrays. Any requested field that matched no row on the page is reported back in the envelope's unknown_fields, so a wrong path is never silently empty. Use ['*'] to return full rows (still size-capped)."),
+    .describe("Extra item fields to include beyond { id, name } plus status fields. Dotted paths are supported and project just the leaf under its dotted key — e.g. ['params.zoneId'] returns { \"params.zoneId\": [...] } without the rest of params, which is the difference between a walkable sweep and an oversized one on rows with large arrays. Any requested field that matched NO row is reported back in the envelope's unknown_fields, so a wrong path is never silently empty. That check is judged against every row FETCHED — which for these endpoints is the whole collection, since the Work API returns the full set and this server windows it client-side — NOT against the returned page. So unknown_fields containing a path means no row anywhere in the collection carries it, and its absence means at least one row does, even if none appear on the page you are looking at. (The only exception is an upstream endpoint that paginates server-side, where the page is all that was fetched; none do today.) Use ['*'] to return full rows (still size-capped)."),
 } as const;
 
 /**
