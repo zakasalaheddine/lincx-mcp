@@ -25,7 +25,7 @@ Two assertions in the original set were also found to be **worded in a way that 
 | 0 | Paging contract — `page` object, `complete`, removal of `truncated` | **PASS** |
 | A1–A3 | Inventory ↔ eligibility reconciliation (counts, id sets, field agreement) | **PASS** (wording corrected — see A1 note) |
 | B5a–B5f | Multi-page integrity; paging continuity across buckets | **PASS** |
-| C3 | `scoped_via` enum conformance across three tools | **PASS** (3 of 5 values reachable on live data) |
+| C3 | `scoped_via` enum conformance across three tools | **PASS** (4 of 5 values exercised live as of pass K; only `ad-group-blacklist` unreachable) |
 | D1, D2, D4 | Offer-grain arithmetic (sums, bounds, array/count agreement) | **PASS** |
 | D5 | Free-radical ads carry no zone whitelist and no blacklist for the zone | **PASS** |
 | D3 | Ad-level-targeted offer under an untargeted group | **CONFIRMED ABSENT** — was UNEXERCISED |
@@ -36,6 +36,8 @@ Two assertions in the original set were also found to be **worded in a way that 
 | G | Defect-fix smoke test (4 calls) | **PASS** |
 | H | Exhaustive ad-group sweep for targets-and-excepts (1,150 groups) | **PASS — zero hits** |
 | I | Exhaustive ad sweep for ad-level zone whitelists (1,331 ads) | **PASS — zero hits** |
+| J | Cross-network probe for ad-level whitelists (25 of 63 networks) | **PASS** — 6 candidate networks found |
+| K | Adnet (`xvret6`) — `ad-level-whitelist` + `adLevelTargeted` exercised live | **PASS** — C3 now 4 of 5 |
 
 ### Key confirmations
 
@@ -55,12 +57,13 @@ Two assertions in the original set were also found to be **worded in a way that 
 
 ### Open items (follow-up)
 
-1. **`ad-level-whitelist` branch — CONFIRMED ABSENT, fixture required for live coverage.** No ad in `7jdz0n` has a non-empty `params.zoneId`. Established twice independently (pass I). Fixture to close it: an ad group **not** targeted to the zone but on the zone's CAG, holding **≥1 untargeted ad** and **≥1 ad whose `params.zoneId` names the zone**.
+1. **`ad-level-whitelist` — now EXERCISED LIVE (pass K, Adnet).** `scoped_via` carries it and `adLevelTargetedOffers` reads 23. What remains unobserved is specifically the **D3 shape**: the whitelisted ad sitting under an *untargeted* group. Across two networks (Core Digital: no ad-level whitelists at all; Adnet: 25 groups with them) every such group is itself directly targeted. Fixture to close the remaining case: an ad group **not** targeted to the zone but on the zone's CAG, holding **≥1 untargeted ad** and **≥1 ad whose `params.zoneId` names the zone**. 38 networks remain unprobed (pass J) if you would rather find one than build one.
 2. **`conflicts[]` / `ad-group-blacklist` — CONFIRMED ABSENT, fixture required for live coverage.** No ad group in `7jdz0n` names the same zone in both `params.zoneId` and `exceptParams.zoneId`. Established by exhaustive sweep (pass H). Fixture to close it: one ad group listing the same zone id in both keys. That single fixture also unblocks the stronger A1 (reconciliation with `conflicting` non-empty).
 3. **Both fixtures are config changes, not engineering gaps.** Both branches are already pinned by unit tests in the repo, so a regression fails CI regardless of production data. Creating them buys live coverage of two branches, nothing more.
 4. **`zoneId-position` semantics — open question for the platform team.** Three groups (`ggg7ww`, `hu4gni`, `qc3a2v`) exclude a zone at a specific slot via a `zoneId-position` key. The eligibility join reads `params.zoneId` / `exceptParams.zoneId` only and ignores it. Whether that is correct depends on what `filterAdgroups()` does with the key upstream.
 5. **`ddbbai` — open question for the platform team.** It is simultaneously the network's most-blocklisted zone and a whitelist target on five groups (`ow6ets`, `ple7fj`, `quc2qz`, `t8fngw`, `9l1inq`). Not a tooling issue; worth a config review.
-6. **`ducqqp` data hygiene.** 232,813 bytes in one ad group, of which `params.zip` is 8,931 ZIP codes / 71,449 chars. Now handled gracefully by the tooling, but the underlying record is worth investigating.
+6. **Inert ad-level whitelists on Adnet — operational bug, separate ticket.** 18 ads across 8 groups whitelist a zone their parent group cannot reach, so the whitelist never fires (`filterAdgroups()` runs first). Six are live groups — Roofing, Windows, HELOC, Auto Insurance, Timeshare Exit, Solar Exit — where a `| fbz` ad names `upd39v` under a parent scoped to `hh4x9w` but not `upd39v`. Reads as a Facebook-zone carve-out rolled out across verticals with `upd39v` missed on the parent. Not a tooling defect; the tooling is what surfaced it. Candidate for a new `conflicts[]` signal (`inert-ad-level-whitelist`) if that surface is wanted.
+7. **`ducqqp` data hygiene.** 232,813 bytes in one ad group, of which `params.zip` is 8,931 ZIP codes / 71,449 chars. Now handled gracefully by the tooling, but the underlying record is worth investigating.
 
 ---
 
@@ -76,6 +79,8 @@ All shipped to `main` and verified live in pass G.
 | 4 | Dotted `fields` paths matched nothing, silently | Rows came back looking clean with the requested data absent, and pages could not be shrunk below the parent object — on the exact collection holding the 232KB row | `ad09fb1` |
 | 5 | `fitEntityToText` elided only string leaves | An entity whose bulk is 20k *short* strings could not be shrunk at all; `get_ad_group("ducqqp")` returned no data whatsoever | `ad09fb1` |
 | 6 | `unknown_fields` judged per-page | A sparse-but-real field absent from one page would falsely read as "wrong path" mid-sweep | `092de78` |
+| 7 | `fields` description still said "no row **on the page**" after fix 6 | The description is what an agent reads, so a stale one is a live defect: it made a sound one-call-per-network probe look unsound and stopped a cross-network pass | `bd6f5d4` |
+| 8 | An EMPTY collection flagged every requested field | Network `6s31vy` (0 ads) flagged both `params.zoneId` and `adGroupId` — vacuously true, and reads as "your paths are wrong" when the truth is "there are no rows" | `4ccf76f` |
 
 **Behavioural changes introduced by the fixes:**
 
@@ -431,6 +436,96 @@ Three groups use a **different key**, `zoneId-position`, excluding a zone at a s
 Key naming is confirmed correct, not a schema mismatch: ads **do** use `exceptParams.zoneId` — that is the source of `8z7wzb`'s `adLevelBlacklistedOffers: 2` (`yq4z1t`, `4leo31`). Ad-level blacklists are in use; ad-level whitelists simply are not.
 
 **D3 status: CONFIRMED ABSENT** (was UNEXERCISED). The `ad-level-whitelist` branch through the offer-grain counters cannot be exercised on production data. Required fixture: an ad group with empty `params.zoneId` on the target zone's CAG, holding ≥1 ad with empty `params` **and** ≥1 ad whose `params.zoneId` names that zone. Both ads are needed — a group whose only ad is zone-whitelisted is precisely the case D3 exists to pin.
+
+---
+
+## Pass J — Cross-network probe for ad-level zone whitelists (2026-08-04)
+
+### Prompt
+
+> For each network id, call network_switch, then ONE call: list_ads(limit=100, offset=0, fields=["params.zoneId","adGroupId"]). Report per network whether the envelope contains unknown_fields. unknown_fields containing "params.zoneId" means NO ad in that entire network has an ad-level zone whitelist — the path is judged against the whole collection, not the page.
+
+### Response
+
+The reviewer initially **refused the inference rule**, correctly, on the basis of the tool description ("matched no row on the page"). The description was stale — defect 7 above. The scope was then established empirically before the pass ran:
+
+> `list_ads(limit=1, offset=0, fields=["params.age"])` on `7jdz0n` → `items[0]` (`0gat04`) has no `params.age` key, and the envelope has **no** `unknown_fields`. Under page scope with `limit=1` the flag would have fired. It didn't, so the check ran against rows beyond the one returned. **Collection scope confirmed.**
+
+Corroborated three further ways: Adnet (path populated on real rows, no flag), **Speedwell (no flag despite zero of its first 100 rows carrying the path — the exact false negative page-scoping would have produced)**, and Core Digital (flag agreeing with the independent 14-page walk of pass I).
+
+**25 of 63 networks probed** before hitting a tool-use limit. Six carry ad-level zone whitelists:
+
+| id | name | ads | D3 candidate |
+|---|---|---|---|
+| cn850c | Speedwell | 255 | yes |
+| xvret6 | Adnet | 488 | yes |
+| h9ue34 | Interlincx | 389 | yes |
+| 76ijr3 | Dawit Net | 101 | yes |
+| ny8afd | SCRMP Demo | 1,578 | yes |
+| 3i9kgt | Demo World | 131 | yes |
+
+Networks flagged (no ad-level whitelist anywhere): `7jdz0n` Core Digital (1,331), `rwz914` Path (3,365), `vb2s46` ThinkHow (704), `ria673` RXMG (431), `8ahqk7` Utterance (280), `vgo6qb` Lincx (212), `fb5o38` Leadpoint (203), `4c63we` Lido Labs (179), `336xd5` ZAKA Network (139), `3i9kgt`-adjacent smaller entries.
+
+`6s31vy` (Lincx Sandbox) flagged vacuously — 0 ads, so every requested field including `adGroupId` came back unknown. Excluded from the negative set, and fixed as defect 8.
+
+**Remaining 38 networks unprobed:** `ig9gwx`, `l9bwct`, `sg88pb`, `rm77jb`, `mwdzlx`, `h6bb3t`, `lbdfjl`, `6b3bky`, `qr52au`, `3nfsow`, `erc1f0`, `sn9t2j`, `hb4iu1`, `1aabor`, `1y9pi3`, `gd5ceo`, `hnd4k1`, `2hhnnd`, `hx2xnf`, `ds0ogj`, `b511b0`, `n3deex`, `1e4n8s`, `8z8znz`, `fvddkg`, `t68i9u`, `udbcld`, `9dbswj`, `301ylr`, `7u55hm`, `jtc0ga` (Adnet v2), `z4fe6c`, `u5dr9f`, `qofva4`, `5d31zn`, `rj9ow1`, `c09k5z`, `3ih01i`.
+
+---
+
+## Pass K — Adnet: `ad-level-whitelist` exercised live (2026-08-04)
+
+### Prompt
+
+> Network xvret6 (Adnet). Zone upd39v. 1. get_zone_targeting_inventory(zoneId="upd39v", mode="all") — report scoped_via[] for 1oby5f, x26b1q, p3a87b. 2. get_zone_eligible_ad_groups(zoneId="upd39v", bucket="directlyTargeted") — report those rows' offers and summary.adLevelTargetedOffers. Also report the zone's creativeAssetGroupId.
+
+### Response
+
+Zone `upd39v` — "USA - Consumer | Senior Listicle - Facebook", CAG `6j5glr` (matches), template `ka33ym`. Both calls returned `complete: true` (18 of 18 rows).
+
+**Step 1 — `scoped_via`**
+
+| group | scoped_via[] |
+|---|---|
+| 1oby5f | `ad-group-whitelist`, `ad-level-whitelist`, `ad-level-blacklist`, `zone-selection` |
+| x26b1q | `ad-group-whitelist`, `ad-level-whitelist`, `ad-level-blacklist`, `zone-selection` |
+| p3a87b | **no row — absent from the inventory** |
+
+**Step 2 — offers**
+
+| group | total | serving | freeRadical | adLevelTargeted | adLevelBlacklisted |
+|---|---|---|---|---|---|
+| 1oby5f | 2 | 1 | 0 | 1 | 1 |
+| x26b1q | 3 | 1 | 0 | 1 | 2 |
+
+`summary.adLevelTargetedOffers`: **23** (0 on every Core Digital zone). `adLevelBlacklistedOffers`: 28. `freeRadicalGroups`: 0, `freeRadicalOffers`: 0, `directlyTargetedIneligible`: 0, `conflicting`: 0.
+
+**C3 goes from 3 of 5 to 4 of 5 values exercised live.** Only `ad-group-blacklist` remains unreachable on production data.
+
+**`p3a87b` confirms the serving order from the outside.** Its ad `vk5xdn` whitelists `upd39v`, but the group targets six zones not including `upd39v`. It is absent from both tools for this zone — `filterAdgroups()` runs first, so an ad-level whitelist under an out-of-scope group is inert. This is the ordering the join encodes, observed live rather than inferred.
+
+### Full Adnet ad sweep — D3 result
+
+All 5 pages, 488 ads, `has_more: false`. **59 ads carry a non-empty `params.zoneId`, across 25 distinct ad groups. Every one of the 25 groups is itself directly targeted — zero D3 fixtures.** No group archived.
+
+Ad-level whitelists appear in exactly two forms, neither of which is D3:
+
+- **Narrowing** (17 groups, 41 ads): the ad's zones are a subset of its group's — an ad confined to part of the scope the group already covers. Mostly the `| fbz` variant pinned to `upd39v`, `hh4x9w`.
+- **Escapes** (8 groups, 18 ads): the ad whitelists a zone its group's whitelist does **not** contain. Inert by the ordering above — the whitelist never fires.
+
+| group | escaping ads → zone not in group's whitelist |
+|---|---|
+| p3a87b Roofing | `vk5xdn`, `2j5j7q`, `ff14qx`, `6nd27i` → `upd39v` |
+| lbbotg Windows | `ra3e9r`, `eehbcw`, `b03r52`, `os5njy` → `upd39v` |
+| qgd68r HELOC | `1s65at`, `sg1rot`, `dg9i7d` → `upd39v` |
+| ff26gi Auto Insurance | `pie2dt`, `w75qzu` → `upd39v` |
+| xidh3h USA Consumer Listicle | `aif92g` → `hh4x9w`; `d045k4` → `zk8hmm` |
+| 4qe1qw Timeshare Exit | `oaauma` → `upd39v` |
+| 48exva Solar Exit | `i080uq` → `upd39v` |
+| vc6nqy SunValue Section B | `db0fu3` → `lx84p7` (ad archived) |
+
+**This is an operational finding, not a tooling defect** — see open item 7. Six live groups have Facebook-zone targeting that silently does nothing.
+
+**D3 status across two networks:** Core Digital has no ad-level whitelists at all (1,331 ads); Adnet has the richest usage of the 25 networks probed and still yields zero D3 fixtures (25 groups). The precise claim the data supports is narrower than "all narrowing": **ad-level whitelists were observed only under groups that already carry one, in two forms — narrowing within group scope, and inert escapes outside it. The untargeted-group shape D3 depends on was not observed.** The group-grain over-count Rex identified is a real semantic bug that production config does not currently trigger.
 
 ---
 
