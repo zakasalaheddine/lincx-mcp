@@ -38,6 +38,7 @@ Two assertions in the original set were also found to be **worded in a way that 
 | I | Exhaustive ad sweep for ad-level zone whitelists (1,331 ads) | **PASS — zero hits** |
 | J | Cross-network probe for ad-level whitelists (25 of 63 networks) | **PASS** — 6 candidate networks found |
 | K | Adnet (`xvret6`) — `ad-level-whitelist` + `adLevelTargeted` exercised live | **PASS** — C3 now 4 of 5 |
+| L | `inertWhitelists` bucket + `inert-ad-level-whitelist` signal, live on Adnet + regression on Core Digital | **PASS** |
 
 ### Key confirmations
 
@@ -62,7 +63,7 @@ Two assertions in the original set were also found to be **worded in a way that 
 3. **Both fixtures are config changes, not engineering gaps.** Both branches are already pinned by unit tests in the repo, so a regression fails CI regardless of production data. Creating them buys live coverage of two branches, nothing more.
 4. **`zoneId-position` semantics — open question for the platform team.** Three groups (`ggg7ww`, `hu4gni`, `qc3a2v`) exclude a zone at a specific slot via a `zoneId-position` key. The eligibility join reads `params.zoneId` / `exceptParams.zoneId` only and ignores it. Whether that is correct depends on what `filterAdgroups()` does with the key upstream.
 5. **`ddbbai` — open question for the platform team.** It is simultaneously the network's most-blocklisted zone and a whitelist target on five groups (`ow6ets`, `ple7fj`, `quc2qz`, `t8fngw`, `9l1inq`). Not a tooling issue; worth a config review.
-6. **Inert ad-level whitelists on Adnet — operational bug, separate ticket.** 18 ads across 8 groups whitelist a zone their parent group cannot reach, so the whitelist never fires (`filterAdgroups()` runs first). Six are live groups — Roofing, Windows, HELOC, Auto Insurance, Timeshare Exit, Solar Exit — where a `| fbz` ad names `upd39v` under a parent scoped to `hh4x9w` but not `upd39v`. Reads as a Facebook-zone carve-out rolled out across verticals with `upd39v` missed on the parent. Not a tooling defect; the tooling is what surfaced it. Candidate for a new `conflicts[]` signal (`inert-ad-level-whitelist`) if that surface is wanted.
+6. **Inert ad-level whitelists on Adnet — operational bug, still open as a config fix.** 18 ads across 8 groups whitelist a zone their parent group cannot reach, so the whitelist never fires (`filterAdgroups()` runs first). Six are live groups — Roofing, Windows, HELOC, Auto Insurance, Timeshare Exit, Solar Exit — where a `| fbz` ad names `upd39v` under a parent scoped to `hh4x9w` but not `upd39v`. Reads as a Facebook-zone carve-out rolled out across verticals with `upd39v` missed on the parent. **The tooling side is closed** — `bf885e9` added the `inertWhitelists` bucket and the `inert-ad-level-whitelist` conflict, verified in pass L. **The config side is not**: the six groups still serve nothing on `upd39v`. Fix is to add `upd39v` to each parent group's `params.zoneId`, or drop the dead ad-level whitelists. Worth re-running pass L on other networks to size the pattern.
 7. **`ducqqp` data hygiene.** 232,813 bytes in one ad group, of which `params.zip` is 8,931 ZIP codes / 71,449 chars. Now handled gracefully by the tooling, but the underlying record is worth investigating.
 
 ---
@@ -526,6 +527,46 @@ Ad-level whitelists appear in exactly two forms, neither of which is D3:
 **This is an operational finding, not a tooling defect** — see open item 7. Six live groups have Facebook-zone targeting that silently does nothing.
 
 **D3 status across two networks:** Core Digital has no ad-level whitelists at all (1,331 ads); Adnet has the richest usage of the 25 networks probed and still yields zero D3 fixtures (25 groups). The precise claim the data supports is narrower than "all narrowing": **ad-level whitelists were observed only under groups that already carry one, in two forms — narrowing within group scope, and inert escapes outside it. The untargeted-group shape D3 depends on was not observed.** The group-grain over-count Rex identified is a real semantic bug that production config does not currently trigger.
+
+---
+
+## Pass L — `inertWhitelists` bucket, live (2026-08-04)
+
+Shipped in `bf885e9` after pass K surfaced the escapes. The signal alone would have been
+invisible: an out-of-scope group is neither ad-group-whitelisted nor eligible, so
+`zoneEligibility` dropped it from every bucket. The fix is a fourth bucket plus the
+offer-grain conflict.
+
+### Prompt
+
+> Network xvret6 (Adnet), zone upd39v. 1. get_zone_eligible_ad_groups(bucket="inertWhitelists") — expect the six groups with conflicts, offers.serving 0, and inertWhitelistedAdIds naming the dead ads. 2. bucket="all" — report summary.inertWhitelistGroups / inertWhitelistOffers, confirm directlyTargeted still 18, header mentions INERT. 3. explain_serve(upd39v, adId="vk5xdn") — offer.conflicts and reasons[]. 4. Regression on 7jdz0n zone 8z7wzb — confirm inertWhitelistGroups 0, no INERT in the header, 83/124/0 unchanged.
+
+### Response
+
+**Step 1 — all six groups, every field as specified.**
+
+| group | conflicts | offers.serving | inertWhitelistedAdIds |
+|---|---|---|---|
+| p3a87b Roofing | `inert-ad-level-whitelist` | 0 | `vk5xdn`, `2j5j7q`, `ff14qx`, `6nd27i` |
+| lbbotg Windows | `inert-ad-level-whitelist` | 0 | `ra3e9r`, `eehbcw`, `b03r52`, `os5njy` |
+| qgd68r HELOC | `inert-ad-level-whitelist` | 0 | `1s65at`, `sg1rot`, `dg9i7d` |
+| ff26gi Auto Insurance | `inert-ad-level-whitelist` | 0 | `pie2dt`, `w75qzu` |
+| 4qe1qw Timeshare Exit | `inert-ad-level-whitelist` | 0 | `oaauma` |
+| 48exva Solar Exit | `inert-ad-level-whitelist` | 0 | `i080uq` |
+
+All six: `eligible: false`, `via: ["zone-selection"]`, `reasons: ["targets-other-zones"]`. Ad ids reconcile one-for-one with the escapes derived by hand from the pass-K ad sweep.
+
+**Step 2 —** `inertWhitelistGroups: 6`, `inertWhitelistOffers: 15`. `directlyTargeted` still 18 (15 live, 0 ineligible). Header: *"15 INERT ad-level whitelists across 6 out-of-scope groups (dead config: the ad names this zone, its group cannot reach it)"*. `page.total` 24, `complete: true`. The 18 targeted rows are byte-identical to pass K apart from two new zero-valued offer keys.
+
+**The signal is zone-relative, and the count proves it: 15, not 18.** The three remaining escapes (`xidh3h` → `hh4x9w`/`zk8hmm`, `vc6nqy` → `lx84p7`) name other zones and are correctly absent from this zone's result.
+
+**Step 3 —** `explain_serve(upd39v, adId="vk5xdn")` → `offer.conflicts: ["inert-ad-level-whitelist"]`, `reasons: ["targets-other-zones"]`, `offer.scoped_via: ["ad-level-whitelist","zone-selection"]`, `offer.freeRadical: false`. Top-level `conflicts: []` — correct, the conflict is offer-grain, not group-grain.
+
+**Step 4 — regression clean.** `8z7wzb`: `inertWhitelistGroups: 0`, `inertWhitelistOffers: 0`, no INERT segment in the header, and 83 / 124 / 0 unchanged along with every other summary figure (11 live, 42 ineligible, 217 free-radical offers, `adLevelBlacklistedOffers` 2). The `inertWhitelists` array ships unconditionally as `[]` rather than being omitted; the header suppresses at zero.
+
+### Process note carried forward
+
+The reviewer's client listed only four `bucket` values and no inert fields — a cached tool list from before the deploy — and they nearly reported the bucket as nonexistent before the call returned it. Distinct from defect 7 (which was a genuinely wrong description in the source): **this one is client-side staleness after a redeploy, and the fix is to reconnect the connector.** Both share a lesson the reviewer stated well: trying the call is cheaper than arguing from the doc.
 
 ---
 
