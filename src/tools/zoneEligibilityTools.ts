@@ -186,8 +186,17 @@ export function eligibilityHeader(zone: ZoneLite, s: EligibilityPayload["summary
     ? ` · ${s.inertWhitelistOffers} INERT ad-level whitelists across ${s.inertWhitelistGroups} out-of-scope groups (dead config: the ad names this zone, its group cannot reach it)`
     : "";
   const counts = `${s.directlyTargeted} targeted (${s.directlyTargetedLive} live, ${s.directlyTargetedIneligible} config-ineligible) · ${s.freeRadicalHosts} free-radical hosts (${s.freeRadicalHostsLive} live) / ${s.freeRadicalOffers} free-radical offers (${s.freeRadicalOffersLive} live) · ${s.conflicting} conflicting${inert}`;
-  const paged = page?.next_offset !== undefined
-    ? ` — PARTIAL PAGE: rows ${page.offset}–${page.offset + page.returned - 1} of ${page.total} for bucket '${page.bucket}'; re-run with offset:${page.next_offset} (same bucket) for the rest. Summary counts above are exact for the WHOLE set.`
+  // Two paged states, both spelled out. The TAIL page is the one that reads like a
+  // bug: it carries complete:false (correct — this response does NOT hold the whole
+  // slice, it starts at a non-zero offset) with no next_offset. Two reviewers have
+  // now filed that as "complete is broken", so the header says it outright rather
+  // than leaving the flag to be inferred.
+  const rows = page ? `rows ${page.offset}–${page.offset + page.returned - 1} of ${page.total} for bucket '${page.bucket}'` : "";
+  const paged = page === undefined ? ""
+    : page.next_offset !== undefined
+    ? ` — PARTIAL PAGE: ${rows}; re-run with offset:${page.next_offset} (same bucket) for the rest. Summary counts above are exact for the WHOLE set.`
+    : page.offset > 0
+    ? ` — FINAL PAGE: ${rows}; no next_offset, so paging is done. complete is false BY DESIGN here — it means "this one response is not the whole slice", not "more pages remain". Page on the absence of next_offset, never on complete. Summary counts above are exact for the WHOLE set.`
     : "";
   return `Zone ${zone.name} (${zone.id}) — ${counts}${paged}`;
 }

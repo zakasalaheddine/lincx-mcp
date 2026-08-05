@@ -308,12 +308,17 @@ describe("D3 — the host row survives, the offer count does not", () => {
 });
 
 /**
- * The live axis at the OFFER grain. Field case (`dr0xp2` on zone `6wahzt`, Adnet
- * review 2026-08-05): untargeted group on the zone's CAG, group and ads enabled,
- * creatives resolve — eligible, 4 free-radical offers — held out ONLY by campaign
- * `nq7o5x` being off. It leaks the moment the campaign flips on, so counting its 4
- * offers as current exposure is wrong and dropping them is worse. freeRadicalLive
- * separates the two; freeRadical > 0 && freeRadicalLive === 0 IS the standing trap.
+ * The live axis at the OFFER grain. Field case (`dr0xp2` on zone `6wahzt`, review
+ * 2026-08-05): untargeted group on the zone's CAG, group and ads enabled, creatives
+ * resolve — eligible — held out ONLY by campaign `nq7o5x` being off. It leaks the
+ * moment the campaign flips on, so counting its offers as current exposure is wrong
+ * and dropping them is worse. freeRadicalLive separates the two; freeRadical > 0 &&
+ * freeRadicalLive === 0 IS the standing trap.
+ *
+ * Grain note: on the live zone the "4 offers" figure is the ZONE total
+ * (summary.freeRadicalOffers) spread one apiece across four hosts — the dr0xp2 ROW
+ * reads freeRadical: 1. The 4 ads below are a fixture for the multi-ad case, not a
+ * copy of that row; the shape under test is dormant-host-with-free-radical-offers.
  */
 describe("free-radical offers have a live axis (the dr0xp2 shape)", () => {
   const untargeted: AdGroup = { id: "dr0xp2", creativeAssetGroupId: CAG, params: {} };

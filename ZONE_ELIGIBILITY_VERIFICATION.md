@@ -45,6 +45,7 @@ Two assertions in the original set were found to be **worded in a way that will 
 | J | Cross-network probe for ad-level whitelists (25 of 63 networks) | **PASS** — 6 candidate networks found |
 | K | Adnet (`xvret6`) — `ad-level-whitelist` + `adLevelTargeted` exercised live | **PASS** — C3 now 4 of 5 |
 | L | `inertWhitelists` bucket + `inert-ad-level-whitelist` signal, live on Adnet + regression on Core Digital | **PASS** |
+| M | Host/offer rename + `freeRadicalOffersLive`, live on `7jdz0n` + `6wahzt` + Adnet regression | **PASS** — see below |
 
 ### The four items raised on 2026-08-03, and where each landed
 
@@ -82,7 +83,7 @@ Two assertions in the original set were found to be **worded in a way that will 
 5. **`ddbbai` — open question for the platform team.** It is simultaneously the network's most-blocklisted zone and a whitelist target on five groups (`ow6ets`, `ple7fj`, `quc2qz`, `t8fngw`, `9l1inq`). Not a tooling issue; worth a config review.
 6. **Inert ad-level whitelists on Adnet — operational bug, still open as a config fix.** 18 ads across 8 groups whitelist a zone their parent group cannot reach, so the whitelist never fires (`filterAdgroups()` runs first). Six are live groups — Roofing, Windows, HELOC, Auto Insurance, Timeshare Exit, Solar Exit — where a `| fbz` ad names `upd39v` under a parent scoped to `hh4x9w` but not `upd39v`. Reads as a Facebook-zone carve-out rolled out across verticals with `upd39v` missed on the parent. **The tooling side is closed** — `bf885e9` added the `inertWhitelists` bucket and the `inert-ad-level-whitelist` conflict, verified in pass L. **The config side is not**: the six groups still serve nothing on `upd39v`. Fix is to add `upd39v` to each parent group's `params.zoneId`, or drop the dead ad-level whitelists. Worth re-running pass L on other networks to size the pattern.
 7. **`ducqqp` data hygiene.** 232,813 bytes in one ad group, of which `params.zip` is 8,931 ZIP codes / 71,449 chars. Now handled gracefully by the tooling, but the underlying record is worth investigating.
-8. **`freeRadicalGroups` rename + standing-trap split — CLOSED in code, awaiting a live pass.** See item 4 in the table above: names accepted, `standingTrapHosts` rejected in favour of `freeRadicalOffersLive`. Pinned by unit tests (`src/tests/eligibility.test.ts` — "free-radical offers have a live axis (the dr0xp2 shape)" and "freeRadicalOffersLive sums only the live free-radical offers"). **Still to run once deployed (pass M):** re-run `7jdz0n` / `8z7wzb` and confirm `directlyTargeted` 83, `freeRadicalHosts` 124, `freeRadicalHostsLive` 80, `freeRadicalOffers` 217 are byte-identical with only `freeRadicalOffersLive` new — a rename must not move a number — then check `dr0xp2` on `6wahzt` reports `freeRadical: 4, freeRadicalLive: 0`, and `gqe31y` / `6n9cv9` / `6r6uv2` report `freeRadicalLive: 0` against 1 / 5 / 5.
+8. **`freeRadicalGroups` rename + standing-trap split — CLOSED, verified live (pass M).** See item 4 in the table above: names accepted, `standingTrapHosts` rejected in favour of `freeRadicalOffersLive`. Pinned by unit tests (`src/tests/eligibility.test.ts` — "free-radical offers have a live axis (the dr0xp2 shape)" and "freeRadicalOffersLive sums only the live free-radical offers").
 9. **Dangling zone reference — a class the zone-keyed sweep cannot see.** Ad `db0fu3` (archived, group `vc6nqy`) whitelists `lx84p7`, a zone that does not exist in Adnet — `get_zone` returns not found. This is why the hand count was 18 escapes and the tool reports 17: a zone-keyed sweep can only ask about zones that exist. Worse than inert in principle: `adServesInZone` treats a non-empty whitelist as *confining*, so an ad whose whitelist names only a dead zone serves in **zero** zones network-wide, showing up as `confinedElsewhere` everywhere and indistinguishable from an ad legitimately confined elsewhere. Detection today is a two-sweep diff (ad-referenced zone ids vs `list_zones`). If it turns out to be more than this one archived ad, the fix belongs in the tooling — `fetchIndex` already loads every zone, so a `dangling-zone-ref` conflict costs nothing extra.
 
 ---
@@ -592,14 +593,62 @@ The reviewer's client listed only four `bucket` values and no inert fields — a
 
 ---
 
+## Pass M — host/offer rename + `freeRadicalOffersLive`, live (2026-08-05)
+
+Run against a local tunnel build (`npm run dev`) before deploy, so `Lincx-Prod` was
+available side by side as the pre-rename control.
+
+**A rename must not move a number — it didn't.** `7jdz0n` / `8z7wzb`:
+`directlyTargeted` 83, `directlyTargetedLive` 11, `directlyTargetedIneligible` 42,
+`freeRadicalHosts` **124**, `freeRadicalHostsLive` **80**, `freeRadicalOffers` **217**,
+`adLevelBlacklistedOffers` 2, `conflicting` 0 — all identical to passes B–D. New:
+`freeRadicalOffersLive: 117`. No `freeRadicalGroups` key in any response; rows carry
+`offers.inScope` / `offers.live` / `offers.freeRadicalLive` and no `serving`. Header
+ends `217 free-radical offers (117 live)`.
+
+**D1 at the live grain.** Walking `bucket:'freeRadicals'` (45 + 45 + 34 = **124** rows
+= `freeRadicalHosts`), Σ `offers.freeRadicalLive` = 31 + 49 + 37 = **117** =
+`summary.freeRadicalOffersLive`, and ≤ 217. So **100 of the 217 free-radical offers on
+`8z7wzb` are dormant** — that gap is the standing-trap volume the old single number hid.
+
+**The dormant-host case, `6wahzt`.** `freeRadicalOffers: 4`, `freeRadicalOffersLive: 0`.
+Four free-radical hosts, one offer apiece — `dr0xp2`, `l3do8b`, `wjaoux`, `yv5cyx` —
+every one `freeRadicalLive: 0`, `fully_live: false`, `off_reason: ["campaign"]`.
+`explain_serve(6wahzt, dr0xp2)` still `eligible: true`, `via: ["zone-selection"]`,
+`reasons: []` — the eligibility axis is untouched, only the live axis is new.
+
+**Grain correction to the pass-M plan itself.** The plan predicted
+`dr0xp2.offers.freeRadical: 4`. The row reads **1**; the 4 is the ZONE total spread
+across four hosts. The reviewer's "4 offers land in a live Quicken Loans zone" was
+zone-grain, and the plan misread it as row-grain — the same host-vs-offer conflation
+the rename exists to prevent, committed while writing the fix for it. Data is correct;
+the test-fixture comment now states which grain it pins.
+
+**Adnet regression clean.** `xvret6` / `upd39v`: `inertWhitelistGroups: 6`,
+`inertWhitelistOffers: 15`, same six groups and same 15 ad ids as pass L. The rename
+touched free-radical keys only.
+
+**One reported "defect" — not a defect.** The final page of a multi-page bucket returns
+`complete: false` with no `next_offset`, and was filed as "a client looping on
+`complete` never terminates". That is the documented contract (`917c5df`): `complete` is
+**absolute**, true only when one response holds the entire selected slice, so a tail page
+holding 34 of 124 rows must report false — the alternative makes a reconciliation check
+against `summary` read as a regression. Pinned by `src/tests/eligibilityFit.test.ts`
+("a TAIL page never claims complete"). Two reviewers have now read the flag as an
+end-of-pages signal, so the tail page's header now says it outright — `FINAL PAGE: rows
+90–123 of 124 … no next_offset, so paging is done. complete is false BY DESIGN here` —
+instead of leaving the rule to be inferred. Contract unchanged; the ambiguity was in the
+prose, not the flag.
+
+---
+
 ## Appendix — reference figures
 
 > Recorded output from the live runs, left as produced. Field names below predate the
 > 2026-08-05 rename: read `freeRadicalGroups`/`freeRadicalGroupsLive` as today's
 > `freeRadicalHosts`/`freeRadicalHostsLive`. `freeRadicalOffersLive` did not exist yet;
-> on `6wahzt` it is expected to read **0** against `freeRadicalOffers: 4` (all four sit
-> under `dr0xp2`, whose campaign is off — `freeRadicalGroupsLive` there is already 0),
-> and confirming that is part of pass M.
+> pass M measured it as **117** on `8z7wzb` (of 217) and **0** on `6wahzt` (of 4 — one
+> offer under each of four hosts, every campaign off).
 
 ### Zone `8z7wzb` — Quicken Loans Refinance – Match (CAG `0bckt2`)
 

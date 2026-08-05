@@ -227,6 +227,22 @@ describe("fitEligibility — review fixture scale, 83 + 124 (B5)", () => {
     expect(last!.complete).toBe(false);
   });
 
+  /** …and says so in the header. Field-reported twice as "complete is broken", so the
+   * tail page states the rule instead of leaving it to be inferred from the flag. */
+  it("the tail page header announces FINAL PAGE and why complete is false", () => {
+    let offset = 0, header = "";
+    while (true) {
+      const result = fitEligibility(full, "all", offset, LIMIT);
+      header = result.content[0].text.split("\n")[0];
+      const { json } = parse(result);
+      if (json.page.next_offset === undefined) break;
+      offset = json.page.next_offset;
+    }
+    expect(header).toContain("FINAL PAGE");
+    expect(header).toContain("no next_offset");
+    expect(header).not.toContain("PARTIAL PAGE");
+  });
+
   it("complete:true implies the arrays equal the full selected slice (the B1/B2 key)", () => {
     for (const bucket of ["all", "directlyTargeted", "freeRadicals", "conflicting"] as Bucket[]) {
       for (const offset of [0, 5, 90, 999]) {
