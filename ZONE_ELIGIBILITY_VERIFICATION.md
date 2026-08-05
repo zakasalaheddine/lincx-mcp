@@ -595,8 +595,9 @@ The reviewer's client listed only four `bucket` values and no inert fields — a
 
 ## Pass M — host/offer rename + `freeRadicalOffersLive`, live (2026-08-05)
 
-Run against a local tunnel build (`npm run dev`) before deploy, so `Lincx-Prod` was
-available side by side as the pre-rename control.
+Run twice: first against a local tunnel build (`npm run dev`) before deploy, with
+`Lincx-Prod` beside it as the pre-rename control, then **re-run against production
+after deploy — every figure below reproduced**.
 
 **A rename must not move a number — it didn't.** `7jdz0n` / `8z7wzb`:
 `directlyTargeted` 83, `directlyTargetedLive` 11, `directlyTargetedIneligible` 42,
@@ -628,7 +629,20 @@ the test-fixture comment now states which grain it pins.
 `inertWhitelistOffers: 15`, same six groups and same 15 ad ids as pass L. The rename
 touched free-radical keys only.
 
-**One reported "defect" — not a defect.** The final page of a multi-page bucket returns
+**Live config drifts under a running review — plan for it.** Between the pass-L sweep
+and the pass-M prod re-run, Adnet gained two ads: `scan.adsScanned` 488 → 490, and
+`ff26gi` (Auto Insurance) went `total: 5, adLevelBlacklisted: 3` → `total: 7,
+adLevelBlacklisted: 5`. Both new ads are ad-level blacklisted on `upd39v`, so
+`inertWhitelisted` held at 2 and the headline 6 / 15 was unaffected — but the earlier
+488-ad sweep is now stale and `adLevelBlacklistedOffers` for that zone has moved.
+**No test is at risk:** every unit fixture is synthetic (the `scan` blocks in
+`zoneInventory.test.ts` / `eligibilityFit.test.ts` are constructed inputs, not
+assertions against live data), and nothing in the suite reads a network. The exposure
+is to *documented figures* like the ones in this log — treat any network-wide count
+here as a timestamped observation, not an invariant.
+
+**One reported "defect" — not a defect** (raised, then withdrawn by the reviewer once
+the FINAL PAGE header landed). The final page of a multi-page bucket returns
 `complete: false` with no `next_offset`, and was filed as "a client looping on
 `complete` never terminates". That is the documented contract (`917c5df`): `complete` is
 **absolute**, true only when one response holds the entire selected slice, so a tail page
