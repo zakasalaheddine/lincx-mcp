@@ -192,6 +192,13 @@ is derivable client-side. Summary gains `freeRadicalGroups` (was `freeRadicals`)
 `freeRadicalGroupsLive`, `freeRadicalOffers`, `adLevelTargetedOffers`,
 `adLevelBlacklistedOffers`.
 
+> **Superseded 2026-08-05 (review follow-up).** `freeRadicalGroups`/`freeRadicalGroupsLive`
+> are now `freeRadicalHosts`/`freeRadicalHostsLive`; `OfferRollup.serving` is `inScope`
+> (it only ever meant "targeting passes"), joined by `live`, `freeRadicalLive`,
+> `inertWhitelisted` + `inertWhitelistedAdIds[]`; summary gains `freeRadicalOffersLive`,
+> `inertWhitelistGroups`, `inertWhitelistOffers`. `offerRollup` takes a required
+> `isLive(ad)` predicate. See CLAUDE.md for the shipped shape.
+
 `explain_serve` with an `adId` now returns the offer verdict
 (`offer: { scoped_via[], freeRadical }`) instead of only appending a per-ad reason.
 
