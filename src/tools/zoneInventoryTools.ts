@@ -61,6 +61,17 @@ export function asEntity(data: unknown): Record<string, unknown> {
   return {};
 }
 
+/** Is this ad itself live — enabled, not archived, and pointing at an existing,
+ * non-archived creative? Zone-independent on purpose: the caller has already
+ * decided the ad serves in the zone (adServesHere / adServesInZone). Shared with
+ * the offer grain so "live" means the same thing in both tools. */
+export function adLiveViable(ad: Ad, creatives: Record<string, Creative>): boolean {
+  if (!on(ad)) return false;
+  if (ad.creativeId === undefined) return false;
+  const c = creatives[ad.creativeId];
+  return c !== undefined && c.archived !== true;
+}
+
 /** Split ad groups into those directly targeting the zone and those that both
  * target and except it (conflicting). exceptParams-only groups are neither. */
 export function selectTargeting(adGroups: AdGroup[], zoneId: string): { targeted: AdGroup[]; conflicting: AdGroup[] } {
@@ -88,12 +99,6 @@ export function rollupZoneTargeting(args: {
   mode: Mode;
 }): { groups: Row[]; summary: Summary } {
   const { zoneId, zoneCag, targeted, conflicting, campaigns, adsByGroup, creatives, mode } = args;
-  // Viable = ad's creative resolves to an existing, non-archived creative.
-  const creativeViable = (creativeId?: string): boolean => {
-    if (creativeId === undefined) return false;
-    const c = creatives[creativeId];
-    return c !== undefined && c.archived !== true;
-  };
   const creativeResolves = (creativeId?: string): boolean =>
     creativeId !== undefined && creatives[creativeId] !== undefined;
 
@@ -117,7 +122,7 @@ export function rollupZoneTargeting(args: {
     const has_enabled_ad = ads.some(on);
     const creative_resolves = ads.some((a) => creativeResolves(a.creativeId));
     // Live-viable is zone-specific: only ads that actually serve in this zone count.
-    const has_live_viable_ad = ads.some((a) => adServesHere(a) && on(a) && creativeViable(a.creativeId));
+    const has_live_viable_ad = ads.some((a) => adServesHere(a) && adLiveViable(a, creatives));
     const archived = ag.archived === true;
 
     const off_reason: string[] = [];

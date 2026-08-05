@@ -17,7 +17,7 @@ const ZONE = "8z7wzb";
 const CAG = "0bckt2";
 
 const offers = (o: Partial<OfferRollup> = {}): OfferRollup => ({
-  total: 3, serving: 3, freeRadical: 0, adLevelTargeted: 0, adLevelBlacklisted: 0,
+  total: 3, inScope: 3, live: 3, freeRadicalLive: 0, freeRadical: 0, adLevelTargeted: 0, adLevelBlacklisted: 0,
   confinedElsewhere: 0, inertWhitelisted: 0, freeRadicalAdIds: [], inertWhitelistedAdIds: [], ...o,
 });
 
@@ -40,7 +40,7 @@ const payload = (nDirect: number, nRadical: number, nConflict = 0, nInert = 0): 
     ...row(`i${i}`, false),
     eligible: false, reasons: ["targets-other-zones"], conflicts: ["inert-ad-level-whitelist"],
     scoped_via: ["ad-level-whitelist", "zone-selection"],
-    offers: offers({ serving: 0, adLevelTargeted: 1, inertWhitelisted: 1, inertWhitelistedAdIds: ["adX"] }),
+    offers: offers({ inScope: 0, adLevelTargeted: 1, inertWhitelisted: 1, inertWhitelistedAdIds: ["adX"] }),
   }));
   return {
     zone: { id: ZONE, name: "Some Zone Name", creativeAssetGroupId: CAG, templateId: "tpl1" },
@@ -89,7 +89,7 @@ describe("fitEligibility — small zone fits in one call (B1–B4)", () => {
 
   it("B1/B2 — array lengths match the summary counts one-for-one", () => {
     expect(json.directlyTargeted).toHaveLength(json.summary.directlyTargeted);
-    expect(json.freeRadicals).toHaveLength(json.summary.freeRadicalGroups);
+    expect(json.freeRadicals).toHaveLength(json.summary.freeRadicalHosts);
     expect(json.conflicting).toHaveLength(json.summary.conflicting);
   });
 
@@ -111,7 +111,7 @@ describe("fitEligibility — the inertWhitelists bucket", () => {
       expect(r.conflicts).toContain("inert-ad-level-whitelist");
       expect(r.offers.inertWhitelisted).toBe(1);
       expect(r.eligible).toBe(false);      // nothing here serves
-      expect(r.offers.serving).toBe(0);
+      expect(r.offers.inScope).toBe(0);
     }
   });
 
@@ -172,7 +172,7 @@ describe("fitEligibility — review fixture scale, 83 + 124 (B5)", () => {
       const { json } = parse(fitEligibility(full, "all", offset, LIMIT));
       expect(json.summary).toEqual(full.summary);
       expect(json.summary.directlyTargeted).toBe(83);
-      expect(json.summary.freeRadicalGroups).toBe(124);
+      expect(json.summary.freeRadicalHosts).toBe(124);
       expect(json.summary.freeRadicalOffers).toBe(372); // 124 radical groups × 3 free-radical ads
     }
   });

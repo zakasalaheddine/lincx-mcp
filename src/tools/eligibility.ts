@@ -169,8 +169,15 @@ export function offerEligibility(
 
 export type OfferRollup = {
   total: number;             // ads in the group
-  serving: number;           // offers that actually serve in this zone
-  freeRadical: number;       // serving via shared CAG only (the true leak count)
+  inScope: number;           // TARGETING only: group eligible AND the ad is neither
+                             // blacklisted nor confined elsewhere. Says nothing about
+                             // on/off state — was `serving`, which read as live exposure.
+  live: number;              // inScope AND the whole chain is on (campaign, ad group,
+                             // ad, viable creative) — what actually renders today
+  freeRadical: number;       // in scope via shared CAG only (the config-grain leak count)
+  freeRadicalLive: number;   // …of those, the ones live right now. freeRadical > 0 with
+                             // freeRadicalLive === 0 is a standing trap: one toggle away
+                             // from leaking (e.g. held out only by campaign state)
   adLevelTargeted: number;   // ad's own params.zoneId names the zone
   adLevelBlacklisted: number;// ad's own exceptParams.zoneId excludes the zone
   confinedElsewhere: number; // ad whitelists only OTHER zones
@@ -179,20 +186,31 @@ export type OfferRollup = {
   inertWhitelistedAdIds: string[];
 };
 
-/** Per-group offer-grain counts, so a pure free-radical subset is derivable. */
+/**
+ * Per-group offer-grain counts, so a pure free-radical subset is derivable.
+ *
+ * `isLive(ad)` is injected rather than derived here: liveness needs the campaign
+ * and creative rows, which this module deliberately never reads (it stays pure and
+ * network-agnostic). Callers pass `campaign_on && adgroup_on && adLiveViable(ad,
+ * creatives)`. Required, not defaulted — a default would make a wrong count look
+ * like a passing assertion.
+ */
 export function offerRollup(
   group: Eligibility,
   adGroup: AdGroup,
   ads: Ad[],
   zone: { id: string; creativeAssetGroupId?: string },
+  isLive: (ad: Ad) => boolean,
 ): OfferRollup {
-  const offers = ads.map((ad) => offerEligibility(group, adGroup, ad, zone));
+  const offers = ads.map((ad) => ({ ...offerEligibility(group, adGroup, ad, zone), live: isLive(ad) }));
   const freeRadicals = offers.filter((o) => o.freeRadical);
   const inert = offers.filter((o) => o.conflicts.includes("inert-ad-level-whitelist"));
   return {
     total: offers.length,
-    serving: offers.filter((o) => o.serves).length,
+    inScope: offers.filter((o) => o.serves).length,
+    live: offers.filter((o) => o.serves && o.live).length,
     freeRadical: freeRadicals.length,
+    freeRadicalLive: freeRadicals.filter((o) => o.live).length,
     adLevelTargeted: offers.filter((o) => o.scoped_via.includes("ad-level-whitelist")).length,
     adLevelBlacklisted: offers.filter((o) => o.scoped_via.includes("ad-level-blacklist")).length,
     confinedElsewhere: offers.filter((o) => o.reasons.includes("ad-targets-other-zones")).length,
@@ -209,9 +227,10 @@ export function offerRollup(
  *   mismatch) so config problems surface via each row's `conflicts`/`reasons`
  *   instead of silently vanishing.
  * - `freeRadicals` — eligible but not ad-group-whitelisted (leaks in via shared CAG).
- *   GROUP grain: a group here can still hold zero free-radical OFFERS (e.g. its only
- *   ad is zone-whitelisted → that ad renders because it is ad-level-targeted, not via
- *   the CAG). Use `offerRollup` for the offer-grain count.
+ *   HOST grain: the free radical is the OFFER, the group only hosts it, so a row here
+ *   can hold zero free-radical OFFERS (e.g. its only ad is zone-whitelisted → that ad
+ *   renders because it is ad-level-targeted, not via the CAG). Use `offerRollup` for
+ *   the offer-grain count, incl. `freeRadicalLive` (a dormant host leaks nothing).
  * - `conflicting` — ad-group-whitelisted AND blacklisted (targets+excepts the zone).
  * - `inertWhitelists` — NOT in scope for the zone, yet one of its ads whitelists the
  *   zone. Nothing here serves; it is a pure config-defect bucket. Without it these

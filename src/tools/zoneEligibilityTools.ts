@@ -19,7 +19,7 @@ import { validateSession, resolveLincxSession } from "../services/sessionManager
 import { workApiRequest, handleWorkApiError } from "../services/workApi.js";
 import { RESPONSE_SIZE_LIMIT } from "../constants.js";
 import {
-  asRows, asEntity, rollupZoneTargeting,
+  asRows, asEntity, rollupZoneTargeting, adLiveViable,
   type AdGroup, type Ad, type Campaign, type Creative, type Row,
 } from "./zoneInventoryTools.js";
 import {
@@ -119,7 +119,11 @@ function enrich(elig: Eligibility[], idx: Index, zoneId: string, zoneCag?: strin
   });
   return rows.map((r) => {
     const e = byId.get(r.id)!;
-    const offers = offerRollup(e, groupById.get(r.id)!, idx.adsByGroup[r.id] ?? [], zone);
+    // Offer-grain liveness = the group's own chain (campaign + ad group) AND this ad.
+    // Same predicate the inventory rollup uses for has_live_viable_ad, per ad instead
+    // of "some ad", so a dormant free-radical host reports freeRadicalLive: 0.
+    const isLive = (ad: Ad) => r.campaign_on && r.adgroup_on && adLiveViable(ad, idx.creatives);
+    const offers = offerRollup(e, groupById.get(r.id)!, idx.adsByGroup[r.id] ?? [], zone, isLive);
     return { ...r, eligible: e.eligible, via: e.via, reasons: e.reasons, conflicts: e.conflicts, offers };
   });
 }
@@ -142,11 +146,18 @@ export function summarizeEligibility(
     directlyTargeted: direct.length,
     directlyTargetedLive: direct.filter((r) => r.fully_live).length,
     directlyTargetedIneligible: direct.filter((r) => !r.eligible).length,
-    freeRadicalGroups: radicals.length,
-    freeRadicalGroupsLive: radicals.filter((r) => r.fully_live).length,
-    // Offer grain (ad group × ad) — the true CAG-leak count. A free-radical GROUP
+    // HOST grain: the free radical is the OFFER; the group only hosts it. A host
+    // with 0 free-radical offers is not itself a leak.
+    freeRadicalHosts: radicals.length,
+    freeRadicalHostsLive: radicals.filter((r) => r.fully_live).length,
+    // Offer grain (ad group × ad) — the true CAG-leak count. A free-radical HOST
     // whose only ad is zone-whitelisted contributes 0 free-radical offers.
     freeRadicalOffers: sum(radicals, "freeRadical"),
+    // …of those, the ones live right now. freeRadicalOffers sums across dormant
+    // hosts too, so on its own it reads as live exposure and isn't. The gap between
+    // the two IS the standing-trap volume — offers a single toggle (most often the
+    // campaign) away from landing in the zone.
+    freeRadicalOffersLive: sum(radicals, "freeRadicalLive"),
     adLevelTargetedOffers: sum(direct, "adLevelTargeted") + sum(radicals, "adLevelTargeted"),
     adLevelBlacklistedOffers: sum(direct, "adLevelBlacklisted") + sum(radicals, "adLevelBlacklisted"),
     conflicting: conflict.length,
@@ -174,7 +185,7 @@ export function eligibilityHeader(zone: ZoneLite, s: EligibilityPayload["summary
   const inert = s.inertWhitelistOffers > 0
     ? ` · ${s.inertWhitelistOffers} INERT ad-level whitelists across ${s.inertWhitelistGroups} out-of-scope groups (dead config: the ad names this zone, its group cannot reach it)`
     : "";
-  const counts = `${s.directlyTargeted} targeted (${s.directlyTargetedLive} live, ${s.directlyTargetedIneligible} config-ineligible) · ${s.freeRadicalGroups} free-radical groups (${s.freeRadicalGroupsLive} live) / ${s.freeRadicalOffers} free-radical offers · ${s.conflicting} conflicting${inert}`;
+  const counts = `${s.directlyTargeted} targeted (${s.directlyTargetedLive} live, ${s.directlyTargetedIneligible} config-ineligible) · ${s.freeRadicalHosts} free-radical hosts (${s.freeRadicalHostsLive} live) / ${s.freeRadicalOffers} free-radical offers (${s.freeRadicalOffersLive} live) · ${s.conflicting} conflicting${inert}`;
   const paged = page?.next_offset !== undefined
     ? ` — PARTIAL PAGE: rows ${page.offset}–${page.offset + page.returned - 1} of ${page.total} for bucket '${page.bucket}'; re-run with offset:${page.next_offset} (same bucket) for the rest. Summary counts above are exact for the WHOLE set.`
     : "";
@@ -257,7 +268,11 @@ export function registerZoneEligibilityTools(server: McpServer): void {
     title: "Zone Eligible Ad Groups",
     description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when it is NOT archived (archived = out of service), its creativeAssetGroupId matches the zone's, it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: the group's params.zoneId names the zone OR it targets ZERO zones (open within its CAG). Ad-level params/exceptParams are a per-ad LAST check (filterAdgroups runs first, so an ad-level whitelist can never rescue an ineligible group) — they decide WHICH ads serve within an eligible group, feed has_live_viable_ad, and drive the offer-grain counts below. Results split into 'directlyTargeted' (ad-group-whitelisted and not blacklisted — this reconciles to get_zone_targeting_inventory's targeted set; groups that are targeted but config-broken, e.g. CAG mismatch, are KEPT here with eligible:false and their reasons[]/conflicts[], never silently dropped), 'freeRadicals' (eligible via the shared CAG only — they leak in despite no direct targeting), 'conflicting' (targets AND excepts the zone), and 'inertWhitelists' (DEAD CONFIG: the group cannot reach this zone, yet one of its ads whitelists the zone via ad.params.zoneId — filterAdgroups runs first, so that whitelist never fires and the ad silently does not serve here, even though the config reads as if it is targeted). directlyTargeted + conflicting reconciles to the inventory tool; inertWhitelists is disjoint from both and nothing in it serves.
 
-FREE RADICALS ARE REPORTED AT TWO GRAINS. The 'freeRadicals' row set is GROUP grain (summary.freeRadicalGroups): ad groups eligible only via the shared CAG. The true leak count is OFFER grain — an (ad group × ad) pair that serves solely via the CAG, i.e. an untargeted ad (empty params.zoneId) under an untargeted group, net of blacklists at BOTH levels (summary.freeRadicalOffers). An untargeted group whose only ad is zone-whitelisted is 1 free-radical GROUP but 0 free-radical OFFERS — that ad renders because it is ad-level-targeted, not via the CAG. Every row carries offers: { total, serving, freeRadical, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, inertWhitelisted, freeRadicalAdIds[], inertWhitelistedAdIds[] } so a pure free-radical subset is derivable; summary also totals adLevelTargetedOffers, adLevelBlacklistedOffers, inertWhitelistGroups and inertWhitelistOffers.
+FREE RADICALS ARE REPORTED AT TWO GRAINS. The 'freeRadicals' row set is HOST grain (summary.freeRadicalHosts): ad groups eligible only via the shared CAG — the free radical is the OFFER, the group merely hosts it. The true leak count is OFFER grain — an (ad group × ad) pair that serves solely via the CAG, i.e. an untargeted ad (empty params.zoneId) under an untargeted group, net of blacklists at BOTH levels (summary.freeRadicalOffers). An untargeted group whose only ad is zone-whitelisted is 1 free-radical HOST but 0 free-radical OFFERS — that ad renders because it is ad-level-targeted, not via the CAG.
+
+BOTH GRAINS HAVE A LIVE AXIS, AND ONLY THE LIVE ONE IS EXPOSURE. summary.freeRadicalOffers sums across dormant hosts (a host whose campaign is off still contributes offers), so on its own it reads as live leak and is not; summary.freeRadicalOffersLive counts only offers whose whole chain is on (campaign + ad group + ad + viable creative) — that is what is leaking into the zone right now. The gap between them is standing-trap volume: config that lands in the zone the moment one toggle flips, most often the campaign. Per row, offers.freeRadical > 0 with offers.freeRadicalLive === 0 identifies exactly those hosts.
+
+Every row carries offers: { total, inScope, live, freeRadical, freeRadicalLive, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, inertWhitelisted, freeRadicalAdIds[], inertWhitelistedAdIds[] } so a pure free-radical subset is derivable. offers.inScope is TARGETING ONLY — the group is eligible and this ad is neither blacklisted nor confined to other zones — and says nothing about on/off state; offers.live is the same set with the whole chain on. summary also totals adLevelTargetedOffers, adLevelBlacklistedOffers, inertWhitelistGroups and inertWhitelistOffers.
 
 Each row also carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. scoped_via uses the SAME five-value enum as get_zone_targeting_inventory and explain_serve ('ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection').
 

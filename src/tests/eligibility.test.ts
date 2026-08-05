@@ -12,6 +12,12 @@ const ZONE = "8z7wzb";
 const CAG = "0bckt2";
 const zone = { id: ZONE, creativeAssetGroupId: CAG };
 
+// offerRollup's liveness predicate is injected (it needs campaign/creative rows this
+// module never reads). LIVE/DARK pin the two ends so a count can't pass by default:
+// the targeting-grain tests below use LIVE, and the live-axis tests use both.
+const LIVE = () => true;
+const DARK = () => false;
+
 const input = (adGroup: Partial<AdGroup>, ads: Ad[] = []): EligibilityInput => ({
   adGroup: { id: "ag1", creativeAssetGroupId: CAG, ...adGroup },
   zone,
@@ -207,11 +213,11 @@ describe("offerRollup (the over-count the group grain hides)", () => {
   const v = eligibility({ adGroup: untargeted, zone, ads: [] });
 
   it("untargeted group whose ONLY ad is zone-whitelisted → free-radical GROUP but 0 free-radical offers", () => {
-    const r = offerRollup(v, untargeted, [{ id: "ad1", params: { zoneId: [ZONE] } }], zone);
+    const r = offerRollup(v, untargeted, [{ id: "ad1", params: { zoneId: [ZONE] } }], zone, LIVE);
     expect(v.eligible).toBe(true); // group grain still counts it
     expect(r.freeRadical).toBe(0);
     expect(r.adLevelTargeted).toBe(1);
-    expect(r.serving).toBe(1);
+    expect(r.inScope).toBe(1);
     expect(r.freeRadicalAdIds).toEqual([]);
   });
 
@@ -223,9 +229,9 @@ describe("offerRollup (the over-count the group grain hides)", () => {
       { id: "bl", exceptParams: { zoneId: [ZONE] } },    // ad-level blacklisted
       { id: "elsewhere", params: { zoneId: ["other"] } },// confined elsewhere
     ];
-    const r = offerRollup(v, untargeted, ads, zone);
+    const r = offerRollup(v, untargeted, ads, zone, LIVE);
     expect(r.total).toBe(5);
-    expect(r.serving).toBe(3);
+    expect(r.inScope).toBe(3);
     expect(r.freeRadical).toBe(2);
     expect(r.freeRadicalAdIds).toEqual(["free1", "free2"]);
     expect(r.adLevelTargeted).toBe(1);
@@ -257,9 +263,9 @@ describe("D3 — the host row survives, the offer count does not", () => {
 
   it("all three ads are ad-level-TARGETED, so zero free-radical offers", () => {
     const v = eligibility({ adGroup: untargeted, zone, ads: allWhitelisted });
-    const r = offerRollup(v, untargeted, allWhitelisted, zone);
+    const r = offerRollup(v, untargeted, allWhitelisted, zone, LIVE);
     expect(r.total).toBe(3);
-    expect(r.serving).toBe(3);
+    expect(r.inScope).toBe(3);
     expect(r.freeRadical).toBe(0);
     expect(r.adLevelTargeted).toBe(3);
     expect(r.freeRadicalAdIds).toEqual([]);
@@ -272,10 +278,10 @@ describe("D3 — the host row survives, the offer count does not", () => {
       has_enabled_ad: true, creative_resolves: true, has_live_viable_ad: true, fully_live: true,
       off_reason: [], scoped_via: ["ad-level-whitelist", "zone-selection"],
       eligible: true, via: v.via, reasons: v.reasons, conflicts: v.conflicts,
-      offers: offerRollup(v, untargeted, allWhitelisted, zone),
+      offers: offerRollup(v, untargeted, allWhitelisted, zone, LIVE),
     };
     const s = summarizeEligibility([], [host], []);
-    expect(s.freeRadicalGroups).toBe(1);
+    expect(s.freeRadicalHosts).toBe(1);
     expect(s.freeRadicalOffers).toBe(0);
     expect(s.adLevelTargetedOffers).toBe(3);
   });
@@ -286,7 +292,7 @@ describe("D3 — the host row survives, the offer count does not", () => {
       { id: "bl", exceptParams: { zoneId: [ZONE] } }, { id: "away", params: { zoneId: ["other"] } },
     ];
     const v = eligibility({ adGroup: untargeted, zone, ads });
-    const r = offerRollup(v, untargeted, ads, zone);
+    const r = offerRollup(v, untargeted, ads, zone, LIVE);
     // D2: the disjoint-ish buckets never exceed the ad count
     expect(r.freeRadical + r.adLevelTargeted + r.adLevelBlacklisted + r.confinedElsewhere)
       .toBeLessThanOrEqual(r.total);
@@ -298,6 +304,54 @@ describe("D3 — the host row survives, the offer count does not", () => {
       expect(ad.params?.zoneId ?? []).toEqual([]);
       expect(ad.exceptParams?.zoneId ?? []).not.toContain(ZONE);
     }
+  });
+});
+
+/**
+ * The live axis at the OFFER grain. Field case (`dr0xp2` on zone `6wahzt`, Adnet
+ * review 2026-08-05): untargeted group on the zone's CAG, group and ads enabled,
+ * creatives resolve — eligible, 4 free-radical offers — held out ONLY by campaign
+ * `nq7o5x` being off. It leaks the moment the campaign flips on, so counting its 4
+ * offers as current exposure is wrong and dropping them is worse. freeRadicalLive
+ * separates the two; freeRadical > 0 && freeRadicalLive === 0 IS the standing trap.
+ */
+describe("free-radical offers have a live axis (the dr0xp2 shape)", () => {
+  const untargeted: AdGroup = { id: "dr0xp2", creativeAssetGroupId: CAG, params: {} };
+  const v = eligibility({ adGroup: untargeted, zone, ads: [] });
+  const ads: Ad[] = [{ id: "a1" }, { id: "a2" }, { id: "a3" }, { id: "a4" }];
+
+  it("campaign off → 4 free-radical offers, 0 of them live (standing trap, not exposure)", () => {
+    const r = offerRollup(v, untargeted, ads, zone, DARK);
+    expect(r.freeRadical).toBe(4);
+    expect(r.freeRadicalLive).toBe(0);
+    expect(r.inScope).toBe(4);  // targeting passes at both levels…
+    expect(r.live).toBe(0);     // …and none of it renders
+  });
+
+  it("campaign on → the same 4 offers are live exposure", () => {
+    const r = offerRollup(v, untargeted, ads, zone, LIVE);
+    expect(r.freeRadicalLive).toBe(4);
+    expect(r.live).toBe(4);
+  });
+
+  it("liveness is per ad, not per group", () => {
+    const r = offerRollup(v, untargeted, ads, zone, (ad) => ad.id === "a1" || ad.id === "a3");
+    expect(r.freeRadical).toBe(4);
+    expect(r.freeRadicalLive).toBe(2);
+  });
+
+  it("live counts never exceed their targeting counts", () => {
+    for (const isLive of [LIVE, DARK, (ad: Ad) => ad.id === "a2"]) {
+      const r = offerRollup(v, untargeted, [...ads, { id: "bl", exceptParams: { zoneId: [ZONE] } }], zone, isLive);
+      expect(r.freeRadicalLive).toBeLessThanOrEqual(r.freeRadical);
+      expect(r.live).toBeLessThanOrEqual(r.inScope);
+    }
+  });
+
+  it("an ad-level-targeted ad is live but never a live FREE RADICAL", () => {
+    const r = offerRollup(v, untargeted, [{ id: "wl", params: { zoneId: [ZONE] } }], zone, LIVE);
+    expect(r.live).toBe(1);
+    expect(r.freeRadicalLive).toBe(0);
   });
 });
 
@@ -384,9 +438,9 @@ describe("inert ad-level whitelist (dead config, the Adnet shape)", () => {
       { id: "plain" },                                 // nothing
     ];
     const v = eligibility({ adGroup: roofing, zone, ads });
-    const r = offerRollup(v, roofing, ads, zone);
+    const r = offerRollup(v, roofing, ads, zone, LIVE);
     expect(r.total).toBe(4);
-    expect(r.serving).toBe(0);          // group can't reach the zone — nothing serves
+    expect(r.inScope).toBe(0);          // group can't reach the zone — nothing serves
     expect(r.inertWhitelisted).toBe(2);
     expect(r.inertWhitelistedAdIds).toEqual(["vk5xdn", "2j5j7q"]);
     expect(r.freeRadical).toBe(0);
@@ -427,8 +481,8 @@ describe("C3 — shared scoped_via domain", () => {
 
 describe("summarizeEligibility (bucket grain in the tool summary)", () => {
   const rollup = (o: Partial<OfferRollup>): OfferRollup => ({
-    total: 0, serving: 0, freeRadical: 0, adLevelTargeted: 0, adLevelBlacklisted: 0,
-    confinedElsewhere: 0, freeRadicalAdIds: [], ...o,
+    total: 0, inScope: 0, live: 0, freeRadicalLive: 0, freeRadical: 0, adLevelTargeted: 0, adLevelBlacklisted: 0,
+    confinedElsewhere: 0, inertWhitelisted: 0, freeRadicalAdIds: [], inertWhitelistedAdIds: [], ...o,
   });
   const row = (id: string, offers: Partial<OfferRollup>, over: Partial<EnrichedRow> = {}): EnrichedRow => ({
     id, name: id, archived: false, campaign_on: true, adgroup_on: true, has_enabled_ad: true,
@@ -444,9 +498,28 @@ describe("summarizeEligibility (bucket grain in the tool summary)", () => {
     expect(s.freeRadicalOffers).toBe(3);
     expect(s.adLevelTargetedOffers).toBe(3);   // 2 direct + 1 radical, conflicting excluded
     expect(s.adLevelBlacklistedOffers).toBe(1);
-    expect(s.freeRadicalGroups).toBe(2);       // group grain still counts r2
+    expect(s.freeRadicalHosts).toBe(2);       // host grain still counts r2
     expect(s.directlyTargeted).toBe(1);
     expect(s.conflicting).toBe(1);
+  });
+
+  /** D1 at the live grain: the summary is the exact Σ over the free-radical rows,
+   * and a dormant host contributes offers to freeRadicalOffers but none to Live. */
+  it("freeRadicalOffersLive sums only the live free-radical offers", () => {
+    const radicals = [
+      row("live", { freeRadical: 3, freeRadicalLive: 3 }),
+      row("dormant", { freeRadical: 5, freeRadicalLive: 0 }, { fully_live: false, campaign_on: false, off_reason: ["campaign"] }),
+      row("partial", { freeRadical: 4, freeRadicalLive: 1 }),
+    ];
+    const s = summarizeEligibility([], radicals, []);
+    expect(s.freeRadicalOffers).toBe(12);
+    expect(s.freeRadicalOffersLive).toBe(4);
+    expect(s.freeRadicalOffersLive).toBeLessThanOrEqual(s.freeRadicalOffers);
+    expect(s.freeRadicalHosts).toBe(3);
+    expect(s.freeRadicalHostsLive).toBe(2);
+    // the standing traps the reviewer wants derivable per row, no headline counter
+    expect(radicals.filter((r) => r.offers.freeRadical > 0 && r.offers.freeRadicalLive === 0).map((r) => r.id))
+      .toEqual(["dormant"]);
   });
 
   it("config-broken targeted groups stay counted in directlyTargeted and are flagged ineligible", () => {
