@@ -217,7 +217,8 @@ https, so a tunnel is needed for local connector use). Requires `cloudflared`
 (`brew install cloudflared`). Use **`npm run dev:local`** for plain local work
 (e.g. connecting via `mcp-remote`, which accepts `http://localhost`).
 
-Both run a `predev` hook (`docker compose up -d redis`) that brings up the bundled
+Both run a `predev` hook (`docker compose -f docker-compose.yml -f docker-compose.dev.yml
+up -d redis`) that brings up the bundled
 Redis on `localhost:6379` so the dev server always has persistent sessions. This
 requires Docker; if it isn't running the hook is a non-blocking no-op. To use the
 in-memory store instead, blank `REDIS_URL` in `.env`. Stop the dev Redis with
@@ -476,7 +477,8 @@ Privacy invariants: never store `auth_token`/OAuth tokens, never parameter VALUE
 **Operator guide lives in `DEPLOYMENT.md` — keep deployment prose there, not here.**
 Platform-agnostic: one Node container + Redis behind a TLS proxy, on any Docker host.
 Compose files: `docker-compose.yml` (portable, reads `.env`),
-`docker-compose.override.yml` (local dev, auto-merged), `docker-compose.coolify.yml`
+`docker-compose.dev.yml` (local-dev overlay, passed explicitly by the npm scripts —
+never named `*.override.yml`, that auto-merges onto servers), `docker-compose.coolify.yml`
 (Coolify magic vars). Users get one URL — `https://<your-domain>/mcp`.
 
 Two facts that constrain code changes:

@@ -184,9 +184,11 @@ docker compose ps           # both services healthy
 curl http://127.0.0.1:3000/health
 ```
 
-> `docker-compose.override.yml` in the repo is a **local-dev** file that Compose
-> auto-merges and that publishes the app on `0.0.0.0`. On a server, delete it or run
-> with `-f docker-compose.yml` only.
+> `docker-compose.dev.yml` is a local-dev overlay and is **not** auto-merged — plain
+> `docker compose up` on the server uses only `docker-compose.yml`, which is what you
+> want. (It is deliberately not named `docker-compose.override.yml`: that name
+> auto-merges and would silently replace `PUBLIC_BASE_URL` and `REDIS_URL` with
+> localhost literals.)
 
 ### 2.6 TLS with Caddy
 
@@ -266,9 +268,13 @@ gcloud run deploy lincx-mcp \
   --min-instances 1 --max-instances 1 \
   --no-cpu-throttling \
   --timeout 3600 \
-  --set-env-vars NODE_ENV=production,WORK_API_BASE_URL=https://api.lincx.com,REDIS_URL=rediss://... \
-  --set-env-vars PUBLIC_BASE_URL=https://placeholder.invalid
+  --set-env-vars '^|^NODE_ENV=production|WORK_API_BASE_URL=https://api.lincx.com|REDIS_URL=rediss://default:<pass>@<host>:6379|PUBLIC_BASE_URL=https://placeholder.invalid'
 ```
+
+`--set-env-vars` is a **dict** flag, not a repeatable one — passing it twice keeps
+only the last, silently dropping the rest. Set every variable in one flag. The
+`^|^` prefix switches the separator to `|` so a comma inside a Redis password or URL
+does not split the list.
 
 Why each non-obvious flag:
 
@@ -282,6 +288,9 @@ Why each non-obvious flag:
 - `--allow-unauthenticated` — R7. Cloud Run IAM in front breaks the MCP OAuth flow.
   The service authenticates its own callers.
 
+Note: a Cloud Run revision rollout briefly runs the old and new revisions together —
+the same two-instance window R1 warns about, for a few seconds per deploy.
+
 Secrets (`REDIS_URL`, `STATS_TOKEN`) are better held in Secret Manager and mounted
 with `--set-secrets` than passed as plain env vars.
 
@@ -292,8 +301,11 @@ gcloud run services describe lincx-mcp --region us-central1 --format='value(stat
 # → https://lincx-mcp-xxxxxxxx-uc.a.run.app
 
 gcloud run services update lincx-mcp --region us-central1 \
-  --set-env-vars PUBLIC_BASE_URL=https://lincx-mcp-xxxxxxxx-uc.a.run.app
+  --update-env-vars PUBLIC_BASE_URL=https://lincx-mcp-xxxxxxxx-uc.a.run.app
 ```
+
+`--update-env-vars` (not `--set-env-vars`) — the latter **replaces** the whole env
+map and would drop `WORK_API_BASE_URL` and `REDIS_URL`.
 
 R3 in practice: it must be the *exact* URL clients use. If you later map a custom
 domain (`gcloud beta run domain-mappings create`), update `PUBLIC_BASE_URL` to that

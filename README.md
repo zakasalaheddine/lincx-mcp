@@ -475,6 +475,6 @@ Redis holds auth, not connections).
 | File | Use |
 |------|-----|
 | `docker-compose.yml` | Portable — any Docker host (VM, on-prem, laptop). Reads `.env`. |
-| `docker-compose.override.yml` | Local dev only; auto-merged by `docker compose up`. Delete it on a server. |
+| `docker-compose.dev.yml` | Local-dev overlay; pass it explicitly (`-f docker-compose.yml -f docker-compose.dev.yml`). The npm scripts do. |
 | `docker-compose.coolify.yml` | Coolify resources (uses Coolify's `SERVICE_*` magic vars). |
 | `Dockerfile` | The image itself — for Cloud Run, GKE, ECS, or any registry-based platform. |

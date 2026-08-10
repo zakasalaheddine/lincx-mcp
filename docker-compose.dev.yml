@@ -1,9 +1,12 @@
-# Local-only override — auto-merged by `docker compose up`, ignored by Coolify
-# (Coolify reads only docker-compose.yml). Replaces the SERVICE_* magic values
-# that Coolify injects in production with plain literals so the stack runs
-# end-to-end on your machine.
+# Local-dev overlay. NOT auto-merged (that's why it isn't named
+# docker-compose.override.yml — on a server the auto-merge silently overrode the
+# real PUBLIC_BASE_URL/REDIS_URL with the localhost literals below). Pass it
+# explicitly:
 #
-#   docker compose up --build   →   http://localhost:3000/health
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#   → http://localhost:3000/health
+#
+# The npm predev/redis:stop scripts already pass both files.
 #
 # Edit WORK_API_BASE_URL to point at a local Work API instead. The Redis
 # password is a throwaway local value — it just has to match on both services.
