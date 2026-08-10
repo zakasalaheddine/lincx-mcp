@@ -229,7 +229,7 @@ in-memory store instead, blank `REDIS_URL` in `.env`. Stop the dev Redis with
 
 The server is HTTP-only, so clients connect by URL — there is no stdio command form.
 
-- **Production (Coolify):** point the client at `https://<your-coolify-domain>/mcp`.
+- **Production:** point the client at `https://<your-domain>/mcp` (see `DEPLOYMENT.md`).
 - **Local dev:** run `npm run dev`, then connect to `http://localhost:5001/mcp`.
 
 `claude.ai` and Claude Desktop take the URL directly (Settings → Connectors).
@@ -473,58 +473,23 @@ Privacy invariants: never store `auth_token`/OAuth tokens, never parameter VALUE
 
 ## Deployment
 
-Deployed via Coolify as a Docker Compose stack (`docker-compose.yml`) — the
-`app` container plus a bundled `redis` service. Users get a single URL to paste
-into their MCP client; the client handles the OAuth dance and stores tokens itself:
+**Operator guide lives in `DEPLOYMENT.md` — keep deployment prose there, not here.**
+Platform-agnostic: one Node container + Redis behind a TLS proxy, on any Docker host.
+Compose files: `docker-compose.yml` (portable, reads `.env`),
+`docker-compose.override.yml` (local dev, auto-merged), `docker-compose.coolify.yml`
+(Coolify magic vars). Users get one URL — `https://<your-domain>/mcp`.
 
-```
-https://<your-coolify-domain>/mcp
-```
-
-OAuth 2.1 (Dynamic Client Registration + PKCE) is the sole identity layer. The
-`/mcp` endpoint returns `401 WWW-Authenticate: Bearer resource_metadata=...`
-on unauthenticated requests so any spec-conformant MCP client (Claude Desktop,
-claude.ai, Claude Code) can discover and complete the OAuth dance.
-
-A query-param "access key" gate is intentionally NOT used on `/mcp`: it
-suppresses the RFC-9728 challenge response and is dropped by some clients
-between the discovery probe and post-OAuth calls, which breaks browser-based
-clients entirely. To kill access deploy-wide, stop the app in Coolify or rotate
-Redis (invalidating every OAuth access/refresh token).
-
-### How the compose file is wired
-
-`docker-compose.yml` relies on Coolify's magic environment variables:
-- `SERVICE_FQDN_APP_3000` — declaring this key makes Coolify generate a public
-  domain for the `app` service and route the Traefik proxy to port 3000.
-- `PUBLIC_BASE_URL=https://${SERVICE_FQDN_APP}` — the generated domain, forced to https.
-- `SERVICE_PASSWORD_REDIS` — a random password Coolify generates once; shared
-  between the Redis server and the app's `REDIS_URL` (`redis://default:…@redis:6379`).
-
-Redis persists to a named volume (`redis-data`), so sessions survive restarts.
-
-### One-time setup (Coolify UI)
-
-1. New Resource → **Docker Compose** → point it at this Git repo (`docker-compose.yml`).
-2. In **Environment Variables**, set `WORK_API_BASE_URL` (and optionally `IDENTITY_SERVER`).
-   `NODE_ENV`, `PORT`, and `PUBLIC_BASE_URL` are already set in the compose file.
-3. Enable **Auto Deploy** and add the generated webhook to the repo (GitHub →
-   Settings → Webhooks). Pushes to `main` then redeploy automatically — no
-   GitHub Actions workflow is needed or present.
-4. Deploy. Coolify assigns the domain and provisions a TLS cert via its proxy.
-
-### Subsequent deploys
-
-Push to `main` — Coolify's webhook redeploys. Or click **Redeploy** in the UI.
-
-### Inspect sessions
-
-Use Coolify's container logs/terminal for the `redis` service, or with `REDIS_URL`
-exported locally:
-
-```bash
-redis-cli -u "$REDIS_URL" keys "lincx:session:*" | wc -l
-```
+Two facts that constrain code changes:
+- **Single instance only.** MCP transport state is an in-process `Map`
+  (`src/index.ts:137`); Redis holds auth, not connections. Multiple replicas =
+  intermittent "session not found". Making it horizontally scalable means moving that
+  map into Redis, not a config flag.
+- **No auth gate in front of `/mcp`.** OAuth 2.1 (DCR + PKCE) is the sole identity
+  layer — `/mcp` must be able to answer `401 WWW-Authenticate: Bearer
+  resource_metadata=...` to unauthenticated callers. A query-param "access key" gate
+  is intentionally NOT used: it suppresses the RFC-9728 challenge and is dropped by
+  some clients between the discovery probe and post-OAuth calls. To kill access
+  deploy-wide, stop the app or flush Redis (invalidates every OAuth token).
 
 ---
 
@@ -540,7 +505,7 @@ and diff against the web app's login request in DevTools.
 ### Response size — access persistence & the guard (field-test Qs)
 - **Do sessions survive redeploys?** Yes. Redis persists to a named volume
   (`redis-data` in `docker-compose.yml`), so OAuth tokens + Lincx sessions outlive
-  a Coolify redeploy — the connector stays authenticated across iterations. Only
+  a redeploy — the connector stays authenticated across iterations. Only
   rotating Redis (or `auth_logout`) drops access.
 - **Is the 30k guard hard or tunable?** Tunable via `RESPONSE_SIZE_LIMIT` (see the
   env table). The intended path for a legitimately large pull is server-side

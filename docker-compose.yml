@@ -1,37 +1,41 @@
-# Coolify deployment — app + Redis as one stack.
+# Portable deployment — app + Redis as one stack. Runs on any Docker host:
+# a GCE / EC2 VM, a bare-metal box, or your laptop.
 #
-# Deploy this on Coolify as a "Docker Compose" resource pointed at this repo.
-# Coolify builds the app from the local Dockerfile, provisions Redis, wires the
-# two together, and assigns a public HTTPS domain via its Traefik proxy.
+#   cp .env.example .env    # fill in WORK_API_BASE_URL, PUBLIC_BASE_URL, REDIS_PASSWORD
+#   docker compose up -d --build
+#   curl http://127.0.0.1:3000/health
 #
-# Coolify "magic" variables used below (filled in automatically by Coolify):
-#   SERVICE_FQDN_APP_3000  — declaring this key tells Coolify to generate a public
-#                            domain for the `app` service and route it to port 3000.
-#   SERVICE_FQDN_APP       — the generated domain (no scheme), reused for PUBLIC_BASE_URL.
-#   SERVICE_PASSWORD_REDIS — a random password generated once and shared below.
+# Full step-by-step guide (VM, Cloud Run, any platform): see DEPLOYMENT.md.
 #
-# Set WORK_API_BASE_URL (and optionally IDENTITY_SERVER) in the Coolify UI's
-# Environment Variables tab. The `:?` guard makes a missing value fail the deploy
-# fast instead of silently falling back to localhost.
+# TLS is NOT terminated here. Put a reverse proxy (Caddy, nginx, a cloud load
+# balancer) in front — the app only ever listens on plain HTTP, and PUBLIC_BASE_URL
+# must be the https URL clients actually hit.
 #
-# NOTE: `docker compose up` locally will NOT expand the SERVICE_* magic vars —
-# those exist only inside Coolify. For local runs use `npm run dev` or set the
-# vars yourself. This file is intended for Coolify.
+# Coolify uses a different file: docker-compose.coolify.yml.
+# `docker compose up` on a dev machine also merges docker-compose.override.yml.
 
 services:
   app:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
+    # Bound to loopback: the reverse proxy on this host forwards to it. Change to
+    # "3000:3000" only if the proxy is on another host/container network.
+    ports:
+      - "127.0.0.1:3000:3000"
     environment:
-      # Domain + proxy routing (key presence is the trigger; no value needed)
-      - SERVICE_FQDN_APP_3000
       - NODE_ENV=production
       - PORT=3000
-      - PUBLIC_BASE_URL=https://${SERVICE_FQDN_APP}
-      - IDENTITY_SERVER=${IDENTITY_SERVER:-https://ix-id.lincx.la}
+      # Must equal the public https URL clients hit — OAuth redirects and the
+      # /.well-known discovery metadata are built from it.
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required (e.g. https://mcp.example.com)}
       - WORK_API_BASE_URL=${WORK_API_BASE_URL:?WORK_API_BASE_URL is required}
-      - REDIS_URL=redis://default:${SERVICE_PASSWORD_REDIS}@redis:6379
+      - IDENTITY_SERVER=${IDENTITY_SERVER:-https://ix-id.lincx.la}
+      - REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379
+      - STATS_TOKEN=${STATS_TOKEN:-}
+      - USAGE_EVENT_CAP=${USAGE_EVENT_CAP:-50000}
+      - RESPONSE_SIZE_LIMIT=${RESPONSE_SIZE_LIMIT:-30000}
     depends_on:
       redis:
         condition: service_healthy
@@ -48,11 +52,12 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: redis-server --requirepass ${SERVICE_PASSWORD_REDIS} --appendonly yes
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required} --appendonly yes
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${SERVICE_PASSWORD_REDIS}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

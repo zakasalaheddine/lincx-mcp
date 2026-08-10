@@ -89,11 +89,11 @@ function createMcpServer(): McpServer {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const app = express();
-app.set("trust proxy", 1);   // behind the Coolify (Traefik) proxy; needed for correct rate-limit IPs
+app.set("trust proxy", 1);   // exactly ONE reverse-proxy hop in front; needed for correct rate-limit IPs
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ── /health (no auth, fast — used by Coolify healthchecks) ───────────────────
+// ── /health (no auth, fast — the platform healthcheck/probe target) ─────────
 app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
