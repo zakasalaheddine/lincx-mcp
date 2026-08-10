@@ -1,5 +1,68 @@
 # Deploying lincx-mcp-server
 
+## Quick start (GCE VM, ~30 min)
+
+Replace `<PROJECT>`, `mcp.lincx.com`, `https://api.lincx.com`. Run in order.
+
+```bash
+# 1. VM + static IP + firewall
+gcloud config set project <PROJECT>
+gcloud compute addresses create lincx-mcp-ip --region=us-central1
+gcloud compute instances create lincx-mcp \
+  --zone=us-central1-a --machine-type=e2-small \
+  --image-family=debian-12 --image-project=debian-cloud \
+  --boot-disk-size=20GB --address=lincx-mcp-ip --tags=lincx-mcp
+gcloud compute firewall-rules create lincx-mcp-web --allow=tcp:80,tcp:443 --target-tags=lincx-mcp
+
+# 2. Get the IP, create an A record for mcp.lincx.com pointing at it, wait for:
+gcloud compute addresses describe lincx-mcp-ip --region=us-central1 --format='value(address)'
+dig +short mcp.lincx.com
+
+# 3. Install Docker on the VM
+gcloud compute ssh lincx-mcp --zone=us-central1-a
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER && exit
+
+# 4. Clone + configure (back on the VM)
+gcloud compute ssh lincx-mcp --zone=us-central1-a
+git clone https://github.com/Interlincx/lincx-mcp.git && cd lincx-mcp
+cat > .env <<EOF
+WORK_API_BASE_URL=https://api.lincx.com
+PUBLIC_BASE_URL=https://mcp.lincx.com
+REDIS_PASSWORD=$(openssl rand -hex 24)
+STATS_TOKEN=$(openssl rand -hex 32)
+EOF
+chmod 600 .env
+
+# 5. Start
+docker compose up -d --build
+curl http://127.0.0.1:3000/health
+
+# 6. TLS
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update && sudo apt install -y caddy
+printf 'mcp.lincx.com {\n    reverse_proxy 127.0.0.1:3000\n}\n' | sudo tee /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+
+# 7. Verify — /health returns ok, /mcp returns 401, issuer matches the domain
+curl https://mcp.lincx.com/health
+curl -i https://mcp.lincx.com/mcp | head -3
+curl -s https://mcp.lincx.com/.well-known/oauth-authorization-server | jq .issuer
+
+# 8. Redeploy later
+cd lincx-mcp && git pull && docker compose up -d --build
+```
+
+Done. Give clients `https://mcp.lincx.com/mcp`.
+
+Three rules that must hold on any platform: **one instance only**, **`PUBLIC_BASE_URL`
+= the exact public URL**, **no auth gate in front of `/mcp`**. Why, and every other
+target, below.
+
+---
+
 This service is a single Node.js container that speaks HTTP on one port. It runs
 anywhere Docker runs — a VM, Cloud Run, GKE, ECS, Render, Coolify. Nothing in the
 code is tied to a platform.
