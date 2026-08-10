@@ -1,7 +1,7 @@
 /**
  * tools/analysisTools.ts
  *
- * create_analysis — POST /api/analysis
+ * create_analysis — POST /api/analysis  (NOT registered when NODE_ENV=production)
  * get_analysis    — GET  /api/analysis/{id}
  * list_analyses   — GET  /api/analysis
  *
@@ -23,7 +23,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
 import { workApiRequest, handleWorkApiError } from "../services/workApi.js";
-import { RESPONSE_SIZE_LIMIT } from "../constants.js";
+import { RESPONSE_SIZE_LIMIT, IS_PRODUCTION } from "../constants.js";
 import { READONLY_ANNOTATIONS } from "./_shared.js";
 
 const ZONE_ID_RE = /^[a-z0-9]{6}$/;
@@ -169,50 +169,57 @@ export function fitAnalysis(doc: AnalysisDoc, limit: number): { content: { type:
 
 export function registerAnalysisTools(server: McpServer): void {
 
-  // ── create_analysis ─────────────────────────────────────────────────────────
-  server.registerTool("create_analysis", {
-    title: "Create Zone Tier Analysis",
-    description: `Queue a zone tier analysis job and return the QUEUED document (its _id is what you poll with). Asynchronous — the job is NOT finished when this returns; call get_analysis until status is 'succeeded' or 'failed'.
+  // create_analysis is HIDDEN IN PRODUCTION for now — the upstream job is
+  // email-allowlisted and still settling, so we do not advertise it to prod
+  // clients. Everything below still works locally (NODE_ENV != "production");
+  // get_analysis/list_analyses stay registered everywhere so existing jobs
+  // remain readable. Delete this guard to ship it.
+  if (!IS_PRODUCTION) {
+    // ── create_analysis ─────────────────────────────────────────────────────────
+    server.registerTool("create_analysis", {
+      title: "Create Zone Tier Analysis",
+      description: `Queue a zone tier analysis job and return the QUEUED document (its _id is what you poll with). Asynchronous — the job is NOT finished when this returns; call get_analysis until status is 'succeeded' or 'failed'.
 
-analysisType 'offerTiering' groups a zone's creatives into performance tiers (TIER_1 / TIER_2A / TIER_2B / TIER_3) from reliability-weighted CPM, revenue share and CTR. 'rankedOfferOptimization' answers the adjacent question — which creative belongs in which rank slot — by banding waterfall winners on CPM proximity into premium/standard/starter config groups.
+  analysisType 'offerTiering' groups a zone's creatives into performance tiers (TIER_1 / TIER_2A / TIER_2B / TIER_3) from reliability-weighted CPM, revenue share and CTR. 'rankedOfferOptimization' answers the adjacent question — which creative belongs in which rank slot — by banding waterfall winners on CPM proximity into premium/standard/starter config groups.
 
-noLLM defaults to TRUE: the deterministic engine runs and the narrative fields (tier_rationale, per-row justification, confidence, improvement_guidance, next_actions) come back EMPTY BY DESIGN for you to write. Set it false only to also get the server-side Gemini narrative.
+  noLLM defaults to TRUE: the deterministic engine runs and the narrative fields (tier_rationale, per-row justification, confidence, improvement_guidance, next_actions) come back EMPTY BY DESIGN for you to write. Set it false only to also get the server-side Gemini narrative.
 
-Access is restricted to an allowlist of Lincx emails; a 403 means the logged-in user is not on it. Requires access to the zone's network.`,
-    inputSchema: z.object({
-      zoneId: z.string().regex(ZONE_ID_RE, "zoneId must be 6 lowercase letters or digits").describe("Zone to analyze"),
-      dateStart: z.string().regex(DATE_RE, "dateStart must be YYYY-MM-DD").describe("Start date, YYYY-MM-DD, inclusive"),
-      dateEnd: z.string().regex(DATE_RE, "dateEnd must be YYYY-MM-DD").describe("End date, YYYY-MM-DD, inclusive"),
-      analysisType: z.enum(ANALYSIS_TYPES).default("offerTiering").describe("offerTiering (creative tiers) or rankedOfferOptimization (rank slot assignment)"),
-      timezone: z.string().default("UTC").describe("Timezone CODE (e.g. UTC, EST, PDT) — not an IANA name. Buckets days and interprets the date range."),
-      noLLM: z.boolean().default(true).describe("True (default): deterministic engine only, narrative fields empty for you to write. False: also run the server-side Gemini narrative."),
-      name: z.string().max(100).optional().describe("Optional label for the job"),
-    }).strict(),
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ zoneId, dateStart, dateEnd, analysisType, timezone, noLLM, name }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId);
-    if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
+  Access is restricted to an allowlist of Lincx emails; a 403 means the logged-in user is not on it. Requires access to the zone's network.`,
+      inputSchema: z.object({
+        zoneId: z.string().regex(ZONE_ID_RE, "zoneId must be 6 lowercase letters or digits").describe("Zone to analyze"),
+        dateStart: z.string().regex(DATE_RE, "dateStart must be YYYY-MM-DD").describe("Start date, YYYY-MM-DD, inclusive"),
+        dateEnd: z.string().regex(DATE_RE, "dateEnd must be YYYY-MM-DD").describe("End date, YYYY-MM-DD, inclusive"),
+        analysisType: z.enum(ANALYSIS_TYPES).default("offerTiering").describe("offerTiering (creative tiers) or rankedOfferOptimization (rank slot assignment)"),
+        timezone: z.string().default("UTC").describe("Timezone CODE (e.g. UTC, EST, PDT) — not an IANA name. Buckets days and interprets the date range."),
+        noLLM: z.boolean().default(true).describe("True (default): deterministic engine only, narrative fields empty for you to write. False: also run the server-side Gemini narrative."),
+        name: z.string().max(100).optional().describe("Optional label for the job"),
+      }).strict(),
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    }, async ({ zoneId, dateStart, dateEnd, analysisType, timezone, noLLM, name }, extra) => {
+      const sessionId = await resolveLincxSession(extra?.sessionId);
+      if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
 
-    const v = await validateSession(sessionId);
-    if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
+      const v = await validateSession(sessionId);
+      if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
 
-    try {
-      const body: Record<string, unknown> = { zoneId, dateStart, dateEnd, analysisType, timezone, noLLM };
-      if (name !== undefined) body.name = name;
-      const doc = await workApiRequest<AnalysisDoc>(v.session, "POST", "/api/analysis", { body });
+      try {
+        const body: Record<string, unknown> = { zoneId, dateStart, dateEnd, analysisType, timezone, noLLM };
+        if (name !== undefined) body.name = name;
+        const doc = await workApiRequest<AnalysisDoc>(v.session, "POST", "/api/analysis", { body });
 
-      // The API derives networkId from the ZONE, ignoring the injected query
-      // param — but list_analyses filters BY that param. Cross-network creates
-      // therefore succeed and then never show up in the list.
-      const active = v.session.active_network;
-      if (doc?.networkId && active && doc.networkId !== active) {
-        doc.note = `Created on network ${doc.networkId} (the zone's), not the active network ${active}. Poll get_analysis by _id — list_analyses will not show it until you network_switch.`;
+        // The API derives networkId from the ZONE, ignoring the injected query
+        // param — but list_analyses filters BY that param. Cross-network creates
+        // therefore succeed and then never show up in the list.
+        const active = v.session.active_network;
+        if (doc?.networkId && active && doc.networkId !== active) {
+          doc.note = `Created on network ${doc.networkId} (the zone's), not the active network ${active}. Poll get_analysis by _id — list_analyses will not show it until you network_switch.`;
+        }
+        return fitAnalysis(doc, RESPONSE_SIZE_LIMIT);
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
       }
-      return fitAnalysis(doc, RESPONSE_SIZE_LIMIT);
-    } catch (err) {
-      return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
-    }
-  });
+    });
+  }
 
   // ── get_analysis ────────────────────────────────────────────────────────────
   server.registerTool("get_analysis", {
