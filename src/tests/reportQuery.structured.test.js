@@ -1,17 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import test from 'ava'
+import esmock from 'esmock'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { mockWorkApi } from './helpers/mockWorkApi.js'
-
-const api = mockWorkApi()
-
-// Import AFTER the helper so vi.mock has hoisted before module resolution.
-const { registerReportingTools } = await import('../tools/reportingTools.js')
-
-function getReportTool () {
-  const server = new McpServer({ name: 'test', version: '0.0.0' })
-  registerReportingTools(server)
-  return (server)._registeredTools.report_query
-}
+import { workApiMock, sessionMock } from './helpers/mockWorkApi.js'
 
 const ROWS = [
   { zone: 'A', date: '2026-05-19', hour: '00', loads: 100, revenue: 1.5, level: 'x' },
@@ -19,61 +9,67 @@ const ROWS = [
   { zone: 'B', date: '2026-05-19', hour: '00', loads: 20, revenue: 0.1, level: 'x' }
 ]
 
-beforeEach(() => api.reset())
-
-describe('report_query structured output (T2-2)', () => {
-  it('aggregated mode: structuredContent matches the declared outputSchema and mirrors content text', async () => {
-    api.on('GET', /^\/api\/reports\/ds1$/, () => ROWS)
-    const tool = getReportTool()
-
-    const r = await tool.handler(
-      { dimensionSetId: 'ds1', startDate: '2026-05-19', endDate: '2026-05-19', groupBy: ['zone'], raw: false },
-      { sessionId: 'test-session' }
-    )
-
-    expect(r.structuredContent).toBeDefined()
-    expect(r.structuredContent.total.loads).toBe(170)
-    expect(r.structuredContent.groups).toHaveLength(2)
-    // content text is functionally equivalent (spec back-compat requirement).
-    expect(JSON.parse(r.content[0].text).total.loads).toBe(170)
-    // The SDK validates structuredContent against tool.outputSchema before sending —
-    // assert that contract holds here.
-    expect(tool.outputSchema.safeParse(r.structuredContent).success).toBe(true)
+/** Fresh module graph per test, so the row set is per-test state, not shared. */
+async function getReportTool (rows) {
+  const { registerReportingTools } = await esmock('../tools/reportingTools.js', {
+    '../services/workApi.js': workApiMock([
+      ['GET', /^\/api\/reports\/ds1$/, () => rows]
+    ]),
+    '../services/sessionManager.js': sessionMock()
   })
+  const server = new McpServer({ name: 'test', version: '0.0.0' })
+  registerReportingTools(server)
+  return (server)._registeredTools.report_query
+}
 
-  it('raw mode: structuredContent carries raw rows and still validates against outputSchema', async () => {
-    api.on('GET', /^\/api\/reports\/ds1$/, () => ROWS)
-    const tool = getReportTool()
+test('report_query structured output (T2-2) > aggregated mode: structuredContent matches the declared outputSchema and mirrors content text', async t => {
+  const tool = await getReportTool(ROWS)
 
-    const r = await tool.handler(
-      { dimensionSetId: 'ds1', startDate: '2026-05-19', endDate: '2026-05-19', raw: true },
-      { sessionId: 'test-session' }
-    )
+  const r = await tool.handler(
+    { dimensionSetId: 'ds1', startDate: '2026-05-19', endDate: '2026-05-19', groupBy: ['zone'], raw: false },
+    { sessionId: 'test-session' }
+  )
 
-    expect(r.structuredContent.raw).toHaveLength(3)
-    expect(r.structuredContent.total).toBeUndefined()
-    expect(r.structuredContent.rawTruncated).toBeUndefined() // small → not capped
-    expect(tool.outputSchema.safeParse(r.structuredContent).success).toBe(true)
-  })
+  t.not(r.structuredContent, undefined)
+  t.is(r.structuredContent.total.loads, 170)
+  t.is(r.structuredContent.groups.length, 2)
+  // content text is functionally equivalent (spec back-compat requirement).
+  t.is(JSON.parse(r.content[0].text).total.loads, 170)
+  // The SDK validates structuredContent against tool.outputSchema before sending —
+  // assert that contract holds here.
+  t.is(tool.outputSchema.safeParse(r.structuredContent).success, true)
+})
 
-  it('raw mode caps rows so the whole result stays under the 30k size guard', async () => {
-    const many = Array.from({ length: 5_000 }, (_, i) => ({
-      zone: `Zone-${i}`, date: '2026-05-19', hour: '00', loads: i, clicks: i % 7, revenue: i * 0.013, level: 'date-hour-zone'
-    }))
-    api.on('GET', /^\/api\/reports\/ds1$/, () => many)
-    const tool = getReportTool()
+test('report_query structured output (T2-2) > raw mode: structuredContent carries raw rows and still validates against outputSchema', async t => {
+  const tool = await getReportTool(ROWS)
 
-    const r = await tool.handler(
-      { dimensionSetId: 'ds1', startDate: '2026-05-19', endDate: '2026-05-19', raw: true },
-      { sessionId: 'test-session' }
-    )
+  const r = await tool.handler(
+    { dimensionSetId: 'ds1', startDate: '2026-05-19', endDate: '2026-05-19', raw: true },
+    { sessionId: 'test-session' }
+  )
 
-    expect(r.structuredContent.raw.length).toBeLessThan(5_000)
-    expect(r.structuredContent.rowsScanned).toBe(5_000)
-    expect(r.structuredContent.rawTruncated.total).toBe(5_000)
-    expect(r.structuredContent.rawTruncated.returned).toBe(r.structuredContent.raw.length)
-    // The whole serialized result (content + structuredContent) must clear the hard guard.
-    expect(JSON.stringify(r).length).toBeLessThanOrEqual(30_000)
-    expect(tool.outputSchema.safeParse(r.structuredContent).success).toBe(true)
-  })
+  t.is(r.structuredContent.raw.length, 3)
+  t.is(r.structuredContent.total, undefined)
+  t.is(r.structuredContent.rawTruncated, undefined) // small → not capped
+  t.is(tool.outputSchema.safeParse(r.structuredContent).success, true)
+})
+
+test('report_query structured output (T2-2) > raw mode caps rows so the whole result stays under the 30k size guard', async t => {
+  const many = Array.from({ length: 5_000 }, (_, i) => ({
+    zone: `Zone-${i}`, date: '2026-05-19', hour: '00', loads: i, clicks: i % 7, revenue: i * 0.013, level: 'date-hour-zone'
+  }))
+  const tool = await getReportTool(many)
+
+  const r = await tool.handler(
+    { dimensionSetId: 'ds1', startDate: '2026-05-19', endDate: '2026-05-19', raw: true },
+    { sessionId: 'test-session' }
+  )
+
+  t.true(r.structuredContent.raw.length < 5_000)
+  t.is(r.structuredContent.rowsScanned, 5_000)
+  t.is(r.structuredContent.rawTruncated.total, 5_000)
+  t.is(r.structuredContent.rawTruncated.returned, r.structuredContent.raw.length)
+  // The whole serialized result (content + structuredContent) must clear the hard guard.
+  t.true(JSON.stringify(r).length <= 30_000)
+  t.is(tool.outputSchema.safeParse(r.structuredContent).success, true)
 })
