@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { registerClient } from "../services/oauth/clients.js";
 
-export const oauthRegisterRouter: Router = Router();
+export const oauthRegisterRouter         = Router();
 
 oauthRegisterRouter.post("/register", async (req, res) => {
   const { redirect_uris, client_name } = req.body ?? {};

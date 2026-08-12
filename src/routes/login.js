@@ -12,7 +12,7 @@ import { getClient } from "../services/oauth/clients.js";
 import { loginLimiter } from "../middleware/rateLimit.js";
 import { buildLoginPage, buildSuccessPage, buildErrorPage } from "../views/login.js";
 
-export const loginRouter: Router = Router();
+export const loginRouter         = Router();
 
 // ── GET /oauth/authorize ─────────────────────────────────────────────────────
 loginRouter.get("/oauth/authorize", async (req, res) => {
@@ -24,7 +24,7 @@ loginRouter.get("/oauth/authorize", async (req, res) => {
     code_challenge,
     code_challenge_method,
     scope,
-  } = req.query as Record<string, string | undefined>;
+  } = req.query                                      ;
 
   if (response_type !== "code") {
     res.status(400).send(buildErrorPage("Unsupported response_type."));
@@ -81,7 +81,7 @@ loginRouter.get("/login", async (req, res) => {
 // ── POST /api/login ──────────────────────────────────────────────────────────
 loginRouter.post("/api/login", loginLimiter, async (req, res) => {
   const requestId = typeof req.query.req === "string" ? req.query.req : "";
-  const { email, password } = req.body as { email?: string; password?: string };
+  const { email, password } = req.body                                         ;
 
   if (!requestId) {
     res.status(400).json({ success: false, error: "Missing request id." });
