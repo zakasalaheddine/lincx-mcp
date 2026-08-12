@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import { filterReportRows, aggregateReport } from '../tools/reportingTools.js'
 
 const rows = [
@@ -7,37 +7,37 @@ const rows = [
   { advertiser: 'Globex', zone: 'Primary', date: '2026-07-14', hour: '00', loads: 20, revenue: 0.5 }
 ]
 
-describe('filterReportRows', () => {
-  it('passes everything through when no filter', () => {
+{ // filterReportRows
+  test('filterReportRows > passes everything through when no filter', t => {
     const r = filterReportRows(rows, undefined)
-    expect(r.rows).toHaveLength(3)
-    expect(r.missingKeys).toEqual([])
+    t.is(r.rows.length, 3)
+    t.deepEqual(r.missingKeys, [])
   })
 
-  it('keeps only matching rows, case-insensitively', () => {
+  test('filterReportRows > keeps only matching rows, case-insensitively', t => {
     const r = filterReportRows(rows, { advertiser: 'acme' })
-    expect(r.rows).toHaveLength(2)
-    expect(r.missingKeys).toEqual([])
+    t.is(r.rows.length, 2)
+    t.deepEqual(r.missingKeys, [])
     // filtered rows aggregate to just Acme's totals
-    expect(aggregateReport(r.rows, []).total.loads).toBe(150)
+    t.is(aggregateReport(r.rows, []).total.loads, 150)
   })
 
-  it('flags a filter key that is not a dimension of any row (guards silent empty)', () => {
+  test('filterReportRows > flags a filter key that is not a dimension of any row (guards silent empty)', t => {
     const r = filterReportRows(rows, { campaign: 'X' })
-    expect(r.missingKeys).toEqual(['campaign'])
-    expect(r.rows).toHaveLength(0)
+    t.deepEqual(r.missingKeys, ['campaign'])
+    t.is(r.rows.length, 0)
   })
 
-  it('returns value hints when key exists but no value matches (typo recovery)', () => {
+  test('filterReportRows > returns value hints when key exists but no value matches (typo recovery)', t => {
     const r = filterReportRows(rows, { advertiser: 'Acmee' })
-    expect(r.missingKeys).toEqual([])
-    expect(r.rows).toHaveLength(0)
-    expect(r.valueHints).toContain('advertiser=Acme')
-    expect(r.valueHints).toContain('advertiser=Globex')
+    t.deepEqual(r.missingKeys, [])
+    t.is(r.rows.length, 0)
+    t.true(r.valueHints.includes('advertiser=Acme'))
+    t.true(r.valueHints.includes('advertiser=Globex'))
   })
 
-  it('supports multi-key AND filters', () => {
+  test('filterReportRows > supports multi-key AND filters', t => {
     const r = filterReportRows(rows, { advertiser: 'Acme', zone: 'Primary' })
-    expect(r.rows).toHaveLength(2)
+    t.is(r.rows.length, 2)
   })
-})
+}

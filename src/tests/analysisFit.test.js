@@ -1,13 +1,13 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import { fitAnalysis } from '../tools/analysisTools.js'
 
 const LIMIT = 30_000
 
 /** The wire format is `header\n\ncompact JSON` — parse what the model parses. */
-function parse (result) {
+function parse (t, result) {
   const text = result.content[0].text
   const blank = text.indexOf('\n\n')
-  expect(blank).toBeGreaterThan(0)
+  t.true(blank > 0)
   return JSON.parse(text.slice(blank + 2))
 }
 
@@ -69,8 +69,8 @@ const succeeded = (opts = {}) => ({
   execution: { provider: 'deterministic', usage: { totalTokens: 0 } }
 })
 
-describe('fitAnalysis', () => {
-  it('keeps a queued job intact and tells the caller to keep polling', () => {
+{ // fitAnalysis
+  test('fitAnalysis > keeps a queued job intact and tells the caller to keep polling', t => {
     const doc = {
       _id: 'cl1',
       status: 'queued',
@@ -78,63 +78,63 @@ describe('fitAnalysis', () => {
       networkId: 'svce6t',
       request: { zoneId: 'abc123', dateStart: '2026-06-01', dateEnd: '2026-06-30' }
     }
-    const parsed = parse(fitAnalysis(doc, LIMIT))
+    const parsed = parse(t, fitAnalysis(doc, LIMIT))
 
-    expect(parsed.status).toBe('queued')
-    expect(parsed._id).toBe('cl1')
-    expect(parsed.note).toMatch(/Poll get_analysis/)
-    expect(parsed.omitted).toBeUndefined()
+    t.is(parsed.status, 'queued')
+    t.is(parsed._id, 'cl1')
+    t.regex(parsed.note, /Poll get_analysis/)
+    t.is(parsed.omitted, undefined)
   })
 
-  it('flags a running job the same way', () => {
-    const parsed = parse(fitAnalysis({ _id: 'cl2', status: 'running' }, LIMIT))
-    expect(parsed.note).toMatch(/Poll get_analysis/)
+  test('fitAnalysis > flags a running job the same way', t => {
+    const parsed = parse(t, fitAnalysis({ _id: 'cl2', status: 'running' }, LIMIT))
+    t.regex(parsed.note, /Poll get_analysis/)
   })
 
-  it('always drops rawResponse and the rendered prompt, whatever the size', () => {
+  test('fitAnalysis > always drops rawResponse and the rendered prompt, whatever the size', t => {
     const doc = succeeded();
     (doc.input).prompt = { rendered: 'you are the lincx analyst...' }
-    const parsed = parse(fitAnalysis(doc, LIMIT))
+    const parsed = parse(t, fitAnalysis(doc, LIMIT))
 
-    expect(parsed.output.rawResponse).toBeUndefined()
-    expect(parsed.input.prompt).toBeUndefined()
-    expect(parsed.output.json.tier_grouping.recommended_tier_count).toBe(3)
-    expect(parsed.input.tieringContext.creatives).toHaveLength(5)
+    t.is(parsed.output.rawResponse, undefined)
+    t.is(parsed.input.prompt, undefined)
+    t.is(parsed.output.json.tier_grouping.recommended_tier_count, 3)
+    t.is(parsed.input.tieringContext.creatives.length, 5)
   })
 
-  it('sheds rankDistribution first and records what it dropped', () => {
+  test('fitAnalysis > sheds rankDistribution first and records what it dropped', t => {
     const doc = succeeded({ creatives: 40, ranks: 400 })
-    const parsed = parse(fitAnalysis(doc, 12_000))
+    const parsed = parse(t, fitAnalysis(doc, 12_000))
 
-    expect(parsed.omitted).toContain('input.tieringContext.rankDistribution')
-    expect(parsed.input.tieringContext.rankDistribution).toBeUndefined()
+    t.true(parsed.omitted.includes('input.tieringContext.rankDistribution'))
+    t.is(parsed.input.tieringContext.rankDistribution, undefined)
     // The scoring detail and the verdict both survive the first shed.
-    expect(parsed.input.tieringContext.creatives).toHaveLength(40)
-    expect(parsed.output.json.tier_tables.TIER_1).toHaveLength(1)
+    t.is(parsed.input.tieringContext.creatives.length, 40)
+    t.is(parsed.output.json.tier_tables.TIER_1.length, 1)
   })
 
-  it('sheds localTiers only after the diagnostic lists', () => {
+  test('fitAnalysis > sheds localTiers only after the diagnostic lists', t => {
     const doc = succeeded({ creatives: 60, ranks: 600, localTiers: 60 })
-    const parsed = parse(fitAnalysis(doc, 6_000))
+    const parsed = parse(t, fitAnalysis(doc, 6_000))
 
     const droppedBeforeLocal = ['input.tieringContext.nonMonetizingCreatives', 'input.tieringContext.defaultTierCreatives']
     if (parsed.omitted?.includes('input.tieringContext.localTiers')) {
-      for (const path of droppedBeforeLocal) expect(parsed.omitted).toContain(path)
+      for (const path of droppedBeforeLocal) t.true(parsed.omitted.includes(path))
     }
-    expect(parsed.output.json).toBeDefined()
+    t.not(parsed.output.json, undefined)
   })
 
-  it('falls back to the verdict plus a complete:false flag rather than a silent partial', () => {
+  test('fitAnalysis > falls back to the verdict plus a complete:false flag rather than a silent partial', t => {
     const doc = succeeded({ creatives: 500, ranks: 2000, localTiers: 500 })
-    const parsed = parse(fitAnalysis(doc, 3_000))
+    const parsed = parse(t, fitAnalysis(doc, 3_000))
 
-    expect(parsed.complete).toBe(false)
-    expect(parsed.output.json).toBeDefined()
-    expect(parsed.request.zoneId).toBe('abc123')
-    expect(parsed.note).toMatch(/omitted/i)
+    t.is(parsed.complete, false)
+    t.not(parsed.output.json, undefined)
+    t.is(parsed.request.zoneId, 'abc123')
+    t.regex(parsed.note, /omitted/i)
   })
 
-  it('drops output.json too rather than slicing it into unparseable JSON', () => {
+  test('fitAnalysis > drops output.json too rather than slicing it into unparseable JSON', t => {
     // A wide zone's tier tables can bust the budget on their own — the branch the
     // earlier limit sweep never reached, because its fixture output was tiny.
     const doc = succeeded()
@@ -142,28 +142,28 @@ describe('fitAnalysis', () => {
       tier_grouping: { recommended_tier_count: 3 },
       tier_tables: { TIER_1: creatives(400) }
     }
-    const parsed = parse(fitAnalysis(doc, 5_000))
+    const parsed = parse(t, fitAnalysis(doc, 5_000))
 
-    expect(parsed.complete).toBe(false)
-    expect(parsed.output).toBeUndefined()
-    expect(parsed.omitted).toContain('output')
-    expect(parsed.request.zoneId).toBe('abc123')
-    expect(parsed.note).toMatch(/shorter date range/)
+    t.is(parsed.complete, false)
+    t.is(parsed.output, undefined)
+    t.true(parsed.omitted.includes('output'))
+    t.is(parsed.request.zoneId, 'abc123')
+    t.regex(parsed.note, /shorter date range/)
   })
 
-  it('emits a header line and parseable JSON for every branch', () => {
+  test('fitAnalysis > emits a header line and parseable JSON for every branch', t => {
     for (const limit of [30_000, 12_000, 6_000, 3_000, 1_000]) {
       const result = fitAnalysis(succeeded({ creatives: 200, ranks: 800 }), limit)
       const text = result.content[0].text
-      expect(text.split('\n')[0]).toMatch(/^analysis cl123 · offerTiering · succeeded zone abc123/)
-      expect(() => parse(result)).not.toThrow()
+      t.regex(text.split('\n')[0], /^analysis cl123 · offerTiering · succeeded zone abc123/)
+      t.notThrows(() => parse(t, result))
     }
   })
 
-  it("never mutates the caller's document", () => {
+  test('fitAnalysis > never mutates the caller\'s document', t => {
     const doc = succeeded()
     fitAnalysis(doc, 1_000)
-    expect(doc.output.rawResponse).toHaveLength(20_000)
-    expect(doc.input.tieringContext.rankDistribution).toHaveLength(5)
+    t.is(doc.output.rawResponse.length, 20_000)
+    t.is(doc.input.tieringContext.rankDistribution.length, 5)
   })
-})
+}

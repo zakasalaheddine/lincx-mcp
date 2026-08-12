@@ -1,28 +1,28 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import { fitEntityToText } from '../services/workApi.js'
 
 const LIMIT = 25_000
 const huge = (n) => 'x'.repeat(n)
 
-describe('fitEntityToText', () => {
-  it('returns small entities unchanged and parseable', () => {
+{ // fitEntityToText
+  test('fitEntityToText > returns small entities unchanged and parseable', t => {
     const e = { id: 'c1', name: 'Camp', status: 'active' }
     const text = fitEntityToText(e)
-    expect(JSON.parse(text)).toEqual(e)
+    t.deepEqual(JSON.parse(text), e)
   })
 
-  it('elides the largest string field (html) and keeps valid JSON + metadata', () => {
+  test('fitEntityToText > elides the largest string field (html) and keeps valid JSON + metadata', t => {
     const tpl = { id: 'tpl1', name: 'Hero', html: huge(40_000), css: huge(2_000) }
     const text = fitEntityToText(tpl)
 
-    expect(text.length).toBeLessThanOrEqual(LIMIT)
+    t.true(text.length <= LIMIT)
     const parsed = JSON.parse(text) // must not throw
-    expect(parsed.id).toBe('tpl1')
-    expect(parsed.name).toBe('Hero')
-    expect(parsed.html).toMatch(/^\[elided: 40000 chars\]$/)
-    expect(parsed._truncated.elided).toContain('html')
+    t.is(parsed.id, 'tpl1')
+    t.is(parsed.name, 'Hero')
+    t.regex(parsed.html, /^\[elided: 40000 chars\]$/)
+    t.true(parsed._truncated.elided.includes('html'))
     // css was small enough to survive once html was elided.
-    expect(parsed.css).toBe(huge(2_000))
+    t.is(parsed.css, huge(2_000))
   })
 
   /**
@@ -31,7 +31,7 @@ describe('fitEntityToText', () => {
    * enough to shed, so the string-only pass could not shrink it and the caller fell
    * through to a bare _truncated note. The readable fields must survive.
    */
-  it('elides a huge array of small strings and keeps the rest of the entity', () => {
+  test('fitEntityToText > elides a huge array of small strings and keeps the rest of the entity', t => {
     const ag = {
       id: 'ducqqp',
       name: 'EasyKnock - click_to_post_direct [Exchange]',
@@ -42,31 +42,31 @@ describe('fitEntityToText', () => {
     }
     const text = fitEntityToText(ag)
 
-    expect(text.length).toBeLessThanOrEqual(LIMIT)
+    t.true(text.length <= LIMIT)
     const parsed = JSON.parse(text)
     // The fields the caller actually needed are intact.
-    expect(parsed.id).toBe('ducqqp')
-    expect(parsed.name).toBe('EasyKnock - click_to_post_direct [Exchange]')
-    expect(parsed.creativeAssetGroupId).toBe('0bckt2')
-    expect(parsed.exceptParams).toEqual({})
+    t.is(parsed.id, 'ducqqp')
+    t.is(parsed.name, 'EasyKnock - click_to_post_direct [Exchange]')
+    t.is(parsed.creativeAssetGroupId, '0bckt2')
+    t.deepEqual(parsed.exceptParams, {})
     // The runaway array is shed as a unit, with its size still visible.
-    expect(parsed.params.zoneId).toMatch(/^\[elided: 20000 items, \d+ chars\]$/)
-    expect(parsed._truncated.elided).toContain('params.zoneId')
+    t.regex(parsed.params.zoneId, /^\[elided: 20000 items, \d+ chars\]$/)
+    t.true(parsed._truncated.elided.includes('params.zoneId'))
   })
 
-  it("tracks nested paths for the include:['parents'] shape", () => {
+  test('fitEntityToText > tracks nested paths for the include:[\'parents\'] shape', t => {
     const wrapped = { entity: { id: 't1', html: huge(40_000) }, parents: [{ id: 'net1', name: 'N' }] }
     const text = fitEntityToText(wrapped)
 
     const parsed = JSON.parse(text)
-    expect(parsed.entity.id).toBe('t1')
-    expect(parsed.entity.html).toMatch(/^\[elided/)
-    expect(parsed._truncated.elided).toContain('entity.html')
-    expect(parsed.parents[0].id).toBe('net1')
+    t.is(parsed.entity.id, 't1')
+    t.regex(parsed.entity.html, /^\[elided/)
+    t.true(parsed._truncated.elided.includes('entity.html'))
+    t.is(parsed.parents[0].id, 'net1')
   })
 
   // The contract: parseable JSON for ANY input, oversized or not.
-  it('never produces unparseable JSON across object / array / primitive / null', () => {
+  test('fitEntityToText > never produces unparseable JSON across object / array / primitive / null', t => {
     const inputs = [
       { id: 'a', blob: huge(60_000) },
       [{ id: '1', body: huge(40_000) }, { id: '2', body: huge(40_000) }],
@@ -77,8 +77,8 @@ describe('fitEntityToText', () => {
     ]
     for (const input of inputs) {
       const text = fitEntityToText(input)
-      expect(() => JSON.parse(text)).not.toThrow()
-      expect(text.length).toBeLessThanOrEqual(LIMIT)
+      t.notThrows(() => JSON.parse(text))
+      t.true(text.length <= LIMIT)
     }
   })
-})
+}
