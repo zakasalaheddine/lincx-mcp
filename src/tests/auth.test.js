@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { loginWithCredentials } from "../services/auth.js";
 
 // Stub global fetch with a canned identity-server response.
-function stubFetch(status: number, body: unknown) {
+function stubFetch(status        , body         ) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async () => new Response(JSON.stringify(body), {

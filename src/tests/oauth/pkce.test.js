@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
 import { verifyPkce } from "../../services/oauth/pkce.js";
 
-function challengeFromVerifier(verifier: string): string {
+function challengeFromVerifier(verifier        )         {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
@@ -20,7 +20,7 @@ describe("verifyPkce", () => {
   });
 
   it("rejects an unsupported method (plain)", () => {
-    expect(verifyPkce("a".repeat(64), "a".repeat(64), "plain" as "S256")).toBe(false);
+    expect(verifyPkce("a".repeat(64), "a".repeat(64), "plain"          )).toBe(false);
   });
 
   it("rejects too-short verifier (< 43 chars per RFC)", () => {

@@ -10,13 +10,13 @@ const api = mockWorkApi();
 const { registerResources } = await import("../tools/resources.js");
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function build(): any {
+function build()      {
   const server = new McpServer({ name: "test", version: "0.0.0" });
   registerResources(server);
   return server;
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const extra = { sessionId: "test-session" } as any;
+const extra = { sessionId: "test-session" }       ;
 
 beforeEach(() => api.reset());
 
@@ -84,14 +84,14 @@ describe("resources (T1-3 / T4-6)", () => {
     try {
       const list = await client.listResources();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect(list.resources.map((r: any) => r.uri)).toContain("lincx://networks");
+      expect(list.resources.map((r     ) => r.uri)).toContain("lincx://networks");
 
       const tmpls = await client.listResourceTemplates();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expect(tmpls.resourceTemplates.map((t: any) => t.uriTemplate)).toContain("lincx://campaign/{id}");
+      expect(tmpls.resourceTemplates.map((t     ) => t.uriTemplate)).toContain("lincx://campaign/{id}");
 
       const read = await client.readResource({ uri: "lincx://networks" });
-      expect(Array.isArray(JSON.parse(read.contents[0].text as string).networks)).toBe(true);
+      expect(Array.isArray(JSON.parse(read.contents[0].text          ).networks)).toBe(true);
     } finally {
       await client.close();
       await server.close();

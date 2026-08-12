@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { selectTargeting, rollupZoneTargeting, fitZoneInventory, type AdGroup, type Inventory, type Row } from "../tools/zoneInventoryTools.js";
+import { selectTargeting, rollupZoneTargeting, fitZoneInventory,                                        } from "../tools/zoneInventoryTools.js";
 
 const ZONE = "8z7wzb";
 const CAG = "0bckt2";
 
-const ag = (over: Partial<AdGroup> = {}): AdGroup => ({
+const ag = (over                   = {})          => ({
   id: "ag1", name: "AG1", enabled: true,
   params: { zoneId: [ZONE] }, campaignId: "c1", creativeAssetGroupId: CAG,
   ...over,
@@ -30,7 +30,7 @@ describe("selectTargeting", () => {
   });
 });
 
-const base = (over: Partial<Parameters<typeof rollupZoneTargeting>[0]> = {}) =>
+const base = (over                                                     = {}) =>
   rollupZoneTargeting({
     zoneId: ZONE,
     zoneCag: CAG,
@@ -162,8 +162,8 @@ describe("rollupZoneTargeting", () => {
 });
 
 // N off rows with realistic-length names.
-const makeInventory = (n: number): Inventory => {
-  const groups: Row[] = Array.from({ length: n }, (_, i) => ({
+const makeInventory = (n        )            => {
+  const groups        = Array.from({ length: n }, (_, i) => ({
     id: `adg${String(i).padStart(4, "0")}`,
     name: `Some Advertiser ${i} - Refinance - QL LRE Match [Exchange]`,
     archived: false, campaign_on: false, adgroup_on: true, has_enabled_ad: true,
@@ -181,15 +181,15 @@ const makeInventory = (n: number): Inventory => {
 // The rollup rides in content text: "<header>\n\n<compact JSON>". Parse the JSON
 // the way the model must — this is the model-visible channel (structuredContent is
 // not surfaced by MCP hosts).
-const payload = (r: { content: { type: "text"; text: string }[] }): {
-  groups?: Row[]; groupIds?: string[]; complete: boolean; namesOmitted?: boolean;
-} => JSON.parse(r.content[0].text.split("\n\n").slice(1).join("\n\n"));
+const payload = (r                                                   
+                                                                                 
+) => JSON.parse(r.content[0].text.split("\n\n").slice(1).join("\n\n"));
 
 describe("fitZoneInventory (never drops ad groups, data in text)", () => {
   it("carries the rollup in content text, not structuredContent", () => {
-    const r = fitZoneInventory(makeInventory(3), 30_000) as Record<string, unknown>;
+    const r = fitZoneInventory(makeInventory(3), 30_000)                           ;
     expect(r.structuredContent).toBeUndefined(); // hosts don't surface it
-    const s = payload(r as { content: { type: "text"; text: string }[] });
+    const s = payload(r                                                 );
     expect(s.groups).toHaveLength(3);
   });
 
@@ -199,7 +199,7 @@ describe("fitZoneInventory (never drops ad groups, data in text)", () => {
     expect(s.complete).toBe(true);
     expect(s.namesOmitted).toBeUndefined();
     expect(s.groups).toHaveLength(83);
-    expect(s.groups![0].name).toBeTruthy();
+    expect(s.groups [0].name).toBeTruthy();
     expect(JSON.stringify(r).length).toBeLessThanOrEqual(30_000);
   });
 
@@ -220,8 +220,8 @@ describe("fitZoneInventory (never drops ad groups, data in text)", () => {
     expect(s.complete).toBe(true);
     expect(s.namesOmitted).toBe(true);
     expect(s.groups).toHaveLength(83); // every ad group still present
-    expect((s.groups![0] as Record<string, unknown>).name).toBeUndefined();
-    expect(s.groups![0].id).toBeTruthy();
+    expect((s.groups [0]                           ).name).toBeUndefined();
+    expect(s.groups [0].id).toBeTruthy();
     expect(JSON.stringify(r).length).toBeLessThanOrEqual(limit);
   });
 

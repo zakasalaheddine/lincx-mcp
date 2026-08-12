@@ -21,12 +21,12 @@ describe("capGroups", () => {
     const groups = Array.from({ length: 5000 }, (_, i) => ({ zone: `zone-${i}`, blob: "x".repeat(200), loads: 5000 - i }));
     const r = capGroups(base, total, groups);
     expect(r.groupsTruncated).toBeDefined();
-    expect(r.groupsTruncated!.total).toBe(5000);
-    expect(r.groups!.length).toBe(r.groupsTruncated!.returned);
-    expect(r.groups!.length).toBeLessThan(5000);
+    expect(r.groupsTruncated .total).toBe(5000);
+    expect(r.groups .length).toBe(r.groupsTruncated .returned);
+    expect(r.groups .length).toBeLessThan(5000);
     // The serialized result stays under the guard.
     expect(JSON.stringify({ ...base, total, groups: r.groups }).length).toBeLessThan(30_000);
     // Top-ranked group (input is pre-sorted desc) survives.
-    expect((r.groups![0] as { zone: string }).zone).toBe("zone-0");
+    expect((r.groups [0]                    ).zone).toBe("zone-0");
   });
 });

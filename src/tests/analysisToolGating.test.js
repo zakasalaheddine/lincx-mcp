@@ -6,10 +6,10 @@ process.env.NODE_ENV = "production";
 const { registerAnalysisTools } = await import("../tools/analysisTools.js");
 
 /** Minimal McpServer stand-in — we only care about which names get registered. */
-function collectRegisteredNames(): string[] {
-  const names: string[] = [];
-  const fake = { registerTool: (name: string) => { names.push(name); } };
-  registerAnalysisTools(fake as never);
+function collectRegisteredNames()           {
+  const names           = [];
+  const fake = { registerTool: (name        ) => { names.push(name); } };
+  registerAnalysisTools(fake         );
   return names;
 }
 
