@@ -23,79 +23,77 @@ const input = (adGroup, ads = []) => ({
   ads
 })
 
-{ // eligibility
-  test('eligibility > free radical: targets zero zones + CAG match → eligible via zone-selection only', t => {
-    const e = eligibility(input({ params: {} }))
-    t.is(e.eligible, true)
-    t.deepEqual(e.via, ['zone-selection'])
-    t.is(e.excluded, false)
-    t.deepEqual(e.reasons, [])
-    t.deepEqual(e.conflicts, [])
-  })
+// eligibility
+test('eligibility > free radical: targets zero zones + CAG match → eligible via zone-selection only', t => {
+  const e = eligibility(input({ params: {} }))
+  t.is(e.eligible, true)
+  t.deepEqual(e.via, ['zone-selection'])
+  t.is(e.excluded, false)
+  t.deepEqual(e.reasons, [])
+  t.deepEqual(e.conflicts, [])
+})
 
-  test('eligibility > directly whitelisted + CAG match → eligible, via ad-group-whitelist + zone-selection', t => {
-    const e = eligibility(input({ params: { zoneId: [ZONE] } }))
-    t.is(e.eligible, true)
-    t.deepEqual(e.via, ['ad-group-whitelist', 'zone-selection'])
-  })
+test('eligibility > directly whitelisted + CAG match → eligible, via ad-group-whitelist + zone-selection', t => {
+  const e = eligibility(input({ params: { zoneId: [ZONE] } }))
+  t.is(e.eligible, true)
+  t.deepEqual(e.via, ['ad-group-whitelist', 'zone-selection'])
+})
 
-  test('eligibility > targets a DIFFERENT zone (same CAG) → not eligible, targets-other-zones', t => {
-    const e = eligibility(input({ params: { zoneId: ['other1', 'other2'] } }))
-    t.is(e.eligible, false)
-    t.deepEqual(e.reasons, ['targets-other-zones'])
-    t.deepEqual(e.via, ['zone-selection']) // CAG still matches, just not scoped in
-  })
+test('eligibility > targets a DIFFERENT zone (same CAG) → not eligible, targets-other-zones', t => {
+  const e = eligibility(input({ params: { zoneId: ['other1', 'other2'] } }))
+  t.is(e.eligible, false)
+  t.deepEqual(e.reasons, ['targets-other-zones'])
+  t.deepEqual(e.via, ['zone-selection']) // CAG still matches, just not scoped in
+})
 
-  test('eligibility > blacklist wins: zone in exceptParams → excluded even with a whitelist', t => {
-    const e = eligibility(input({ params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } }))
-    t.is(e.eligible, false)
-    t.is(e.excluded, true)
-    t.true(e.reasons.includes('blacklisted'))
-    t.true(e.conflicts.includes('targets-and-excepts'))
-  })
+test('eligibility > blacklist wins: zone in exceptParams → excluded even with a whitelist', t => {
+  const e = eligibility(input({ params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } }))
+  t.is(e.eligible, false)
+  t.is(e.excluded, true)
+  t.true(e.reasons.includes('blacklisted'))
+  t.true(e.conflicts.includes('targets-and-excepts'))
+})
 
-  test('eligibility > CAG mismatch with a whitelist → not eligible, cag-mismatch + whitelisted-cag-mismatch conflict', t => {
-    const e = eligibility(input({ params: { zoneId: [ZONE] }, creativeAssetGroupId: 'other' }))
-    t.is(e.eligible, false)
-    t.true(e.reasons.includes('cag-mismatch'))
-    t.deepEqual(e.conflicts, ['whitelisted-cag-mismatch'])
-  })
+test('eligibility > CAG mismatch with a whitelist → not eligible, cag-mismatch + whitelisted-cag-mismatch conflict', t => {
+  const e = eligibility(input({ params: { zoneId: [ZONE] }, creativeAssetGroupId: 'other' }))
+  t.is(e.eligible, false)
+  t.true(e.reasons.includes('cag-mismatch'))
+  t.deepEqual(e.conflicts, ['whitelisted-cag-mismatch'])
+})
 
-  test('eligibility > ad-level params do NOT decide group eligibility (per-ad is a later check): an ad whitelisting the zone can\'t make a group that targets other zones eligible', t => {
-    const e = eligibility(input({ params: { zoneId: ['other'] } }, [{ id: 'ad1', params: { zoneId: [ZONE] } }]))
-    t.is(e.eligible, false)
-    t.deepEqual(e.reasons, ['targets-other-zones'])
-    t.deepEqual(e.via, ['zone-selection']) // no ad-level-whitelist in group via
-  })
+test('eligibility > ad-level params do NOT decide group eligibility (per-ad is a later check): an ad whitelisting the zone can\'t make a group that targets other zones eligible', t => {
+  const e = eligibility(input({ params: { zoneId: ['other'] } }, [{ id: 'ad1', params: { zoneId: [ZONE] } }]))
+  t.is(e.eligible, false)
+  t.deepEqual(e.reasons, ['targets-other-zones'])
+  t.deepEqual(e.via, ['zone-selection']) // no ad-level-whitelist in group via
+})
 
-  test('eligibility > archived ad group is never eligible (out of service), even if whitelisted + CAG match', t => {
-    const e = eligibility(input({ params: { zoneId: [ZONE] }, archived: true }))
-    t.is(e.eligible, false)
-    t.deepEqual(e.reasons, ['archived'])
-  })
+test('eligibility > archived ad group is never eligible (out of service), even if whitelisted + CAG match', t => {
+  const e = eligibility(input({ params: { zoneId: [ZONE] }, archived: true }))
+  t.is(e.eligible, false)
+  t.deepEqual(e.reasons, ['archived'])
+})
 
-  test('eligibility > free radical only within its CAG: zero zones but CAG mismatch → not eligible', t => {
-    const e = eligibility(input({ params: {}, creativeAssetGroupId: 'other' }))
-    t.is(e.eligible, false)
-    t.deepEqual(e.reasons, ['cag-mismatch'])
-    t.deepEqual(e.via, [])
-  })
-}
+test('eligibility > free radical only within its CAG: zero zones but CAG mismatch → not eligible', t => {
+  const e = eligibility(input({ params: {}, creativeAssetGroupId: 'other' }))
+  t.is(e.eligible, false)
+  t.deepEqual(e.reasons, ['cag-mismatch'])
+  t.deepEqual(e.via, [])
+})
 
-{ // adServesInZone (per-ad last targeting check)
-  test('adServesInZone (per-ad last targeting check) > ad with no params serves wherever its group is eligible', t => {
-    t.is(adServesInZone({ id: 'a' }, ZONE), true)
-  })
-  test('adServesInZone (per-ad last targeting check) > ad blacklisting the zone does not serve there (its siblings still do)', t => {
-    t.is(adServesInZone({ id: 'a', exceptParams: { zoneId: [ZONE] } }, ZONE), false)
-  })
-  test('adServesInZone (per-ad last targeting check) > ad whitelisting only other zones is confined there → does not serve here', t => {
-    t.is(adServesInZone({ id: 'a', params: { zoneId: ['other'] } }, ZONE), false)
-  })
-  test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone serves here', t => {
-    t.is(adServesInZone({ id: 'a', params: { zoneId: [ZONE] } }, ZONE), true)
-  })
-}
+// adServesInZone (per-ad last targeting check)
+test('adServesInZone (per-ad last targeting check) > ad with no params serves wherever its group is eligible', t => {
+  t.is(adServesInZone({ id: 'a' }, ZONE), true)
+})
+test('adServesInZone (per-ad last targeting check) > ad blacklisting the zone does not serve there (its siblings still do)', t => {
+  t.is(adServesInZone({ id: 'a', exceptParams: { zoneId: [ZONE] } }, ZONE), false)
+})
+test('adServesInZone (per-ad last targeting check) > ad whitelisting only other zones is confined there → does not serve here', t => {
+  t.is(adServesInZone({ id: 'a', params: { zoneId: ['other'] } }, ZONE), false)
+})
+test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone serves here', t => {
+  t.is(adServesInZone({ id: 'a', params: { zoneId: [ZONE] } }, ZONE), true)
+})
 
 { // zoneEligibility (zone → groups, bucketed by scoping)
   const groups = [

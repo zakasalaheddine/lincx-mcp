@@ -35,178 +35,174 @@ async function registerClient (redirectUri = 'http://localhost:9999/callback') {
 
 // ── /health ──────────────────────────────────────────────────────────────────
 
-{ // contract: /health
-  test('contract: /health > 200 with status ok', async t => {
-    const r = await request(app).get('/health')
-    t.is(r.status, 200)
-    t.is(r.body.status, 'ok')
-    t.is(typeof r.body.uptime_s, 'number')
-  })
-}
+// contract: /health
+test('contract: /health > 200 with status ok', async t => {
+  const r = await request(app).get('/health')
+  t.is(r.status, 200)
+  t.is(r.body.status, 'ok')
+  t.is(typeof r.body.uptime_s, 'number')
+})
 
 // ── OAuth discovery ──────────────────────────────────────────────────────────
 
-{ // contract: OAuth discovery
-  test('contract: OAuth discovery > serves authorization-server metadata', async t => {
-    const r = await request(app).get('/.well-known/oauth-authorization-server')
-    t.is(r.status, 200)
-    t.not(r.body.issuer, undefined)
-    t.regex(r.body.authorization_endpoint, /\/oauth\/authorize$/)
-    t.regex(r.body.token_endpoint, /\/oauth\/token$/)
-    t.regex(r.body.registration_endpoint, /\/oauth\/register$/)
-    t.deepEqual(r.body.response_types_supported, ['code'])
-    t.deepEqual(r.body.grant_types_supported, ['authorization_code', 'refresh_token'])
-    t.deepEqual(r.body.code_challenge_methods_supported, ['S256'])
-    t.deepEqual(r.body.token_endpoint_auth_methods_supported, ['none'])
-    t.deepEqual(r.body.scopes_supported, ['mcp'])
-  })
+// contract: OAuth discovery
+test('contract: OAuth discovery > serves authorization-server metadata', async t => {
+  const r = await request(app).get('/.well-known/oauth-authorization-server')
+  t.is(r.status, 200)
+  t.not(r.body.issuer, undefined)
+  t.regex(r.body.authorization_endpoint, /\/oauth\/authorize$/)
+  t.regex(r.body.token_endpoint, /\/oauth\/token$/)
+  t.regex(r.body.registration_endpoint, /\/oauth\/register$/)
+  t.deepEqual(r.body.response_types_supported, ['code'])
+  t.deepEqual(r.body.grant_types_supported, ['authorization_code', 'refresh_token'])
+  t.deepEqual(r.body.code_challenge_methods_supported, ['S256'])
+  t.deepEqual(r.body.token_endpoint_auth_methods_supported, ['none'])
+  t.deepEqual(r.body.scopes_supported, ['mcp'])
+})
 
-  test('contract: OAuth discovery > serves protected-resource metadata at the ROOT form', async t => {
-    const r = await request(app).get('/.well-known/oauth-protected-resource')
-    t.is(r.status, 200)
-    t.regex(r.body.resource, /\/mcp$/)
-    t.deepEqual(r.body.bearer_methods_supported, ['header'])
-  })
+test('contract: OAuth discovery > serves protected-resource metadata at the ROOT form', async t => {
+  const r = await request(app).get('/.well-known/oauth-protected-resource')
+  t.is(r.status, 200)
+  t.regex(r.body.resource, /\/mcp$/)
+  t.deepEqual(r.body.bearer_methods_supported, ['header'])
+})
 
-  test('contract: OAuth discovery > serves protected-resource metadata at the RFC-9728 path-suffixed form', async t => {
-    // RFC 9728 §3.1 — spec-conformant clients build this form and ignore the root.
-    // Both must work or discovery breaks for some clients.
-    const r = await request(app).get('/.well-known/oauth-protected-resource/mcp')
-    t.is(r.status, 200)
-    t.regex(r.body.resource, /\/mcp$/)
-  })
-}
+test('contract: OAuth discovery > serves protected-resource metadata at the RFC-9728 path-suffixed form', async t => {
+  // RFC 9728 §3.1 — spec-conformant clients build this form and ignore the root.
+  // Both must work or discovery breaks for some clients.
+  const r = await request(app).get('/.well-known/oauth-protected-resource/mcp')
+  t.is(r.status, 200)
+  t.regex(r.body.resource, /\/mcp$/)
+})
 
 // ── Dynamic client registration ──────────────────────────────────────────────
 
-{ // contract: dynamic client registration
-  test('contract: dynamic client registration > 201 with a client_id for a valid redirect_uri', async t => {
-    const r = await request(app)
-      .post('/oauth/register')
-      .send({ redirect_uris: ['http://localhost:9999/callback'], client_name: 'contract' })
-    t.is(r.status, 201)
-    t.is(typeof r.body.client_id, 'string')
-    t.is(r.body.client_id.length, 32)
-    t.is(typeof r.body.client_id_issued_at, 'number')
-    t.is(r.body.token_endpoint_auth_method, 'none')
-    t.deepEqual(r.body.grant_types, ['authorization_code', 'refresh_token'])
-    t.deepEqual(r.body.response_types, ['code'])
-  })
+// contract: dynamic client registration
+test('contract: dynamic client registration > 201 with a client_id for a valid redirect_uri', async t => {
+  const r = await request(app)
+    .post('/oauth/register')
+    .send({ redirect_uris: ['http://localhost:9999/callback'], client_name: 'contract' })
+  t.is(r.status, 201)
+  t.is(typeof r.body.client_id, 'string')
+  t.is(r.body.client_id.length, 32)
+  t.is(typeof r.body.client_id_issued_at, 'number')
+  t.is(r.body.token_endpoint_auth_method, 'none')
+  t.deepEqual(r.body.grant_types, ['authorization_code', 'refresh_token'])
+  t.deepEqual(r.body.response_types, ['code'])
+})
 
-  test('contract: dynamic client registration > accepts an https redirect_uri', async t => {
-    const r = await request(app)
-      .post('/oauth/register')
-      .send({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] })
-    t.is(r.status, 201)
-  })
+test('contract: dynamic client registration > accepts an https redirect_uri', async t => {
+  const r = await request(app)
+    .post('/oauth/register')
+    .send({ redirect_uris: ['https://claude.ai/api/mcp/auth_callback'] })
+  t.is(r.status, 201)
+})
 
-  test('contract: dynamic client registration > 400 invalid_redirect_uri when redirect_uris is missing', async t => {
-    const r = await request(app).post('/oauth/register').send({ client_name: 'bad' })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'invalid_redirect_uri')
-  })
+test('contract: dynamic client registration > 400 invalid_redirect_uri when redirect_uris is missing', async t => {
+  const r = await request(app).post('/oauth/register').send({ client_name: 'bad' })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'invalid_redirect_uri')
+})
 
-  test('contract: dynamic client registration > 400 invalid_redirect_uri for a non-https, non-localhost URI', async t => {
-    const r = await request(app)
-      .post('/oauth/register')
-      .send({ redirect_uris: ['http://evil.example.com/cb'] })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'invalid_redirect_uri')
-  })
+test('contract: dynamic client registration > 400 invalid_redirect_uri for a non-https, non-localhost URI', async t => {
+  const r = await request(app)
+    .post('/oauth/register')
+    .send({ redirect_uris: ['http://evil.example.com/cb'] })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'invalid_redirect_uri')
+})
 
-  test('contract: dynamic client registration > 400 on a malformed JSON body', async t => {
-    // express.json() rejects this via body-parser. A hand-rolled reader that
-    // lets JSON.parse throw would surface a 500 instead — pinned so it can't.
-    const r = await request(app)
-      .post('/oauth/register')
-      .set('Content-Type', 'application/json')
-      .send('{not json')
-    t.is(r.status, 400)
-  })
+test('contract: dynamic client registration > 400 on a malformed JSON body', async t => {
+  // express.json() rejects this via body-parser. A hand-rolled reader that
+  // lets JSON.parse throw would surface a 500 instead — pinned so it can't.
+  const r = await request(app)
+    .post('/oauth/register')
+    .set('Content-Type', 'application/json')
+    .send('{not json')
+  t.is(r.status, 400)
+})
 
-  test('contract: dynamic client registration > 413 on a body over the 100kb limit', async t => {
-    // express.json()'s default limit. Re-implementing the body reader silently
-    // re-implements this trust boundary — pinned so the limit cannot vanish.
-    const big = JSON.stringify({
-      redirect_uris: ['https://example.com/cb'],
-      client_name: 'x'.repeat(200_000)
-    })
-    const r = await request(app)
-      .post('/oauth/register')
-      .set('Content-Type', 'application/json')
-      .send(big)
-    t.is(r.status, 413)
+test('contract: dynamic client registration > 413 on a body over the 100kb limit', async t => {
+  // express.json()'s default limit. Re-implementing the body reader silently
+  // re-implements this trust boundary — pinned so the limit cannot vanish.
+  const big = JSON.stringify({
+    redirect_uris: ['https://example.com/cb'],
+    client_name: 'x'.repeat(200_000)
   })
-}
+  const r = await request(app)
+    .post('/oauth/register')
+    .set('Content-Type', 'application/json')
+    .send(big)
+  t.is(r.status, 413)
+})
 
 // ── Token endpoint ───────────────────────────────────────────────────────────
 
-{ // contract: token endpoint
-  test('contract: token endpoint > 400 unsupported_grant_type for an unknown grant', async t => {
-    const r = await request(app).post('/oauth/token').send({ grant_type: 'password' })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'unsupported_grant_type')
-  })
+// contract: token endpoint
+test('contract: token endpoint > 400 unsupported_grant_type for an unknown grant', async t => {
+  const r = await request(app).post('/oauth/token').send({ grant_type: 'password' })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'unsupported_grant_type')
+})
 
-  test('contract: token endpoint > 400 unsupported_grant_type for a missing grant_type', async t => {
-    const r = await request(app).post('/oauth/token').send({})
-    t.is(r.status, 400)
-    t.is(r.body.error, 'unsupported_grant_type')
-  })
+test('contract: token endpoint > 400 unsupported_grant_type for a missing grant_type', async t => {
+  const r = await request(app).post('/oauth/token').send({})
+  t.is(r.status, 400)
+  t.is(r.body.error, 'unsupported_grant_type')
+})
 
-  test('contract: token endpoint > 400 invalid_request when authorization_code fields are missing', async t => {
-    const r = await request(app).post('/oauth/token').send({ grant_type: 'authorization_code' })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'invalid_request')
-  })
+test('contract: token endpoint > 400 invalid_request when authorization_code fields are missing', async t => {
+  const r = await request(app).post('/oauth/token').send({ grant_type: 'authorization_code' })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'invalid_request')
+})
 
-  test('contract: token endpoint > 400 invalid_client for an unknown client_id', async t => {
-    const r = await request(app).post('/oauth/token').send({
-      grant_type: 'authorization_code',
-      code: 'x',
-      redirect_uri: 'http://localhost:9999/callback',
-      client_id: 'does-not-exist',
-      code_verifier: 'v'
-    })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'invalid_client')
+test('contract: token endpoint > 400 invalid_client for an unknown client_id', async t => {
+  const r = await request(app).post('/oauth/token').send({
+    grant_type: 'authorization_code',
+    code: 'x',
+    redirect_uri: 'http://localhost:9999/callback',
+    client_id: 'does-not-exist',
+    code_verifier: 'v'
   })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'invalid_client')
+})
 
-  test('contract: token endpoint > 400 invalid_grant for an unknown code on a known client', async t => {
-    const clientId = await registerClient()
-    const r = await request(app).post('/oauth/token').send({
-      grant_type: 'authorization_code',
-      code: 'not-a-real-code',
-      redirect_uri: 'http://localhost:9999/callback',
-      client_id: clientId,
-      code_verifier: 'v'
-    })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'invalid_grant')
+test('contract: token endpoint > 400 invalid_grant for an unknown code on a known client', async t => {
+  const clientId = await registerClient()
+  const r = await request(app).post('/oauth/token').send({
+    grant_type: 'authorization_code',
+    code: 'not-a-real-code',
+    redirect_uri: 'http://localhost:9999/callback',
+    client_id: clientId,
+    code_verifier: 'v'
   })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'invalid_grant')
+})
 
-  test('contract: token endpoint > 400 invalid_request when refresh_token fields are missing', async t => {
-    const r = await request(app).post('/oauth/token').send({ grant_type: 'refresh_token' })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'invalid_request')
-  })
+test('contract: token endpoint > 400 invalid_request when refresh_token fields are missing', async t => {
+  const r = await request(app).post('/oauth/token').send({ grant_type: 'refresh_token' })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'invalid_request')
+})
 
-  test('contract: token endpoint > 400 invalid_grant for an unknown refresh_token', async t => {
-    const r = await request(app)
-      .post('/oauth/token')
-      .send({ grant_type: 'refresh_token', refresh_token: 'nope', client_id: 'nope' })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'invalid_grant')
-  })
+test('contract: token endpoint > 400 invalid_grant for an unknown refresh_token', async t => {
+  const r = await request(app)
+    .post('/oauth/token')
+    .send({ grant_type: 'refresh_token', refresh_token: 'nope', client_id: 'nope' })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'invalid_grant')
+})
 
-  test('contract: token endpoint > accepts an application/x-www-form-urlencoded body', async t => {
-    // Several OAuth clients post form-encoded rather than JSON. The replacement
-    // body reader must handle both content types.
-    const r = await request(app).post('/oauth/token').type('form').send({ grant_type: 'password' })
-    t.is(r.status, 400)
-    t.is(r.body.error, 'unsupported_grant_type')
-  })
-}
+test('contract: token endpoint > accepts an application/x-www-form-urlencoded body', async t => {
+  // Several OAuth clients post form-encoded rather than JSON. The replacement
+  // body reader must handle both content types.
+  const r = await request(app).post('/oauth/token').type('form').send({ grant_type: 'password' })
+  t.is(r.status, 400)
+  t.is(r.body.error, 'unsupported_grant_type')
+})
 
 // ── Authorize + login UI ─────────────────────────────────────────────────────
 
@@ -264,71 +260,69 @@ async function registerClient (redirectUri = 'http://localhost:9999/callback') {
   })
 }
 
-{ // contract: login UI
-  test('contract: login UI > 400 HTML for /login without a req id', async t => {
-    const r = await request(app).get('/login')
-    t.is(r.status, 400)
-    t.regex(r.headers['content-type'], /html/)
-  })
+// contract: login UI
+test('contract: login UI > 400 HTML for /login without a req id', async t => {
+  const r = await request(app).get('/login')
+  t.is(r.status, 400)
+  t.regex(r.headers['content-type'], /html/)
+})
 
-  test('contract: login UI > 400 HTML for /login with an expired req id', async t => {
-    const r = await request(app).get('/login?req=deadbeefdeadbeefdeadbeefdeadbeef')
-    t.is(r.status, 400)
-    t.regex(r.text, /expired/i)
-  })
+test('contract: login UI > 400 HTML for /login with an expired req id', async t => {
+  const r = await request(app).get('/login?req=deadbeefdeadbeefdeadbeefdeadbeef')
+  t.is(r.status, 400)
+  t.regex(r.text, /expired/i)
+})
 
-  test('contract: login UI > serves the login page for a live req id', async t => {
-    const clientId = await registerClient()
-    const auth = await request(app).get(
-      `/oauth/authorize?response_type=code&client_id=${clientId}` +
-        `&redirect_uri=${encodeURIComponent('http://localhost:9999/callback')}` +
-        '&state=st&code_challenge=chal&code_challenge_method=S256'
-    )
-    const reqId = new URL(auth.headers.location, 'http://x').searchParams.get('req')
-    const r = await request(app).get(`/login?req=${reqId}`)
-    t.is(r.status, 200)
-    t.regex(r.headers['content-type'], /html/)
-    t.true(r.text.includes(reqId))
-  })
+test('contract: login UI > serves the login page for a live req id', async t => {
+  const clientId = await registerClient()
+  const auth = await request(app).get(
+    `/oauth/authorize?response_type=code&client_id=${clientId}` +
+      `&redirect_uri=${encodeURIComponent('http://localhost:9999/callback')}` +
+      '&state=st&code_challenge=chal&code_challenge_method=S256'
+  )
+  const reqId = new URL(auth.headers.location, 'http://x').searchParams.get('req')
+  const r = await request(app).get(`/login?req=${reqId}`)
+  t.is(r.status, 200)
+  t.regex(r.headers['content-type'], /html/)
+  t.true(r.text.includes(reqId))
+})
 
-  test('contract: login UI > serves the success page as HTML', async t => {
-    const r = await request(app).get('/login/success')
-    t.is(r.status, 200)
-    t.regex(r.headers['content-type'], /html/)
-  })
+test('contract: login UI > serves the success page as HTML', async t => {
+  const r = await request(app).get('/login/success')
+  t.is(r.status, 200)
+  t.regex(r.headers['content-type'], /html/)
+})
 
-  test('contract: login UI > 400 JSON for POST /api/login without a req id', async t => {
-    const r = await request(app).post('/api/login').send({ email: 'a@b.c', password: 'p' })
-    t.is(r.status, 400)
-    t.is(r.body.success, false)
-    t.regex(r.body.error, /request id/i)
-  })
+test('contract: login UI > 400 JSON for POST /api/login without a req id', async t => {
+  const r = await request(app).post('/api/login').send({ email: 'a@b.c', password: 'p' })
+  t.is(r.status, 400)
+  t.is(r.body.success, false)
+  t.regex(r.body.error, /request id/i)
+})
 
-  test('contract: login UI > 400 JSON for POST /api/login without credentials', async t => {
-    const r = await request(app).post('/api/login?req=abc').send({})
-    t.is(r.status, 400)
-    t.regex(r.body.error, /required/i)
-  })
+test('contract: login UI > 400 JSON for POST /api/login without credentials', async t => {
+  const r = await request(app).post('/api/login?req=abc').send({})
+  t.is(r.status, 400)
+  t.regex(r.body.error, /required/i)
+})
 
-  test('contract: login UI > 400 JSON for POST /api/login with an expired req id', async t => {
-    const r = await request(app)
-      .post('/api/login?req=deadbeefdeadbeefdeadbeefdeadbeef')
-      .send({ email: 'a@b.c', password: 'p' })
-    t.is(r.status, 400)
-    t.regex(r.body.error, /expired/i)
-  })
-}
+test('contract: login UI > 400 JSON for POST /api/login with an expired req id', async t => {
+  const r = await request(app)
+    .post('/api/login?req=deadbeefdeadbeefdeadbeefdeadbeef')
+    .send({ email: 'a@b.c', password: 'p' })
+  t.is(r.status, 400)
+  t.regex(r.body.error, /expired/i)
+})
 
 // ── /stats gating ────────────────────────────────────────────────────────────
 
-{ // contract: /stats gating
-  test('contract: /stats gating > 404s when STATS_TOKEN is unset, so it is never accidentally public', async t => {
-    // vitest.config.js pins STATS_TOKEN="" so this does not depend on the
-    // developer's .env. constants.js reads it at module scope.
-    const r = await request(app).get('/stats')
-    t.is(r.status, 404)
-  })
-}
+// contract: /stats gating
+test('contract: /stats gating > 404s when STATS_TOKEN is unset, so it is never accidentally public', async t => {
+  // The ava config pins STATS_TOKEN="" so this does not depend on the
+  // developer's .env. constants.js reads it at module scope.
+  const r = await request(app).get('/stats')
+  t.is(r.status, 404)
+})
 
 // ── Method dispatch ──────────────────────────────────────────────────────────
 

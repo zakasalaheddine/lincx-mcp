@@ -12,23 +12,22 @@ const jwt = (payload) => `${b64url({ alg: 'none', typ: 'JWT' })}.${b64url(payloa
 
 const NOW = 1_700_000_000_000 // fixed clock for determinism
 
-{ // getJwtExpiry / isJwtExpired
-  test.serial('getJwtExpiry / isJwtExpired > reads a numeric exp claim', t => {
-    t.is(getJwtExpiry(jwt({ exp: 1234 })), 1234)
-  })
+// getJwtExpiry / isJwtExpired
+test.serial('getJwtExpiry / isJwtExpired > reads a numeric exp claim', t => {
+  t.is(getJwtExpiry(jwt({ exp: 1234 })), 1234)
+})
 
-  test.serial('getJwtExpiry / isJwtExpired > returns null for non-JWTs and missing/invalid exp', t => {
-    t.is(getJwtExpiry('not-a-jwt'), null)
-    t.is(getJwtExpiry('a.b.c'), null) // payload not JSON
-    t.is(getJwtExpiry(jwt({ sub: 'x' })), null) // no exp
-  })
+test.serial('getJwtExpiry / isJwtExpired > returns null for non-JWTs and missing/invalid exp', t => {
+  t.is(getJwtExpiry('not-a-jwt'), null)
+  t.is(getJwtExpiry('a.b.c'), null) // payload not JSON
+  t.is(getJwtExpiry(jwt({ sub: 'x' })), null) // no exp
+})
 
-  test.serial('getJwtExpiry / isJwtExpired > is expired only when exp has passed; fails open when unreadable', t => {
-    t.is(isJwtExpired(jwt({ exp: Math.floor(NOW / 1000) - 60 }), NOW), true)
-    t.is(isJwtExpired(jwt({ exp: Math.floor(NOW / 1000) + 60 }), NOW), false)
-    t.is(isJwtExpired('not-a-jwt', NOW), false) // fail open — let the API decide
-  })
-}
+test.serial('getJwtExpiry / isJwtExpired > is expired only when exp has passed; fails open when unreadable', t => {
+  t.is(isJwtExpired(jwt({ exp: Math.floor(NOW / 1000) - 60 }), NOW), true)
+  t.is(isJwtExpired(jwt({ exp: Math.floor(NOW / 1000) + 60 }), NOW), false)
+  t.is(isJwtExpired('not-a-jwt', NOW), false) // fail open — let the API decide
+})
 
 { // validateSession token-expiry gate
   const baseSession = (token) => ({

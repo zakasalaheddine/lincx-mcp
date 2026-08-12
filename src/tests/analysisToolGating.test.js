@@ -13,11 +13,10 @@ function collectRegisteredNames () {
   return names
 }
 
-{ // analysis tool registration under NODE_ENV=production
-  test('analysis tool registration under NODE_ENV=production > hides create_analysis but keeps the read tools', t => {
-    const names = collectRegisteredNames()
-    t.false(names.includes('create_analysis'))
-    t.true(names.includes('get_analysis'))
-    t.true(names.includes('list_analyses'))
-  })
-}
+// analysis tool registration under NODE_ENV=production
+test('analysis tool registration under NODE_ENV=production > hides create_analysis but keeps the read tools', t => {
+  const names = collectRegisteredNames()
+  t.false(names.includes('create_analysis'))
+  t.true(names.includes('get_analysis'))
+  t.true(names.includes('list_analyses'))
+})
