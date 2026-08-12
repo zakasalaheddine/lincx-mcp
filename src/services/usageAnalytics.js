@@ -153,8 +153,8 @@ export function computeStats (events) {
   const byUser = new Map()
   for (const e of events) {
     if (!e.user_id) continue
-    const u = byUser.get(e.user_id) ?? { email: e.email, calls: 0, tools: new Set(), first: e.js, last: e.js }
-    u.calls++; u.tools.add(e.name); u.first = Math.min(u.first, e.js); u.last = Math.max(u.last, e.js)
+    const u = byUser.get(e.user_id) ?? { email: e.email, calls: 0, tools: new Set(), first: e.ts, last: e.ts }
+    u.calls++; u.tools.add(e.name); u.first = Math.min(u.first, e.ts); u.last = Math.max(u.last, e.ts)
     byUser.set(e.user_id, u)
   }
   const users = [...byUser.entries()].map(([user_id, u]) => ({
@@ -181,7 +181,7 @@ export function computeStats (events) {
   const transitions = {}
   const recent = []
   for (const [session, arr] of bySession) {
-    arr.sort((a, b) => a.js - b.js)
+    arr.sort((a, b) => a.ts - b.ts)
     const toolNames = arr.map((e) => e.name)
     for (let i = 1; i < toolNames.length; i++) {
       const key = `${toolNames[i - 1]}>${toolNames[i]}`
@@ -194,8 +194,8 @@ export function computeStats (events) {
   let oldest = Infinity
   let newest = -Infinity
   for (const e of events) {
-    if (e.js < oldest) oldest = e.js
-    if (e.js > newest) newest = e.js
+    if (e.ts < oldest) oldest = e.ts
+    if (e.ts > newest) newest = e.ts
   }
 
   return {
