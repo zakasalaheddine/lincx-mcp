@@ -1,26 +1,26 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import request from 'supertest'
 import express from 'express'
 import { oauthRegisterRouter } from '../../routes/oauthRegister.js'
 
-describe('POST /oauth/register', () => {
+{ // POST /oauth/register
   const app = express()
   app.use(express.json())
   app.use('/oauth', oauthRegisterRouter)
 
-  it('registers a client', async () => {
+  test('POST /oauth/register > registers a client', async t => {
     const res = await request(app).post('/oauth/register').send({
       redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
       client_name: 'Claude'
     })
-    expect(res.status).toBe(201)
-    expect(res.body.client_id).toMatch(/^[a-f0-9]{32}$/)
-    expect(res.body.redirect_uris).toEqual(['https://claude.ai/api/mcp/auth_callback'])
+    t.is(res.status, 201)
+    t.regex(res.body.client_id, /^[a-f0-9]{32}$/)
+    t.deepEqual(res.body.redirect_uris, ['https://claude.ai/api/mcp/auth_callback'])
   })
 
-  it('rejects missing redirect_uris', async () => {
+  test('POST /oauth/register > rejects missing redirect_uris', async t => {
     const res = await request(app).post('/oauth/register').send({})
-    expect(res.status).toBe(400)
-    expect(res.body.error).toBe('invalid_redirect_uri')
+    t.is(res.status, 400)
+    t.is(res.body.error, 'invalid_redirect_uri')
   })
-})
+}

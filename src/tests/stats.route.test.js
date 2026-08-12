@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import request from 'supertest'
 
 // Set the token BEFORE importing constants/route (constants read env at load).
@@ -13,30 +13,30 @@ function app () {
   return a
 }
 
-describe('GET /stats', () => {
-  it('401s without the right bearer token', async () => {
+{ // GET /stats
+  test('GET /stats > 401s without the right bearer token', async t => {
     const res = await request(app()).get('/stats')
-    expect(res.status).toBe(401)
+    t.is(res.status, 401)
   })
 
-  it('returns the stats payload with the right bearer token', async () => {
+  test('GET /stats > returns the stats payload with the right bearer token', async t => {
     const res = await request(app()).get('/stats').set('Authorization', 'Bearer secret-xyz')
-    expect(res.status).toBe(200)
-    expect(res.body).toHaveProperty('window')
-    expect(res.body).toHaveProperty('tools')
-    expect(res.body).toHaveProperty('users')
-    expect(res.body).toHaveProperty('errors')
-    expect(res.body).toHaveProperty('sequences')
+    t.is(res.status, 200)
+    t.true('window' in res.body)
+    t.true('tools' in res.body)
+    t.true('users' in res.body)
+    t.true('errors' in res.body)
+    t.true('sequences' in res.body)
   })
 
-  it('accepts the token as a ?token= query param (browser-friendly)', async () => {
+  test('GET /stats > accepts the token as a ?token= query param (browser-friendly)', async t => {
     const res = await request(app()).get('/stats?token=secret-xyz')
-    expect(res.status).toBe(200)
-    expect(res.body).toHaveProperty('window')
+    t.is(res.status, 200)
+    t.true('window' in res.body)
   })
 
-  it('401s on a wrong ?token= value', async () => {
+  test('GET /stats > 401s on a wrong ?token= value', async t => {
     const res = await request(app()).get('/stats?token=nope')
-    expect(res.status).toBe(401)
+    t.is(res.status, 401)
   })
-})
+}
