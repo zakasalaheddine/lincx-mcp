@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 
 // constants.js reads NODE_ENV at load, so set it BEFORE importing the tools.
 process.env.NODE_ENV = 'production'
@@ -13,11 +13,11 @@ function collectRegisteredNames () {
   return names
 }
 
-describe('analysis tool registration under NODE_ENV=production', () => {
-  it('hides create_analysis but keeps the read tools', () => {
+{ // analysis tool registration under NODE_ENV=production
+  test('analysis tool registration under NODE_ENV=production > hides create_analysis but keeps the read tools', t => {
     const names = collectRegisteredNames()
-    expect(names).not.toContain('create_analysis')
-    expect(names).toContain('get_analysis')
-    expect(names).toContain('list_analyses')
+    t.false(names.includes('create_analysis'))
+    t.true(names.includes('get_analysis'))
+    t.true(names.includes('list_analyses'))
   })
-})
+}
