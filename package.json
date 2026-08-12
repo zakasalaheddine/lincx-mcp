@@ -14,7 +14,9 @@
     "dev:local": "node --watch --env-file=.env src/index.js",
     "redis:stop": "docker compose -f docker-compose.dev.yml stop redis",
     "test": "ava",
-    "test:watch": "ava --watch"
+    "test:watch": "ava --watch",
+    "smoke": "node scripts/smoke-prod.mjs",
+    "soak": "node scripts/soak.mjs"
   },
   "dependencies": {
     "@google-cloud/secret-manager": "^7.0.0",

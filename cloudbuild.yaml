@@ -18,8 +18,11 @@ steps:
     entrypoint: gcloud
     args: ['app', 'deploy', 'app.yaml', '--quiet']
 
-# A post-deploy smoke step is added in #69 Task 28, once scripts/smoke-prod.mjs
-# exists — referencing it from here before then would fail every build.
+  # Read-only, unauthenticated post-deploy check (#69 Task 28). It is what catches a
+  # PUBLIC_BASE_URL mismatch, which otherwise breaks OAuth with no client-side error.
+  - name: 'node:22'
+    entrypoint: node
+    args: ['scripts/smoke-prod.mjs', 'https://mcp.lincx.com']
 
 options:
   logging: CLOUD_LOGGING_ONLY

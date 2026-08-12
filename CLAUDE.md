@@ -214,6 +214,8 @@ npm install          # first time only
 npm start            # run the server (node src/index.js) on PORT — no build step
 npm run lint         # standard src/ scripts/ — the compiler's replacement
 npm test             # ava (config lives in package.json)
+npm run smoke <url>  # read-only post-deploy checks against a live server
+npm run soak  <url>  # SOAK_TOKEN=… — holds a session an hour, proves ONE instance
 npm run dev          # cloudflared tunnel + node --watch (see below)
 npm run dev:local    # node --watch only — no tunnel, http://localhost:5001
 ```
