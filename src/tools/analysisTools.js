@@ -1,5 +1,5 @@
 /**
- * tools/analysisTools.ts
+ * tools/analysisTools.js
  *
  * create_analysis — POST /api/analysis  (NOT registered when NODE_ENV=production)
  * get_analysis    — GET  /api/analysis/{id}
@@ -19,34 +19,31 @@
  * rule in CLAUDE.md.
  */
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
-import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError } from "../services/workApi.js";
-import { RESPONSE_SIZE_LIMIT, IS_PRODUCTION } from "../constants.js";
-import { READONLY_ANNOTATIONS } from "./_shared.js";
+import { z } from 'zod'
+import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
+import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
+import { RESPONSE_SIZE_LIMIT, IS_PRODUCTION } from '../constants.js'
+import { READONLY_ANNOTATIONS } from './_shared.js'
 
-const ZONE_ID_RE = /^[a-z0-9]{6}$/;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ZONE_ID_RE = /^[a-z0-9]{6}$/
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
-const ANALYSIS_TYPES = ["offerTiering", "rankedOfferOptimization"]         ;
-const ANALYSIS_STATUSES = ["queued", "running", "succeeded", "failed"]         ;
+const ANALYSIS_TYPES = ['offerTiering', 'rankedOfferOptimization']
+const ANALYSIS_STATUSES = ['queued', 'running', 'succeeded', 'failed']
 
 /** Fields returned by list_analyses. Keeps a 100-row page well under the guard. */
 const LIST_FIELDS = [
-  "_id",
-  "status",
-  "analysisType",
-  "name",
-  "networkId",
-  "request",
-  "userCreated",
-  "dateCreated",
-  "dateCompleted",
-  "error",
-].join(",");
-
-                                                                               
+  '_id',
+  'status',
+  'analysisType',
+  'name',
+  'networkId',
+  'request',
+  'userCreated',
+  'dateCreated',
+  'dateCompleted',
+  'error'
+].join(',')
 
 /**
  * Sections dropped unconditionally — never useful to the model, always big.
@@ -55,10 +52,10 @@ const LIST_FIELDS = [
  * `input.prompt` is the rendered Gemini prompt, which is absent on noLLM runs
  * anyway and is exactly the thing a skill replaces.
  */
-const ALWAYS_DROP             = [
-  ["output", "rawResponse"],
-  ["input", "prompt"],
-];
+const ALWAYS_DROP = [
+  ['output', 'rawResponse'],
+  ['input', 'prompt']
+]
 
 /**
  * Shed order when the doc still exceeds the response guard, cheapest loss first.
@@ -70,33 +67,33 @@ const ALWAYS_DROP             = [
  *   4. the non-monetizing / default-tier diagnostic lists
  *   5. localTiers — the peer comparison that carries the narrative, so last
  */
-const SHED_ORDER             = [
-  ["input", "tieringContext", "rankDistribution"],
-  ["input", "zoneMetrics"],
-  ["input", "rankedOfferOptimizationContext"],
-  ["input", "tieringContext", "nonMonetizingCreatives"],
-  ["input", "tieringContext", "defaultTierCreatives"],
-  ["input", "tieringContext", "localTiers"],
-];
+const SHED_ORDER = [
+  ['input', 'tieringContext', 'rankDistribution'],
+  ['input', 'zoneMetrics'],
+  ['input', 'rankedOfferOptimizationContext'],
+  ['input', 'tieringContext', 'nonMonetizingCreatives'],
+  ['input', 'tieringContext', 'defaultTierCreatives'],
+  ['input', 'tieringContext', 'localTiers']
+]
 
-function deletePath(doc             , path          )          {
-  let node                          = doc;
+function deletePath (doc, path) {
+  let node = doc
   for (const key of path.slice(0, -1)) {
-    const next = node[key];
-    if (!next || typeof next !== "object" || Array.isArray(next)) return false;
-    node = next                           ;
+    const next = node[key]
+    if (!next || typeof next !== 'object' || Array.isArray(next)) return false
+    node = next
   }
-  const last = path[path.length - 1];
-  if (!(last in node)) return false;
-  delete node[last];
-  return true;
+  const last = path[path.length - 1]
+  if (!(last in node)) return false
+  delete node[last]
+  return true
 }
 
-function header(doc             )         {
-  const request = (doc.request ?? {})                           ;
-  const range = request.dateStart && request.dateEnd ? ` ${request.dateStart}..${request.dateEnd}` : "";
-  const zone = request.zoneId ? ` zone ${request.zoneId}` : "";
-  return `analysis ${doc._id ?? "?"} · ${doc.analysisType ?? "?"} · ${doc.status ?? "?"}${zone}${range}`;
+function header (doc) {
+  const request = (doc.request ?? {})
+  const range = request.dateStart && request.dateEnd ? ` ${request.dateStart}..${request.dateEnd}` : ''
+  const zone = request.zoneId ? ` zone ${request.zoneId}` : ''
+  return `analysis ${doc._id ?? '?'} · ${doc.analysisType ?? '?'} · ${doc.status ?? '?'}${zone}${range}`
 }
 
 /**
@@ -109,35 +106,35 @@ function header(doc             )         {
  * assignments in `output.json` are never shed — a partial answer here would be
  * an answer the model silently completes with invented rows.
  */
-export function fitAnalysis(doc             , limit        )                                                {
+export function fitAnalysis (doc, limit) {
   // Cheap deep clone — the doc came off the wire as JSON.
-  const trimmed              = JSON.parse(JSON.stringify(doc ?? {}));
-  const omitted           = [];
+  const trimmed = JSON.parse(JSON.stringify(doc ?? {}))
+  const omitted = []
 
-  for (const path of ALWAYS_DROP) deletePath(trimmed, path);
+  for (const path of ALWAYS_DROP) deletePath(trimmed, path)
 
-  const status = String(trimmed.status ?? "").toLowerCase();
-  if (status === "queued" || status === "running") {
-    trimmed.note = "Job is not finished. Poll get_analysis again; do not report on a partial document.";
+  const status = String(trimmed.status ?? '').toLowerCase()
+  if (status === 'queued' || status === 'running') {
+    trimmed.note = 'Job is not finished. Poll get_analysis again; do not report on a partial document.'
   }
 
-  const wrap = (d             ) => ({
-    content: [{ type: "text"         , text: `${header(d)}\n\n${JSON.stringify(d)}` }],
-  });
-  const size = (d             ) => header(d).length + 2 + JSON.stringify(d).length;
+  const wrap = (d) => ({
+    content: [{ type: 'text', text: `${header(d)}\n\n${JSON.stringify(d)}` }]
+  })
+  const size = (d) => header(d).length + 2 + JSON.stringify(d).length
 
-  if (size(trimmed) <= limit) return wrap(trimmed);
+  if (size(trimmed) <= limit) return wrap(trimmed)
 
   for (const path of SHED_ORDER) {
     if (deletePath(trimmed, path)) {
-      omitted.push(path.join("."));
-      trimmed.omitted = omitted;
-      if (size(trimmed) <= limit) return wrap(trimmed);
+      omitted.push(path.join('.'))
+      trimmed.omitted = omitted
+      if (size(trimmed) <= limit) return wrap(trimmed)
     }
   }
 
   // Last resort: the engine verdict plus provenance, explicitly flagged partial.
-  const minimal              = {
+  const minimal = {
     _id: trimmed._id,
     status: trimmed.status,
     analysisType: trimmed.analysisType,
@@ -146,10 +143,10 @@ export function fitAnalysis(doc             , limit        )                    
     error: trimmed.error,
     output: trimmed.output,
     complete: false,
-    omitted: [...omitted, "input"],
-    note: "Input context omitted — the document exceeded the response limit. output.json is complete; re-run over a shorter date range for the input breakdown.",
-  };
-  if (size(minimal) <= limit) return wrap(minimal);
+    omitted: [...omitted, 'input'],
+    note: 'Input context omitted — the document exceeded the response limit. output.json is complete; re-run over a shorter date range for the input breakdown.'
+  }
+  if (size(minimal) <= limit) return wrap(minimal)
 
   // `output.json` alone busts the budget (a wide zone's tier tables can). Drop it
   // too rather than string-slicing the JSON: a sliced payload is unparseable, and
@@ -162,13 +159,12 @@ export function fitAnalysis(doc             , limit        )                    
     request: trimmed.request,
     error: trimmed.error,
     complete: false,
-    omitted: [...omitted, "input", "output"],
-    note: "Result exceeded the response limit even after shedding every input section. Re-run over a shorter date range, or read this analysis by id from the Work API directly.",
-  });
+    omitted: [...omitted, 'input', 'output'],
+    note: 'Result exceeded the response limit even after shedding every input section. Re-run over a shorter date range, or read this analysis by id from the Work API directly.'
+  })
 }
 
-export function registerAnalysisTools(server           )       {
-
+export function registerAnalysisTools (server) {
   // create_analysis is HIDDEN IN PRODUCTION for now — the upstream job is
   // email-allowlisted and still settling, so we do not advertise it to prod
   // clients. Everything below still works locally (NODE_ENV != "production");
@@ -176,8 +172,8 @@ export function registerAnalysisTools(server           )       {
   // remain readable. Delete this guard to ship it.
   if (!IS_PRODUCTION) {
     // ── create_analysis ─────────────────────────────────────────────────────────
-    server.registerTool("create_analysis", {
-      title: "Create Zone Tier Analysis",
+    server.registerTool('create_analysis', {
+      title: 'Create Zone Tier Analysis',
       description: `Queue a zone tier analysis job and return the QUEUED document (its _id is what you poll with). Asynchronous — the job is NOT finished when this returns; call get_analysis until status is 'succeeded' or 'failed'.
 
   analysisType 'offerTiering' groups a zone's creatives into performance tiers (TIER_1 / TIER_2A / TIER_2B / TIER_3) from reliability-weighted CPM, revenue share and CTR. 'rankedOfferOptimization' answers the adjacent question — which creative belongs in which rank slot — by banding waterfall winners on CPM proximity into premium/standard/starter config groups.
@@ -186,44 +182,44 @@ export function registerAnalysisTools(server           )       {
 
   Access is restricted to an allowlist of Lincx emails; a 403 means the logged-in user is not on it. Requires access to the zone's network.`,
       inputSchema: z.object({
-        zoneId: z.string().regex(ZONE_ID_RE, "zoneId must be 6 lowercase letters or digits").describe("Zone to analyze"),
-        dateStart: z.string().regex(DATE_RE, "dateStart must be YYYY-MM-DD").describe("Start date, YYYY-MM-DD, inclusive"),
-        dateEnd: z.string().regex(DATE_RE, "dateEnd must be YYYY-MM-DD").describe("End date, YYYY-MM-DD, inclusive"),
-        analysisType: z.enum(ANALYSIS_TYPES).default("offerTiering").describe("offerTiering (creative tiers) or rankedOfferOptimization (rank slot assignment)"),
-        timezone: z.string().default("UTC").describe("Timezone CODE (e.g. UTC, EST, PDT) — not an IANA name. Buckets days and interprets the date range."),
-        noLLM: z.boolean().default(true).describe("True (default): deterministic engine only, narrative fields empty for you to write. False: also run the server-side Gemini narrative."),
-        name: z.string().max(100).optional().describe("Optional label for the job"),
+        zoneId: z.string().regex(ZONE_ID_RE, 'zoneId must be 6 lowercase letters or digits').describe('Zone to analyze'),
+        dateStart: z.string().regex(DATE_RE, 'dateStart must be YYYY-MM-DD').describe('Start date, YYYY-MM-DD, inclusive'),
+        dateEnd: z.string().regex(DATE_RE, 'dateEnd must be YYYY-MM-DD').describe('End date, YYYY-MM-DD, inclusive'),
+        analysisType: z.enum(ANALYSIS_TYPES).default('offerTiering').describe('offerTiering (creative tiers) or rankedOfferOptimization (rank slot assignment)'),
+        timezone: z.string().default('UTC').describe('Timezone CODE (e.g. UTC, EST, PDT) — not an IANA name. Buckets days and interprets the date range.'),
+        noLLM: z.boolean().default(true).describe('True (default): deterministic engine only, narrative fields empty for you to write. False: also run the server-side Gemini narrative.'),
+        name: z.string().max(100).optional().describe('Optional label for the job')
       }).strict(),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
     }, async ({ zoneId, dateStart, dateEnd, analysisType, timezone, noLLM, name }, extra) => {
-      const sessionId = await resolveLincxSession(extra?.sessionId);
-      if (!sessionId) return { content: [{ type: "text"         , text: "Error: Not authenticated. Use 'auth_login' first." }] };
+      const sessionId = await resolveLincxSession(extra?.sessionId)
+      if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-      const v = await validateSession(sessionId);
-      if (!v.valid || !v.session) return { content: [{ type: "text"         , text: `Error: ${v.error}` }] };
+      const v = await validateSession(sessionId)
+      if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
 
       try {
-        const body                          = { zoneId, dateStart, dateEnd, analysisType, timezone, noLLM };
-        if (name !== undefined) body.name = name;
-        const doc = await workApiRequest             (v.session, "POST", "/api/analysis", { body });
+        const body = { zoneId, dateStart, dateEnd, analysisType, timezone, noLLM }
+        if (name !== undefined) body.name = name
+        const doc = await workApiRequest(v.session, 'POST', '/api/analysis', { body })
 
         // The API derives networkId from the ZONE, ignoring the injected query
         // param — but list_analyses filters BY that param. Cross-network creates
         // therefore succeed and then never show up in the list.
-        const active = v.session.active_network;
+        const active = v.session.active_network
         if (doc?.networkId && active && doc.networkId !== active) {
-          doc.note = `Created on network ${doc.networkId} (the zone's), not the active network ${active}. Poll get_analysis by _id — list_analyses will not show it until you network_switch.`;
+          doc.note = `Created on network ${doc.networkId} (the zone's), not the active network ${active}. Poll get_analysis by _id — list_analyses will not show it until you network_switch.`
         }
-        return fitAnalysis(doc, RESPONSE_SIZE_LIMIT);
+        return fitAnalysis(doc, RESPONSE_SIZE_LIMIT)
       } catch (err) {
-        return { content: [{ type: "text"         , text: handleWorkApiError(err) }] };
+        return { content: [{ type: 'text', text: handleWorkApiError(err) }] }
       }
-    });
+    })
   }
 
   // ── get_analysis ────────────────────────────────────────────────────────────
-  server.registerTool("get_analysis", {
-    title: "Get Zone Tier Analysis",
+  server.registerTool('get_analysis', {
+    title: 'Get Zone Tier Analysis',
     description: `Fetch one analysis job by ID. Poll this after create_analysis until status is 'succeeded' or 'failed' ('queued'/'running' documents carry no results and say so in a note).
 
 Returns a one-line header, a blank line, then compact JSON — parse everything after the first blank line. On success the payload is:
@@ -234,74 +230,74 @@ Returns a one-line header, a blank line, then compact JSON — parse everything 
 
 Tier assignments are PRECOMPUTED. Do not re-cluster or re-rank them from the raw metrics. Oversized documents shed input sections (listed in an 'omitted' array), never the output verdict.`,
     inputSchema: z.object({
-      id: z.string().describe("Analysis job ID, as returned by create_analysis"),
+      id: z.string().describe('Analysis job ID, as returned by create_analysis')
     }).strict(),
-    annotations: READONLY_ANNOTATIONS,
+    annotations: READONLY_ANNOTATIONS
   }, async ({ id }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId);
-    if (!sessionId) return { content: [{ type: "text"         , text: "Error: Not authenticated. Use 'auth_login' first." }] };
+    const sessionId = await resolveLincxSession(extra?.sessionId)
+    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId);
-    if (!v.valid || !v.session) return { content: [{ type: "text"         , text: `Error: ${v.error}` }] };
+    const v = await validateSession(sessionId)
+    if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
 
     try {
-      const doc = await workApiRequest             (v.session, "GET", `/api/analysis/${id}`);
-      return fitAnalysis(doc, RESPONSE_SIZE_LIMIT);
+      const doc = await workApiRequest(v.session, 'GET', `/api/analysis/${id}`)
+      return fitAnalysis(doc, RESPONSE_SIZE_LIMIT)
     } catch (err) {
-      return { content: [{ type: "text"         , text: handleWorkApiError(err) }] };
+      return { content: [{ type: 'text', text: handleWorkApiError(err) }] }
     }
-  });
+  })
 
   // ── list_analyses ───────────────────────────────────────────────────────────
-  server.registerTool("list_analyses", {
-    title: "List Zone Tier Analyses",
+  server.registerTool('list_analyses', {
+    title: 'List Zone Tier Analyses',
     description: `List analysis jobs on the active network, newest first. Summary fields only (id, status, type, name, request, dates, error) — use get_analysis for results.
 
 Pages by cursor, not offset: pass the '_id' of the last row you received as 'cursor' to get the next page. A 'next_cursor' is returned when a full page came back.`,
     inputSchema: z.object({
-      status: z.enum(ANALYSIS_STATUSES).optional().describe("Only jobs in this status"),
+      status: z.enum(ANALYSIS_STATUSES).optional().describe('Only jobs in this status'),
       limit: z.number().int().min(1).max(100).default(20),
-      cursor: z.string().optional().describe("The _id of the last row of the previous page"),
+      cursor: z.string().optional().describe('The _id of the last row of the previous page')
     }).strict(),
-    annotations: READONLY_ANNOTATIONS,
+    annotations: READONLY_ANNOTATIONS
   }, async ({ status, limit, cursor }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId);
-    if (!sessionId) return { content: [{ type: "text"         , text: "Error: Not authenticated. Use 'auth_login' first." }] };
+    const sessionId = await resolveLincxSession(extra?.sessionId)
+    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId);
-    if (!v.valid || !v.session) return { content: [{ type: "text"         , text: `Error: ${v.error}` }] };
+    const v = await validateSession(sessionId)
+    if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
 
     try {
-      const params                          = { limit, fields: LIST_FIELDS };
-      if (status !== undefined) params.status = status;
-      if (cursor !== undefined) params.cursor = cursor;
-      const res = await workApiRequest                          (v.session, "GET", "/api/analysis", { params });
+      const params = { limit, fields: LIST_FIELDS }
+      if (status !== undefined) params.status = status
+      if (cursor !== undefined) params.cursor = cursor
+      const res = await workApiRequest(v.session, 'GET', '/api/analysis', { params })
 
-      const data = Array.isArray(res?.data) ? res.data : [];
+      const data = Array.isArray(res?.data) ? res.data : []
 
       // Drop whole rows, never slice the JSON — and recompute next_cursor from the
       // LAST KEPT row. Cursor paging is `_id < cursor`, so a cursor taken from a
       // row that was then dropped skips those jobs permanently.
-      let kept = data;
-      const envelope = ()                          => {
-        const e                          = { count: kept.length, data: kept };
-        if (data.length === limit) e.next_cursor = kept[kept.length - 1]?._id;
+      let kept = data
+      const envelope = () => {
+        const e = { count: kept.length, data: kept }
+        if (data.length === limit) e.next_cursor = kept[kept.length - 1]?._id
         if (kept.length < data.length) {
-          e.note = `${data.length - kept.length} row(s) dropped for size; next_cursor resumes from the last row returned.`;
+          e.note = `${data.length - kept.length} row(s) dropped for size; next_cursor resumes from the last row returned.`
         }
-        return e;
-      };
+        return e
+      }
       while (kept.length > 1 && JSON.stringify(envelope()).length > RESPONSE_SIZE_LIMIT) {
-        kept = kept.slice(0, -1);
+        kept = kept.slice(0, -1)
       }
       // A single row can still be oversized (a large `request.scope`); shrink it to
       // identity rather than emit sliced JSON.
       if (JSON.stringify(envelope()).length > RESPONSE_SIZE_LIMIT) {
-        kept = kept.map((r) => ({ _id: r._id, status: r.status, analysisType: r.analysisType }));
+        kept = kept.map((r) => ({ _id: r._id, status: r.status, analysisType: r.analysisType }))
       }
-      return { content: [{ type: "text"         , text: JSON.stringify(envelope()) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(envelope()) }] }
     } catch (err) {
-      return { content: [{ type: "text"         , text: handleWorkApiError(err) }] };
+      return { content: [{ type: 'text', text: handleWorkApiError(err) }] }
     }
-  });
+  })
 }

@@ -126,15 +126,7 @@ REDIS_URL=redis://default:localdev@localhost:6379
 
 > **Note:** There is no `NETWORK_API_BASE_URL`. Networks are fetched from `WORK_API_BASE_URL/api/networks`.
 
-### 3. Build
-
-```bash
-npm run build
-```
-
-Compiles TypeScript to `dist/`. You must rebuild after any source changes.
-
-### 4. Run
+### 3. Run
 
 The server is HTTP-only — it serves the login UI and the MCP `/mcp` endpoint on `PORT`.
 
@@ -433,14 +425,14 @@ import { registerYourDomainTools } from "./tools/yourDomainTools.js";
 registerYourDomainTools(server, getSessionId);
 ```
 
-4. Rebuild: `npm run build`
+4. Lint it: `npm run lint`
 
 ---
 
 ## Troubleshooting
 
 **"Cannot find module" errors after changes**
-→ Run `npm run build`. The server runs compiled JS from `dist/` — source changes have no effect until rebuilt.
+→ Check the import has a `.js` extension. The project is ESM with no build step; extensionless imports do not resolve.
 
 **Session lost after restart**
 → Set `REDIS_URL` in your `.env`. Without Redis, sessions are in-memory only and are lost on restart.

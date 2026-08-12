@@ -1,5 +1,5 @@
 /**
- * tests/helpers/mockWorkApi.ts
+ * tests/helpers/mockWorkApi.js
  *
  * Reusable vitest mock for workApiRequest and related sessionManager exports.
  *
@@ -26,48 +26,42 @@
  *   the production modules (either statically or via dynamic import).
  */
 
-import { vi } from "vitest";
+import { vi } from 'vitest'
 
 // ---------------------------------------------------------------------------
 // Module-level handler registry (mutable by exported setters below)
 // ---------------------------------------------------------------------------
 
-                
-                 
-                 
-                                                         
-  
-
-const handlers            = [];
+const handlers = []
 
 // ---------------------------------------------------------------------------
 // vi.mock declarations — MUST stay at module top-level so vitest hoists them
 // ---------------------------------------------------------------------------
 
-vi.mock("../../services/workApi.js", () => ({
+vi.mock('../../services/workApi.js', () => ({
   workApiRequest: vi.fn(async (
-    _session         ,
-    method        ,
-    path        ,
-    opts                                       
+    _session,
+    method,
+    path,
+    opts
   ) => {
     const match = handlers.find(
       (h) => h.method === method && h.pathRe.test(path)
-    );
+    )
     if (!match) {
-      throw new Error(`mockWorkApi: unmatched ${method} ${path}`);
+      throw new Error(`mockWorkApi: unmatched ${method} ${path}`)
     }
-    return match.handler(opts?.params);
+    return match.handler(opts?.params)
   }),
-  handleWorkApiError: (err       ) => `Error: ${err.message}`,
-  truncateIfNeeded: (s        ) => s,
-  stripListItems: (d         ) => d,
-}));
+  handleWorkApiError: (err) => `Error: ${err.message}`,
+  truncateIfNeeded: (s) => s,
+  stripListItems: (d) => d
+}))
 
-vi.mock("../../services/sessionManager.js", () => ({
-  resolveLincxSession: async () => "test-session",
-  validateSession: async () => ({ valid: true, session: { token: "t" } }),
-}));
+vi.mock('../../services/sessionManager.js', () => ({
+  resolveLincxSession: async () => 'test-session',
+  validateSession: async () => ({ valid: true, session: { token: 't' } })
+}))
 
 // ---------------------------------------------------------------------------
 // Exported API
@@ -79,25 +73,25 @@ vi.mock("../../services/sessionManager.js", () => ({
  *
  * Handlers are tested in insertion order; the first match wins.
  */
-export function on(
-  method        ,
-  pathRe        ,
-  handler                                               
-)       {
-  handlers.push({ method, pathRe, handler });
+export function on (
+  method,
+  pathRe,
+  handler
+) {
+  handlers.push({ method, pathRe, handler })
 }
 
 /**
  * Remove all registered handlers. Call in beforeEach() to keep tests isolated.
  */
-export function reset()       {
-  handlers.length = 0;
+export function reset () {
+  handlers.length = 0
 }
 
 /**
  * Convenience wrapper that returns { on, reset } — mirrors the plan's
  * originally described API.
  */
-export function mockWorkApi()                                         {
-  return { on, reset };
+export function mockWorkApi () {
+  return { on, reset }
 }

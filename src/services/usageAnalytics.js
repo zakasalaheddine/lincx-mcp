@@ -1,5 +1,6 @@
+/* eslint-disable camelcase -- OAuth params and Work API / tool-output fields are snake_case on the wire: protocol, not style. */
 /**
- * services/usageAnalytics.ts
+ * services/usageAnalytics.js
  *
  * In-house usage analytics. Every tool call / resource read becomes one
  * UsageEvent in a capped log (Redis list, or in-memory ring buffer in dev).
@@ -14,44 +15,20 @@
  * All logging here uses console.error (stderr), never console.log (project rule).
  */
 
-import { REDIS_URL, USAGE_EVENT_CAP } from "../constants.js";
-import { resolveLincxSession } from "./sessionManager.js";
-import { getSessionStore } from "./sessionStore.js";
-
-                       
-                       
-                  
-                        
-                  
-                  
-             
-                
-            
-
-                             
-                                          
-                            
-               
-                         
-                         
-                      
-                         
-                                                          
-                   
-                 
-                          
- 
+import { REDIS_URL, USAGE_EVENT_CAP } from '../constants.js'
+import { resolveLincxSession } from './sessionManager.js'
+import { getSessionStore } from './sessionStore.js'
 
 /** Classify an error message string into a small fixed enum (never stored raw). */
-export function classifyErrorKind(text        )            {
-  if (/Not authenticated/i.test(text)) return "not_authenticated";
-  if (/expired/i.test(text)) return "auth_expired";
-  if (/response_too_large/.test(text)) return "response_too_large";
-  if (/timed out/i.test(text)) return "timeout";
-  if (/Bad request|Unprocessable/i.test(text)) return "bad_params";
-  if (/Unauthorized|Forbidden|not found|Rate limit/i.test(text)) return "work_api_4xx";
-  if (/server error/i.test(text)) return "work_api_5xx";
-  return "other";
+export function classifyErrorKind (text) {
+  if (/Not authenticated/i.test(text)) return 'not_authenticated'
+  if (/expired/i.test(text)) return 'auth_expired'
+  if (/response_too_large/.test(text)) return 'response_too_large'
+  if (/timed out/i.test(text)) return 'timeout'
+  if (/Bad request|Unprocessable/i.test(text)) return 'bad_params'
+  if (/Unauthorized|Forbidden|not found|Rate limit/i.test(text)) return 'work_api_4xx'
+  if (/server error/i.test(text)) return 'work_api_5xx'
+  return 'other'
 }
 
 /**
@@ -59,175 +36,173 @@ export function classifyErrorKind(text        )            {
  * `{ content: [{ text: "Error: ..." }] }` (not throws), and the oversized guard
  * sets isError — both count as errors here.
  */
-export function classifyResult(result         )                                                     {
-  const r = result                                                                    ;
-  const text = r?.content?.[0]?.text ?? "";
-  const isErr = r?.isError === true || text.startsWith("Error:");
-  if (!isErr) return { status: "ok" };
-  return { status: "error", error_kind: classifyErrorKind(text) };
+export function classifyResult (result) {
+  const r = result
+  const text = r?.content?.[0]?.text ?? ''
+  const isErr = r?.isError === true || text.startsWith('Error:')
+  if (!isErr) return { status: 'ok' }
+  return { status: 'error', error_kind: classifyErrorKind(text) }
 }
 
 // ── EventSink ─────────────────────────────────────────────────────────────────
 
-;                           
-                                           
-                                                   
- 
+;
 
-const EVENTS_KEY = "usage:events";
-let _sinkP                            = null;
+const EVENTS_KEY = 'usage:events'
+let _sinkP = null
 
-export function getEventSink()                     {
-  if (_sinkP) return _sinkP;
-  _sinkP = (async ()                     => {
+export function getEventSink () {
+  if (_sinkP) return _sinkP
+  _sinkP = (async () => {
     if (REDIS_URL) {
-      const { Redis } = await import("ioredis");
-      const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
-      console.error("[Analytics] Using Redis event log");
+      const { Redis } = await import('ioredis')
+      const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 })
+      console.error('[Analytics] Using Redis event log')
       return {
-        async append(event) {
-          await redis.lpush(EVENTS_KEY, JSON.stringify(event));
-          await redis.ltrim(EVENTS_KEY, 0, USAGE_EVENT_CAP - 1);
+        async append (event) {
+          await redis.lpush(EVENTS_KEY, JSON.stringify(event))
+          await redis.ltrim(EVENTS_KEY, 0, USAGE_EVENT_CAP - 1)
         },
-        async readRecent(limit) {
-          const raw = await redis.lrange(EVENTS_KEY, 0, Math.max(0, limit - 1));
-          return raw.map((r) => JSON.parse(r)              );
-        },
-      };
+        async readRecent (limit) {
+          const raw = await redis.lrange(EVENTS_KEY, 0, Math.max(0, limit - 1))
+          return raw.map((r) => JSON.parse(r))
+        }
+      }
     }
-    const buf               = []; // newest at index 0
-    console.error("[Analytics] No REDIS_URL — using in-memory event log (dev only)");
+    const buf = [] // newest at index 0
+    console.error('[Analytics] No REDIS_URL — using in-memory event log (dev only)')
     return {
-      async append(event) {
-        buf.unshift(event);
-        if (buf.length > USAGE_EVENT_CAP) buf.length = USAGE_EVENT_CAP;
+      async append (event) {
+        buf.unshift(event)
+        if (buf.length > USAGE_EVENT_CAP) buf.length = USAGE_EVENT_CAP
       },
-      async readRecent(limit) {
-        return buf.slice(0, limit);
-      },
-    };
-  })();
-  return _sinkP;
+      async readRecent (limit) {
+        return buf.slice(0, limit)
+      }
+    }
+  })()
+  return _sinkP
 }
 
 // ── recordEvent ───────────────────────────────────────────────────────────────
 
-;                                                                      
+;
 
 /** Awaitable core — used by tests and by the fire-and-forget recordEvent. */
-export async function recordEventAsync(input             )                {
+export async function recordEventAsync (input) {
   try {
-    let user_id                    ;
-    let email                    ;
+    let user_id
+    let email
     if (input.mcp_session_id) {
-      const lincxId = await resolveLincxSession(input.mcp_session_id);
+      const lincxId = await resolveLincxSession(input.mcp_session_id)
       if (lincxId) {
-        const session = await (await getSessionStore()).get(lincxId);
-        user_id = session?.user_id;
-        email = session?.email;
+        const session = await (await getSessionStore()).get(lincxId)
+        user_id = session?.user_id
+        email = session?.email
       }
     }
-    const event             = { ts: Date.now(), ...input, user_id, email };
-    const sink = await getEventSink();
-    await sink.append(event);
+    const event = { ts: Date.now(), ...input, user_id, email }
+    const sink = await getEventSink()
+    await sink.append(event)
   } catch (err) {
     // Analytics must NEVER affect a tool call. Swallow (one stderr line).
-    console.error("[Analytics] recordEvent failed:", err instanceof Error ? err.message : String(err));
+    console.error('[Analytics] recordEvent failed:', err instanceof Error ? err.message : String(err))
   }
 }
 
 /** Fire-and-forget wrapper — callers must NOT await this. */
-export function recordEvent(input             )       {
-  void recordEventAsync(input);
+export function recordEvent (input) {
+  // eslint-disable-next-line no-void -- `void` is the marker that this promise is deliberately not awaited
+  void recordEventAsync(input)
 }
 
 // ── computeStats ──────────────────────────────────────────────────────────────
 
-;                            
-                                                                   
-                                                                                                                                                                  
-                                                                                                                                  
-                                                                         
-                                                                                                                            
- 
+;
 
-function percentile(sortedAsc          , p        )         {
-  if (sortedAsc.length === 0) return 0;
-  const idx = Math.min(sortedAsc.length - 1, Math.max(0, Math.ceil((p / 100) * sortedAsc.length) - 1));
-  return sortedAsc[idx];
+function percentile (sortedAsc, p) {
+  if (sortedAsc.length === 0) return 0
+  const idx = Math.min(sortedAsc.length - 1, Math.max(0, Math.ceil((p / 100) * sortedAsc.length) - 1))
+  return sortedAsc[idx]
 }
 
-export function computeStats(events              )             {
+export function computeStats (events) {
   // ── tools ──
-  const byTool = new Map                                                                                                          ();
+  const byTool = new Map()
   for (const e of events) {
-    const t = byTool.get(e.name) ?? { type: e.type, calls: 0, errors: 0, durations: [], chars: 0 };
-    t.calls++; if (e.status === "error") t.errors++;
-    t.durations.push(e.duration_ms); t.chars += e.response_chars;
-    byTool.set(e.name, t);
+    const t = byTool.get(e.name) ?? { type: e.type, calls: 0, errors: 0, durations: [], chars: 0 }
+    t.calls++; if (e.status === 'error') t.errors++
+    t.durations.push(e.duration_ms); t.chars += e.response_chars
+    byTool.set(e.name, t)
   }
   const tools = [...byTool.entries()].map(([name, t]) => {
-    const sorted = [...t.durations].sort((a, b) => a - b);
+    const sorted = [...t.durations].sort((a, b) => a - b)
     return {
-      name, type: t.type, calls: t.calls, errors: t.errors,
+      name,
+      type: t.type,
+      calls: t.calls,
+      errors: t.errors,
       error_rate: t.calls ? Math.round((t.errors / t.calls) * 100) / 100 : 0,
-      p50_ms: percentile(sorted, 50), p95_ms: percentile(sorted, 95),
-      avg_chars: t.calls ? Math.round(t.chars / t.calls) : 0,
-    };
-  }).sort((a, b) => b.calls - a.calls);
+      p50_ms: percentile(sorted, 50),
+      p95_ms: percentile(sorted, 95),
+      avg_chars: t.calls ? Math.round(t.chars / t.calls) : 0
+    }
+  }).sort((a, b) => b.calls - a.calls)
 
   // ── users ──
-  const byUser = new Map                                                                                            ();
+  const byUser = new Map()
   for (const e of events) {
-    if (!e.user_id) continue;
-    const u = byUser.get(e.user_id) ?? { email: e.email, calls: 0, tools: new Set        (), first: e.ts, last: e.ts };
-    u.calls++; u.tools.add(e.name); u.first = Math.min(u.first, e.ts); u.last = Math.max(u.last, e.ts);
-    byUser.set(e.user_id, u);
+    if (!e.user_id) continue
+    const u = byUser.get(e.user_id) ?? { email: e.email, calls: 0, tools: new Set(), first: e.js, last: e.js }
+    u.calls++; u.tools.add(e.name); u.first = Math.min(u.first, e.js); u.last = Math.max(u.last, e.js)
+    byUser.set(e.user_id, u)
   }
   const users = [...byUser.entries()].map(([user_id, u]) => ({
-    user_id, email: u.email, calls: u.calls, distinct_tools: u.tools.size, first_seen: u.first, last_seen: u.last,
-  })).sort((a, b) => b.calls - a.calls);
+    user_id, email: u.email, calls: u.calls, distinct_tools: u.tools.size, first_seen: u.first, last_seen: u.last
+  })).sort((a, b) => b.calls - a.calls)
 
   // ── errors ──
-  const byErr = new Map                                                   ();
+  const byErr = new Map()
   for (const e of events) {
-    if (e.status !== "error" || !e.error_kind) continue;
-    const x = byErr.get(e.error_kind) ?? { count: 0, sample_tool: e.name };
-    x.count++; byErr.set(e.error_kind, x);
+    if (e.status !== 'error' || !e.error_kind) continue
+    const x = byErr.get(e.error_kind) ?? { count: 0, sample_tool: e.name }
+    x.count++; byErr.set(e.error_kind, x)
   }
   const errors = [...byErr.entries()].map(([kind, x]) => ({ kind, count: x.count, sample_tool: x.sample_tool }))
-    .sort((a, b) => b.count - a.count);
+    .sort((a, b) => b.count - a.count)
 
   // ── sequences (group by session, chronological) ──
-  const bySession = new Map                      ();
+  const bySession = new Map()
   for (const e of events) {
-    if (!e.mcp_session_id) continue;
-    const arr = bySession.get(e.mcp_session_id) ?? [];
-    arr.push(e); bySession.set(e.mcp_session_id, arr);
+    if (!e.mcp_session_id) continue
+    const arr = bySession.get(e.mcp_session_id) ?? []
+    arr.push(e); bySession.set(e.mcp_session_id, arr)
   }
-  const transitions                         = {};
-  const recent                                    = [];
+  const transitions = {}
+  const recent = []
   for (const [session, arr] of bySession) {
-    arr.sort((a, b) => a.ts - b.ts);
-    const toolNames = arr.map((e) => e.name);
+    arr.sort((a, b) => a.js - b.js)
+    const toolNames = arr.map((e) => e.name)
     for (let i = 1; i < toolNames.length; i++) {
-      const key = `${toolNames[i - 1]}>${toolNames[i]}`;
-      transitions[key] = (transitions[key] ?? 0) + 1;
+      const key = `${toolNames[i - 1]}>${toolNames[i]}`
+      transitions[key] = (transitions[key] ?? 0) + 1
     }
-    recent.push({ session, user_id: arr[0].user_id, tools: toolNames });
+    recent.push({ session, user_id: arr[0].user_id, tools: toolNames })
   }
-  recent.sort((a, b) => (bySession.get(b.session) .at(-1) .ts) - (bySession.get(a.session) .at(-1) .ts));
+  recent.sort((a, b) => (bySession.get(b.session).at(-1).ts) - (bySession.get(a.session).at(-1).ts))
 
-  let oldest = Infinity;
-  let newest = -Infinity;
+  let oldest = Infinity
+  let newest = -Infinity
   for (const e of events) {
-    if (e.ts < oldest) oldest = e.ts;
-    if (e.ts > newest) newest = e.ts;
+    if (e.js < oldest) oldest = e.js
+    if (e.js > newest) newest = e.js
   }
 
   return {
     window: { events: events.length, oldest_ts: events.length ? oldest : 0, newest_ts: events.length ? newest : 0 },
-    tools, users, errors,
-    sequences: { recent: recent.slice(0, 50), transitions },
-  };
+    tools,
+    users,
+    errors,
+    sequences: { recent: recent.slice(0, 50), transitions }
+  }
 }

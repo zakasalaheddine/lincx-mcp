@@ -1,5 +1,6 @@
+/* eslint-disable camelcase -- OAuth params and Work API / tool-output fields are snake_case on the wire: protocol, not style. */
 /**
- * tools/eligibility.ts
+ * tools/eligibility.js
  *
  * The general eligibility join: can an ad group serve in a zone, and by what
  * path? One pure predicate powers three read directions (zone→groups,
@@ -9,26 +10,8 @@
  * touching the join.
  */
 
-                                                           
-
-                                
-                   
-                                                      
-                                        
-  
-
-                           
-                    
-                 
-                    
-                                                                 
-                                                      
-                                                                                             
-                                                                            
-  
-
-const has = (arr                      , v        )          =>
-  Array.isArray(arr) && arr.includes(v);
+const has = (arr, v) =>
+  Array.isArray(arr) && arr.includes(v)
 
 /**
  * The single `scoped_via` domain — HOW a group/offer is scoped to a zone. Shared
@@ -39,13 +22,12 @@ const has = (arr                      , v        )          =>
  * "why is this group eligible" path (whitelist / CAG) and stays as-is.
  */
 export const SCOPED_VIA = [
-  "ad-group-whitelist",
-  "ad-group-blacklist",
-  "ad-level-whitelist",
-  "ad-level-blacklist",
-  "zone-selection",
-]         ;
-                                                    
+  'ad-group-whitelist',
+  'ad-group-blacklist',
+  'ad-level-whitelist',
+  'ad-level-blacklist',
+  'zone-selection'
+]
 
 /**
  * GROUP-level eligibility: can this ad group serve ANY ad in this zone?
@@ -55,38 +37,38 @@ export const SCOPED_VIA = [
  * params) and always wins. Ad-level params are NOT a group-scoping mechanism —
  * they only filter WHICH ads serve within an eligible group (see adServesInZone).
  */
-export function eligibility({ adGroup, zone }                  )              {
-  const zoneId = zone.id;
-  const archived = adGroup.archived === true;
-  const cagMatch = zone.creativeAssetGroupId !== undefined
-    && adGroup.creativeAssetGroupId === zone.creativeAssetGroupId;
-  const inParams = has(adGroup.params?.zoneId, zoneId);
-  const inExcept = has(adGroup.exceptParams?.zoneId, zoneId);
-  const targetsZeroZones = (adGroup.params?.zoneId?.length ?? 0) === 0;
+export function eligibility ({ adGroup, zone }) {
+  const zoneId = zone.id
+  const archived = adGroup.archived === true
+  const cagMatch = zone.creativeAssetGroupId !== undefined &&
+    adGroup.creativeAssetGroupId === zone.creativeAssetGroupId
+  const inParams = has(adGroup.params?.zoneId, zoneId)
+  const inExcept = has(adGroup.exceptParams?.zoneId, zoneId)
+  const targetsZeroZones = (adGroup.params?.zoneId?.length ?? 0) === 0
 
-  const via           = [];
-  if (inParams) via.push("ad-group-whitelist");
-  if (cagMatch) via.push("zone-selection");
+  const via = []
+  if (inParams) via.push('ad-group-whitelist')
+  if (cagMatch) via.push('zone-selection')
 
-  const conflicts           = [];
-  if (inParams && inExcept) conflicts.push("targets-and-excepts");
-  if (inParams && !cagMatch) conflicts.push("whitelisted-cag-mismatch");
+  const conflicts = []
+  if (inParams && inExcept) conflicts.push('targets-and-excepts')
+  if (inParams && !cagMatch) conflicts.push('whitelisted-cag-mismatch')
 
-  const reasons           = [];
-  let eligible = false;
+  const reasons = []
+  let eligible = false
   if (archived) {
-    reasons.push("archived");
+    reasons.push('archived')
   } else if (inExcept) {
-    reasons.push("blacklisted");
+    reasons.push('blacklisted')
   } else if (!cagMatch) {
-    reasons.push("cag-mismatch");
+    reasons.push('cag-mismatch')
   } else if (inParams || targetsZeroZones) {
-    eligible = true;
+    eligible = true
   } else {
-    reasons.push("targets-other-zones");
+    reasons.push('targets-other-zones')
   }
 
-  return { adGroupId: adGroup.id, zoneId, eligible, via, excluded: inExcept, reasons, conflicts };
+  return { adGroupId: adGroup.id, zoneId, eligible, via, excluded: inExcept, reasons, conflicts }
 }
 
 /**
@@ -96,11 +78,11 @@ export function eligibility({ adGroup, zone }                  )              {
  * omits the zone (confining that ad to other zones). One blacklisted ad is hidden
  * while its siblings still serve.
  */
-export function adServesInZone(ad    , zoneId        )          {
-  if (has(ad.exceptParams?.zoneId, zoneId)) return false;
-  const wl = ad.params?.zoneId;
-  if (Array.isArray(wl) && wl.length > 0 && !wl.includes(zoneId)) return false;
-  return true;
+export function adServesInZone (ad, zoneId) {
+  if (has(ad.exceptParams?.zoneId, zoneId)) return false
+  const wl = ad.params?.zoneId
+  if (Array.isArray(wl) && wl.length > 0 && !wl.includes(zoneId)) return false
+  return true
 }
 
 /**
@@ -109,16 +91,7 @@ export function adServesInZone(ad    , zoneId        )          {
  * first — an ad-level whitelist can never rescue an ineligible group); the ad's own
  * params/exceptParams are then the last check.
  */
-;                    
-                    
-               
-                 
-                                                                               
-                                                                                              
-                                                                                         
-                                                                                       
-                                                      
-  
+;
 
 /**
  * Evaluate one (ad group × ad) pair in a zone, on top of an already-computed group
@@ -127,64 +100,47 @@ export function adServesInZone(ad    , zoneId        )          {
  * CAG. An ad whose own `params.zoneId` names the zone is ad-level-TARGETED, not a
  * free radical (counting it as one over-counts the CAG leak).
  */
-export function offerEligibility(
-  group             ,
-  adGroup         ,
-  ad    ,
-  zone                                               ,
-)        {
-  const zoneId = zone.id;
-  const scoped_via              = [];
-  if (has(adGroup.params?.zoneId, zoneId)) scoped_via.push("ad-group-whitelist");
-  if (has(adGroup.exceptParams?.zoneId, zoneId)) scoped_via.push("ad-group-blacklist");
-  if (has(ad.params?.zoneId, zoneId)) scoped_via.push("ad-level-whitelist");
-  if (has(ad.exceptParams?.zoneId, zoneId)) scoped_via.push("ad-level-blacklist");
+export function offerEligibility (
+  group,
+  adGroup,
+  ad,
+  zone
+) {
+  const zoneId = zone.id
+  const scoped_via = []
+  if (has(adGroup.params?.zoneId, zoneId)) scoped_via.push('ad-group-whitelist')
+  if (has(adGroup.exceptParams?.zoneId, zoneId)) scoped_via.push('ad-group-blacklist')
+  if (has(ad.params?.zoneId, zoneId)) scoped_via.push('ad-level-whitelist')
+  if (has(ad.exceptParams?.zoneId, zoneId)) scoped_via.push('ad-level-blacklist')
   if (zone.creativeAssetGroupId !== undefined && adGroup.creativeAssetGroupId === zone.creativeAssetGroupId) {
-    scoped_via.push("zone-selection");
+    scoped_via.push('zone-selection')
   }
 
-  const reasons = [...group.reasons];
-  let serves = group.eligible;
+  const reasons = [...group.reasons]
+  let serves = group.eligible
   if (serves && !adServesInZone(ad, zoneId)) {
-    serves = false;
-    reasons.push(has(ad.exceptParams?.zoneId, zoneId) ? "ad-blacklisted" : "ad-targets-other-zones");
+    serves = false
+    reasons.push(has(ad.exceptParams?.zoneId, zoneId) ? 'ad-blacklisted' : 'ad-targets-other-zones')
   }
 
-  const freeRadical = serves
-    && !scoped_via.includes("ad-group-whitelist")
-    && !scoped_via.includes("ad-level-whitelist");
+  const freeRadical = serves &&
+    !scoped_via.includes('ad-group-whitelist') &&
+    !scoped_via.includes('ad-level-whitelist')
 
   // An ad-level whitelist naming a zone its GROUP cannot reach never fires —
   // filterAdgroups() drops the group before filterAds() is consulted. The config
   // reads as "this ad is targeted here" and does nothing. Field-found on Adnet:
   // 18 ads across 8 groups, 6 of them live, where a Facebook-zone carve-out was
   // rolled out on the ads but the parent group was never scoped to that zone.
-  const conflicts           = [];
-  if (scoped_via.includes("ad-level-whitelist") && !group.eligible) {
-    conflicts.push("inert-ad-level-whitelist");
+  const conflicts = []
+  if (scoped_via.includes('ad-level-whitelist') && !group.eligible) {
+    conflicts.push('inert-ad-level-whitelist')
   }
 
-  return { adGroupId: adGroup.id, adId: ad.id ?? "", zoneId, serves, scoped_via, freeRadical, reasons, conflicts };
+  return { adGroupId: adGroup.id, adId: ad.id ?? '', zoneId, serves, scoped_via, freeRadical, reasons, conflicts }
 }
 
-;                          
-                                                
-                                                                                    
-                                                                                      
-                                                                                          
-                                                                                      
-                                                                                  
-                                                                                          
-                                                                                        
-                                                                                         
-                                                                                   
-                                                                     
-                                                                              
-                                                              
-                                                                                                  
-                             
-                                  
-  
+;
 
 /**
  * Per-group offer-grain counts, so a pure free-radical subset is derivable.
@@ -195,29 +151,29 @@ export function offerEligibility(
  * creatives)`. Required, not defaulted — a default would make a wrong count look
  * like a passing assertion.
  */
-export function offerRollup(
-  group             ,
-  adGroup         ,
-  ads      ,
-  zone                                               ,
-  isLive                     ,
-)              {
-  const offers = ads.map((ad) => ({ ...offerEligibility(group, adGroup, ad, zone), live: isLive(ad) }));
-  const freeRadicals = offers.filter((o) => o.freeRadical);
-  const inert = offers.filter((o) => o.conflicts.includes("inert-ad-level-whitelist"));
+export function offerRollup (
+  group,
+  adGroup,
+  ads,
+  zone,
+  isLive
+) {
+  const offers = ads.map((ad) => ({ ...offerEligibility(group, adGroup, ad, zone), live: isLive(ad) }))
+  const freeRadicals = offers.filter((o) => o.freeRadical)
+  const inert = offers.filter((o) => o.conflicts.includes('inert-ad-level-whitelist'))
   return {
     total: offers.length,
     inScope: offers.filter((o) => o.serves).length,
     live: offers.filter((o) => o.serves && o.live).length,
     freeRadical: freeRadicals.length,
     freeRadicalLive: freeRadicals.filter((o) => o.live).length,
-    adLevelTargeted: offers.filter((o) => o.scoped_via.includes("ad-level-whitelist")).length,
-    adLevelBlacklisted: offers.filter((o) => o.scoped_via.includes("ad-level-blacklist")).length,
-    confinedElsewhere: offers.filter((o) => o.reasons.includes("ad-targets-other-zones")).length,
+    adLevelTargeted: offers.filter((o) => o.scoped_via.includes('ad-level-whitelist')).length,
+    adLevelBlacklisted: offers.filter((o) => o.scoped_via.includes('ad-level-blacklist')).length,
+    confinedElsewhere: offers.filter((o) => o.reasons.includes('ad-targets-other-zones')).length,
     inertWhitelisted: inert.length,
     freeRadicalAdIds: freeRadicals.map((o) => o.adId).filter(Boolean),
-    inertWhitelistedAdIds: inert.map((o) => o.adId).filter(Boolean),
-  };
+    inertWhitelistedAdIds: inert.map((o) => o.adId).filter(Boolean)
+  }
 }
 
 /**
@@ -242,36 +198,36 @@ export function offerRollup(
  * construction, neither ad-group-whitelisted nor eligible, so they cannot appear in
  * `directlyTargeted` or `conflicting`.
  */
-export function zoneEligibility(
-  adGroups           ,
-  zone                                               ,
-  adsByGroup                      ,
-)                                                                                                                               {
-  const directlyTargeted                = [];
-  const freeRadicals                = [];
-  const conflicting                = [];
-  const inertWhitelists                = [];
+export function zoneEligibility (
+  adGroups,
+  zone,
+  adsByGroup
+) {
+  const directlyTargeted = []
+  const freeRadicals = []
+  const conflicting = []
+  const inertWhitelists = []
   for (const adGroup of adGroups) {
-    const ads = adsByGroup[adGroup.id] ?? [];
-    const e = eligibility({ adGroup, zone, ads });
-    const agWhitelist = e.via.includes("ad-group-whitelist");
-    if (agWhitelist && e.excluded) conflicting.push(e);
-    else if (agWhitelist) directlyTargeted.push(e);
-    else if (e.eligible) freeRadicals.push(e);
+    const ads = adsByGroup[adGroup.id] ?? []
+    const e = eligibility({ adGroup, zone, ads })
+    const agWhitelist = e.via.includes('ad-group-whitelist')
+    if (agWhitelist && e.excluded) conflicting.push(e)
+    else if (agWhitelist) directlyTargeted.push(e)
+    else if (e.eligible) freeRadicals.push(e)
     else if (ads.some((ad) => has(ad.params?.zoneId, zone.id))) {
-      inertWhitelists.push({ ...e, conflicts: [...e.conflicts, "inert-ad-level-whitelist"] });
+      inertWhitelists.push({ ...e, conflicts: [...e.conflicts, 'inert-ad-level-whitelist'] })
     }
   }
-  return { directlyTargeted, freeRadicals, conflicting, inertWhitelists };
+  return { directlyTargeted, freeRadicals, conflicting, inertWhitelists }
 }
 
 /** group → every zone it can serve/leak into (the flip of zoneEligibility). */
-export function adGroupReach(
-  adGroup         ,
-  zones                                                 ,
-  ads      ,
-)                {
+export function adGroupReach (
+  adGroup,
+  zones,
+  ads
+) {
   return zones
     .map((zone) => eligibility({ adGroup, zone, ads }))
-    .filter((e) => e.eligible);
+    .filter((e) => e.eligible)
 }
