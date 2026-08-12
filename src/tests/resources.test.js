@@ -18,7 +18,7 @@ async function build (routes = []) {
   return server
 }
 
-test('resources (T1-3 / T4-6) > registers lincx://networks as a static (listable) resource', async t => {
+test.serial('resources (T1-3 / T4-6) > registers lincx://networks as a static (listable) resource', async t => {
   const server = await build()
   const res = server._registeredResources['lincx://networks']
   t.not(res, undefined)
@@ -31,7 +31,7 @@ test('resources (T1-3 / T4-6) > registers lincx://networks as a static (listable
   // JSON.stringify drops the undefined key — not asserted here.)
 })
 
-test('resources (T1-3 / T4-6) > registers entity resource templates that fetch by id', async t => {
+test.serial('resources (T1-3 / T4-6) > registers entity resource templates that fetch by id', async t => {
   const server = await build([
     ['GET', /^\/api\/campaigns\/c1$/, () => ({ id: 'c1', name: 'Camp' })]
   ])
@@ -42,14 +42,14 @@ test('resources (T1-3 / T4-6) > registers entity resource templates that fetch b
   t.deepEqual(JSON.parse(out.contents[0].text), { id: 'c1', name: 'Camp' })
 })
 
-test('resources (T1-3 / T4-6) > entity templates carry no list callback — zero per-request (resources/list) cost', async t => {
+test.serial('resources (T1-3 / T4-6) > entity templates carry no list callback — zero per-request (resources/list) cost', async t => {
   const server = await build()
   // Static resource is listed; templates without a list callback are not.
   t.true(Object.keys(server._registeredResources).includes('lincx://networks'))
   t.is(server._registeredResourceTemplates['zone-by-id'].resourceTemplate.listCallback, undefined)
 })
 
-test('resources (T1-3 / T4-6) > a resource read surfaces a clean error (not a throw) on upstream failure', async t => {
+test.serial('resources (T1-3 / T4-6) > a resource read surfaces a clean error (not a throw) on upstream failure', async t => {
   // No route registered for zones/zX → workApiMock throws → handleWorkApiError formats it.
   const server = await build()
   const tmpl = server._registeredResourceTemplates['zone-by-id']
@@ -73,7 +73,7 @@ test.serial('resources (T1-3 / T4-6) > records a usage event when a resource is 
   t.is(rec?.status, 'ok')
 })
 
-test('resources (T1-3 / T4-6) > e2e: a real client sees lincx://networks in resources/list and can read it', async t => {
+test.serial('resources (T1-3 / T4-6) > e2e: a real client sees lincx://networks in resources/list and can read it', async t => {
   const server = await build()
   const [clientT, serverT] = InMemoryTransport.createLinkedPair()
   const client = new Client({ name: 'c', version: '0.0.0' })

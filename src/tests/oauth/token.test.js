@@ -16,7 +16,7 @@ function challenge (verifier) {
   app.use(express.json())
   app.use('/oauth', oauthTokenRouter)
 
-  test('POST /oauth/token > exchanges auth_code (with PKCE) for tokens', async t => {
+  test.serial('POST /oauth/token > exchanges auth_code (with PKCE) for tokens', async t => {
     const client = await registerClient({ redirect_uris: ['https://x/cb'] })
     const verifier = 'a'.repeat(64)
     const code = await issueAuthCode({
@@ -40,7 +40,7 @@ function challenge (verifier) {
     t.is(res.body.token_type, 'Bearer')
   })
 
-  test('POST /oauth/token > rejects wrong code_verifier', async t => {
+  test.serial('POST /oauth/token > rejects wrong code_verifier', async t => {
     const client = await registerClient({ redirect_uris: ['https://x/cb'] })
     const code = await issueAuthCode({
       client_id: client.client_id,
@@ -60,7 +60,7 @@ function challenge (verifier) {
     t.is(res.body.error, 'invalid_grant')
   })
 
-  test('POST /oauth/token > rejects code reuse', async t => {
+  test.serial('POST /oauth/token > rejects code reuse', async t => {
     const client = await registerClient({ redirect_uris: ['https://x/cb'] })
     const verifier = 'a'.repeat(64)
     const code = await issueAuthCode({
