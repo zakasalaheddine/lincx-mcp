@@ -204,6 +204,7 @@ There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api
 npm install          # first time only
 npm start            # run the server (node src/index.js) on PORT — no build step
 npm run lint         # standard src/ scripts/ — the compiler's replacement
+npm test             # ava (config lives in package.json)
 npm run dev          # cloudflared tunnel + node --watch (see below)
 npm run dev:local    # node --watch only — no tunnel, http://localhost:5001
 ```
@@ -562,7 +563,10 @@ the Lincx JWT — only the OAuth access token refreshes).
 ## JavaScript conventions
 
 Plain ESM JavaScript — no TypeScript, no build step. `npm run lint` (`standard`)
-is what replaced the compiler; run it before you commit.
+is what replaced the compiler; run it before you commit. Tests run on `ava`
+(`npm test`) — one process per test FILE, but tests *within* a file run
+concurrently, so anything sharing a module-level store or a global is
+`test.serial`.
 
 - All imports keep the `.js` extension — ESM does not resolve extensionless paths
 - Tool handlers always return `{ content: [{ type: "text", text }], structuredContent? }`

@@ -277,14 +277,13 @@ const FIELDS = ['offers', 'scoped_via', 'via', 'reasons', 'conflicts', 'fully_li
   })
 }
 
-{ // fitEligibility — pathological single oversize row
-  test('fitEligibility — pathological single oversize row > falls back to ids-only with complete:false and a re-run note, never a silent partial', t => {
-    const full = payload(1, 0)
-    full.directlyTargeted[0].offers.freeRadicalAdIds = Array.from({ length: 5000 }, (_, i) => `ad${i}`)
-    const { json } = parse(fitEligibility(full, 'all', 0, LIMIT))
-    t.is(json.complete, false)
-    t.deepEqual(json.ids, ['d0'])
-    t.true(json.note.includes('bucket'))
-    t.is(json.summary.directlyTargeted, 1)
-  })
-}
+// fitEligibility — pathological single oversize row
+test('fitEligibility — pathological single oversize row > falls back to ids-only with complete:false and a re-run note, never a silent partial', t => {
+  const full = payload(1, 0)
+  full.directlyTargeted[0].offers.freeRadicalAdIds = Array.from({ length: 5000 }, (_, i) => `ad${i}`)
+  const { json } = parse(fitEligibility(full, 'all', 0, LIMIT))
+  t.is(json.complete, false)
+  t.deepEqual(json.ids, ['d0'])
+  t.true(json.note.includes('bucket'))
+  t.is(json.summary.directlyTargeted, 1)
+})

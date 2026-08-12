@@ -13,8 +13,8 @@
     "predev:local": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d redis || echo '[predev:local] Could not start Redis (is Docker running?) — continuing; set REDIS_URL= in .env for the in-memory store.'",
     "dev:local": "node --watch --env-file=.env src/index.js",
     "redis:stop": "docker compose -f docker-compose.yml -f docker-compose.dev.yml stop redis",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "ava",
+    "test:watch": "ava --watch"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -25,13 +25,11 @@
     "zod": "^3.22.0"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^4.1.5",
     "ava": "^6.4.1",
     "esmock": "^2.7.6",
     "standard": "^17.1.2",
     "supertest": "^7.2.2",
-    "ts-blank-space": "^0.9.0",
-    "vitest": "^4.1.5"
+    "ts-blank-space": "^0.9.0"
   },
   "engines": {
     "node": ">=22"
