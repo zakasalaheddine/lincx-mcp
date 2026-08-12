@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import {
   eligibility, adServesInZone, zoneEligibility, adGroupReach, offerEligibility, offerRollup,
   SCOPED_VIA
@@ -23,81 +23,81 @@ const input = (adGroup, ads = []) => ({
   ads
 })
 
-describe('eligibility', () => {
-  it('free radical: targets zero zones + CAG match → eligible via zone-selection only', () => {
+{ // eligibility
+  test('eligibility > free radical: targets zero zones + CAG match → eligible via zone-selection only', t => {
     const e = eligibility(input({ params: {} }))
-    expect(e.eligible).toBe(true)
-    expect(e.via).toEqual(['zone-selection'])
-    expect(e.excluded).toBe(false)
-    expect(e.reasons).toEqual([])
-    expect(e.conflicts).toEqual([])
+    t.is(e.eligible, true)
+    t.deepEqual(e.via, ['zone-selection'])
+    t.is(e.excluded, false)
+    t.deepEqual(e.reasons, [])
+    t.deepEqual(e.conflicts, [])
   })
 
-  it('directly whitelisted + CAG match → eligible, via ad-group-whitelist + zone-selection', () => {
+  test('eligibility > directly whitelisted + CAG match → eligible, via ad-group-whitelist + zone-selection', t => {
     const e = eligibility(input({ params: { zoneId: [ZONE] } }))
-    expect(e.eligible).toBe(true)
-    expect(e.via).toEqual(['ad-group-whitelist', 'zone-selection'])
+    t.is(e.eligible, true)
+    t.deepEqual(e.via, ['ad-group-whitelist', 'zone-selection'])
   })
 
-  it('targets a DIFFERENT zone (same CAG) → not eligible, targets-other-zones', () => {
+  test('eligibility > targets a DIFFERENT zone (same CAG) → not eligible, targets-other-zones', t => {
     const e = eligibility(input({ params: { zoneId: ['other1', 'other2'] } }))
-    expect(e.eligible).toBe(false)
-    expect(e.reasons).toEqual(['targets-other-zones'])
-    expect(e.via).toEqual(['zone-selection']) // CAG still matches, just not scoped in
+    t.is(e.eligible, false)
+    t.deepEqual(e.reasons, ['targets-other-zones'])
+    t.deepEqual(e.via, ['zone-selection']) // CAG still matches, just not scoped in
   })
 
-  it('blacklist wins: zone in exceptParams → excluded even with a whitelist', () => {
+  test('eligibility > blacklist wins: zone in exceptParams → excluded even with a whitelist', t => {
     const e = eligibility(input({ params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } }))
-    expect(e.eligible).toBe(false)
-    expect(e.excluded).toBe(true)
-    expect(e.reasons).toContain('blacklisted')
-    expect(e.conflicts).toContain('targets-and-excepts')
+    t.is(e.eligible, false)
+    t.is(e.excluded, true)
+    t.true(e.reasons.includes('blacklisted'))
+    t.true(e.conflicts.includes('targets-and-excepts'))
   })
 
-  it('CAG mismatch with a whitelist → not eligible, cag-mismatch + whitelisted-cag-mismatch conflict', () => {
+  test('eligibility > CAG mismatch with a whitelist → not eligible, cag-mismatch + whitelisted-cag-mismatch conflict', t => {
     const e = eligibility(input({ params: { zoneId: [ZONE] }, creativeAssetGroupId: 'other' }))
-    expect(e.eligible).toBe(false)
-    expect(e.reasons).toContain('cag-mismatch')
-    expect(e.conflicts).toEqual(['whitelisted-cag-mismatch'])
+    t.is(e.eligible, false)
+    t.true(e.reasons.includes('cag-mismatch'))
+    t.deepEqual(e.conflicts, ['whitelisted-cag-mismatch'])
   })
 
-  it("ad-level params do NOT decide group eligibility (per-ad is a later check): an ad whitelisting the zone can't make a group that targets other zones eligible", () => {
+  test('eligibility > ad-level params do NOT decide group eligibility (per-ad is a later check): an ad whitelisting the zone can\'t make a group that targets other zones eligible', t => {
     const e = eligibility(input({ params: { zoneId: ['other'] } }, [{ id: 'ad1', params: { zoneId: [ZONE] } }]))
-    expect(e.eligible).toBe(false)
-    expect(e.reasons).toEqual(['targets-other-zones'])
-    expect(e.via).toEqual(['zone-selection']) // no ad-level-whitelist in group via
+    t.is(e.eligible, false)
+    t.deepEqual(e.reasons, ['targets-other-zones'])
+    t.deepEqual(e.via, ['zone-selection']) // no ad-level-whitelist in group via
   })
 
-  it('archived ad group is never eligible (out of service), even if whitelisted + CAG match', () => {
+  test('eligibility > archived ad group is never eligible (out of service), even if whitelisted + CAG match', t => {
     const e = eligibility(input({ params: { zoneId: [ZONE] }, archived: true }))
-    expect(e.eligible).toBe(false)
-    expect(e.reasons).toEqual(['archived'])
+    t.is(e.eligible, false)
+    t.deepEqual(e.reasons, ['archived'])
   })
 
-  it('free radical only within its CAG: zero zones but CAG mismatch → not eligible', () => {
+  test('eligibility > free radical only within its CAG: zero zones but CAG mismatch → not eligible', t => {
     const e = eligibility(input({ params: {}, creativeAssetGroupId: 'other' }))
-    expect(e.eligible).toBe(false)
-    expect(e.reasons).toEqual(['cag-mismatch'])
-    expect(e.via).toEqual([])
+    t.is(e.eligible, false)
+    t.deepEqual(e.reasons, ['cag-mismatch'])
+    t.deepEqual(e.via, [])
   })
-})
+}
 
-describe('adServesInZone (per-ad last targeting check)', () => {
-  it('ad with no params serves wherever its group is eligible', () => {
-    expect(adServesInZone({ id: 'a' }, ZONE)).toBe(true)
+{ // adServesInZone (per-ad last targeting check)
+  test('adServesInZone (per-ad last targeting check) > ad with no params serves wherever its group is eligible', t => {
+    t.is(adServesInZone({ id: 'a' }, ZONE), true)
   })
-  it('ad blacklisting the zone does not serve there (its siblings still do)', () => {
-    expect(adServesInZone({ id: 'a', exceptParams: { zoneId: [ZONE] } }, ZONE)).toBe(false)
+  test('adServesInZone (per-ad last targeting check) > ad blacklisting the zone does not serve there (its siblings still do)', t => {
+    t.is(adServesInZone({ id: 'a', exceptParams: { zoneId: [ZONE] } }, ZONE), false)
   })
-  it('ad whitelisting only other zones is confined there → does not serve here', () => {
-    expect(adServesInZone({ id: 'a', params: { zoneId: ['other'] } }, ZONE)).toBe(false)
+  test('adServesInZone (per-ad last targeting check) > ad whitelisting only other zones is confined there → does not serve here', t => {
+    t.is(adServesInZone({ id: 'a', params: { zoneId: ['other'] } }, ZONE), false)
   })
-  it('ad whitelisting this zone serves here', () => {
-    expect(adServesInZone({ id: 'a', params: { zoneId: [ZONE] } }, ZONE)).toBe(true)
+  test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone serves here', t => {
+    t.is(adServesInZone({ id: 'a', params: { zoneId: [ZONE] } }, ZONE), true)
   })
-})
+}
 
-describe('zoneEligibility (zone → groups, bucketed by scoping)', () => {
+{ // zoneEligibility (zone → groups, bucketed by scoping)
   const groups = [
     { id: 'direct', creativeAssetGroupId: CAG, params: { zoneId: [ZONE] } }, // whitelisted, eligible
     { id: 'radical', creativeAssetGroupId: CAG, params: {} }, // free radical
@@ -107,25 +107,25 @@ describe('zoneEligibility (zone → groups, bucketed by scoping)', () => {
     { id: 'both', creativeAssetGroupId: CAG, params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } } // targets+excepts
   ]
 
-  it('directlyTargeted = ad-group-whitelisted & not blacklisted (reconciles to the inventory 83), incl. CAG-mismatch', () => {
+  test('zoneEligibility (zone → groups, bucketed by scoping) > directlyTargeted = ad-group-whitelisted & not blacklisted (reconciles to the inventory 83), incl. CAG-mismatch', t => {
     const r = zoneEligibility(groups, zone, {})
-    expect(r.directlyTargeted.map((e) => e.adGroupId).sort()).toEqual(['cagmiss', 'direct'])
+    t.deepEqual(r.directlyTargeted.map((e) => e.adGroupId).sort(), ['cagmiss', 'direct'])
   })
-  it('keeps a whitelisted-but-ineligible group in directlyTargeted with its conflict surfaced (no silent drop)', () => {
+  test('zoneEligibility (zone → groups, bucketed by scoping) > keeps a whitelisted-but-ineligible group in directlyTargeted with its conflict surfaced (no silent drop)', t => {
     const r = zoneEligibility(groups, zone, {})
     const cm = r.directlyTargeted.find((e) => e.adGroupId === 'cagmiss')
-    expect(cm.eligible).toBe(false)
-    expect(cm.conflicts).toEqual(['whitelisted-cag-mismatch'])
+    t.is(cm.eligible, false)
+    t.deepEqual(cm.conflicts, ['whitelisted-cag-mismatch'])
   })
-  it('freeRadicals = eligible but not ad-group-whitelisted', () => {
+  test('zoneEligibility (zone → groups, bucketed by scoping) > freeRadicals = eligible but not ad-group-whitelisted', t => {
     const r = zoneEligibility(groups, zone, {})
-    expect(r.freeRadicals.map((e) => e.adGroupId)).toEqual(['radical'])
+    t.deepEqual(r.freeRadicals.map((e) => e.adGroupId), ['radical'])
   })
-  it('targets-and-excepts goes to conflicting, not directlyTargeted', () => {
+  test('zoneEligibility (zone → groups, bucketed by scoping) > targets-and-excepts goes to conflicting, not directlyTargeted', t => {
     const r = zoneEligibility(groups, zone, {})
-    expect(r.conflicting.map((e) => e.adGroupId)).toEqual(['both'])
-    expect(r.conflicting[0].conflicts).toContain('targets-and-excepts')
-    expect(r.directlyTargeted.map((e) => e.adGroupId)).not.toContain('both')
+    t.deepEqual(r.conflicting.map((e) => e.adGroupId), ['both'])
+    t.true(r.conflicting[0].conflicts.includes('targets-and-excepts'))
+    t.false(r.directlyTargeted.map((e) => e.adGroupId).includes('both'))
   })
 
   /**
@@ -138,89 +138,89 @@ describe('zoneEligibility (zone → groups, bucketed by scoping)', () => {
    * inventory groups[]` therefore only holds while conflicting is 0 — the honest
    * invariant is per-bucket set equality.
    */
-  it('A1 — the two tools agree bucket-for-bucket when conflicting is non-empty', () => {
+  test('zoneEligibility (zone → groups, bucketed by scoping) > A1 — the two tools agree bucket-for-bucket when conflicting is non-empty', t => {
     const { targeted, conflicting } = selectTargeting(groups, ZONE)
     const r = zoneEligibility(groups, zone, {})
 
     const ids = (xs) =>
       xs.map((x) => x.id ?? x.adGroupId).sort()
 
-    expect(ids(r.directlyTargeted)).toEqual(ids(targeted)) // same targeted set
-    expect(ids(r.conflicting)).toEqual(ids(conflicting)) // same conflicting set
-    expect(r.conflicting.length).toBeGreaterThan(0) // the case prod can't reach
+    t.deepEqual(ids(r.directlyTargeted), ids(targeted)) // same targeted set
+    t.deepEqual(ids(r.conflicting), ids(conflicting)) // same conflicting set
+    t.true(r.conflicting.length > 0) // the case prod can't reach
     // Disjoint: a group is never in both buckets.
-    expect(ids(r.directlyTargeted).filter((id) => ids(r.conflicting).includes(id))).toEqual([])
+    t.deepEqual(ids(r.directlyTargeted).filter((id) => ids(r.conflicting).includes(id)), [])
     // And the sum identity as usually stated holds only because the inventory tool
     // reports conflicting separately from groups[] — assert both halves, not the sum.
-    expect(r.directlyTargeted.length + r.conflicting.length).toBe(targeted.length + conflicting.length)
+    t.is(r.directlyTargeted.length + r.conflicting.length, targeted.length + conflicting.length)
   })
-})
+}
 
-describe('offerEligibility (ad group × ad grain)', () => {
+{ // offerEligibility (ad group × ad grain)
   const untargeted = { id: 'ag', creativeAssetGroupId: CAG, params: {} }
   const verdict = (adGroup) => eligibility({ adGroup, zone, ads: [] })
 
-  it('untargeted ad under an untargeted group → free radical (serves via shared CAG only)', () => {
+  test('offerEligibility (ad group × ad grain) > untargeted ad under an untargeted group → free radical (serves via shared CAG only)', t => {
     const o = offerEligibility(verdict(untargeted), untargeted, { id: 'ad1' }, zone)
-    expect(o.serves).toBe(true)
-    expect(o.freeRadical).toBe(true)
-    expect(o.scoped_via).toEqual(['zone-selection'])
+    t.is(o.serves, true)
+    t.is(o.freeRadical, true)
+    t.deepEqual(o.scoped_via, ['zone-selection'])
   })
 
-  it('zone-whitelisted ad under an untargeted group → ad-level-TARGETED, NOT a free radical', () => {
+  test('offerEligibility (ad group × ad grain) > zone-whitelisted ad under an untargeted group → ad-level-TARGETED, NOT a free radical', t => {
     const ad = { id: 'ad1', params: { zoneId: [ZONE] } }
     const o = offerEligibility(verdict(untargeted), untargeted, ad, zone)
-    expect(o.serves).toBe(true)
-    expect(o.freeRadical).toBe(false)
-    expect(o.scoped_via).toEqual(['ad-level-whitelist', 'zone-selection'])
+    t.is(o.serves, true)
+    t.is(o.freeRadical, false)
+    t.deepEqual(o.scoped_via, ['ad-level-whitelist', 'zone-selection'])
   })
 
-  it('ad-level blacklist excludes the offer even under an eligible untargeted group', () => {
+  test('offerEligibility (ad group × ad grain) > ad-level blacklist excludes the offer even under an eligible untargeted group', t => {
     const ad = { id: 'ad1', exceptParams: { zoneId: [ZONE] } }
     const o = offerEligibility(verdict(untargeted), untargeted, ad, zone)
-    expect(o.serves).toBe(false)
-    expect(o.freeRadical).toBe(false)
-    expect(o.scoped_via).toContain('ad-level-blacklist')
-    expect(o.reasons).toContain('ad-blacklisted')
+    t.is(o.serves, false)
+    t.is(o.freeRadical, false)
+    t.true(o.scoped_via.includes('ad-level-blacklist'))
+    t.true(o.reasons.includes('ad-blacklisted'))
   })
 
-  it('ad confined to other zones → does not serve, not a free radical', () => {
+  test('offerEligibility (ad group × ad grain) > ad confined to other zones → does not serve, not a free radical', t => {
     const ad = { id: 'ad1', params: { zoneId: ['other'] } }
     const o = offerEligibility(verdict(untargeted), untargeted, ad, zone)
-    expect(o.serves).toBe(false)
-    expect(o.reasons).toContain('ad-targets-other-zones')
+    t.is(o.serves, false)
+    t.true(o.reasons.includes('ad-targets-other-zones'))
   })
 
-  it('group ineligible → no offer serves, even if the ad whitelists the zone (filterAdgroups runs first)', () => {
+  test('offerEligibility (ad group × ad grain) > group ineligible → no offer serves, even if the ad whitelists the zone (filterAdgroups runs first)', t => {
     const scopedOut = { id: 'ag', creativeAssetGroupId: CAG, params: { zoneId: ['other'] } }
     const o = offerEligibility(verdict(scopedOut), scopedOut, { id: 'ad1', params: { zoneId: [ZONE] } }, zone)
-    expect(o.serves).toBe(false)
-    expect(o.reasons).toEqual(['targets-other-zones'])
+    t.is(o.serves, false)
+    t.deepEqual(o.reasons, ['targets-other-zones'])
   })
 
-  it('offer under a directly-targeted group is never a free radical', () => {
+  test('offerEligibility (ad group × ad grain) > offer under a directly-targeted group is never a free radical', t => {
     const direct = { id: 'ag', creativeAssetGroupId: CAG, params: { zoneId: [ZONE] } }
     const o = offerEligibility(verdict(direct), direct, { id: 'ad1' }, zone)
-    expect(o.serves).toBe(true)
-    expect(o.freeRadical).toBe(false)
-    expect(o.scoped_via).toEqual(['ad-group-whitelist', 'zone-selection'])
+    t.is(o.serves, true)
+    t.is(o.freeRadical, false)
+    t.deepEqual(o.scoped_via, ['ad-group-whitelist', 'zone-selection'])
   })
-})
+}
 
-describe('offerRollup (the over-count the group grain hides)', () => {
+{ // offerRollup (the over-count the group grain hides)
   const untargeted = { id: 'ag', creativeAssetGroupId: CAG, params: {} }
   const v = eligibility({ adGroup: untargeted, zone, ads: [] })
 
-  it('untargeted group whose ONLY ad is zone-whitelisted → free-radical GROUP but 0 free-radical offers', () => {
+  test('offerRollup (the over-count the group grain hides) > untargeted group whose ONLY ad is zone-whitelisted → free-radical GROUP but 0 free-radical offers', t => {
     const r = offerRollup(v, untargeted, [{ id: 'ad1', params: { zoneId: [ZONE] } }], zone, LIVE)
-    expect(v.eligible).toBe(true) // group grain still counts it
-    expect(r.freeRadical).toBe(0)
-    expect(r.adLevelTargeted).toBe(1)
-    expect(r.inScope).toBe(1)
-    expect(r.freeRadicalAdIds).toEqual([])
+    t.is(v.eligible, true) // group grain still counts it
+    t.is(r.freeRadical, 0)
+    t.is(r.adLevelTargeted, 1)
+    t.is(r.inScope, 1)
+    t.deepEqual(r.freeRadicalAdIds, [])
   })
 
-  it('mixed group: counts each offer at its own grain', () => {
+  test('offerRollup (the over-count the group grain hides) > mixed group: counts each offer at its own grain', t => {
     const ads = [
       { id: 'free1' }, // free radical
       { id: 'free2' }, // free radical
@@ -229,15 +229,15 @@ describe('offerRollup (the over-count the group grain hides)', () => {
       { id: 'elsewhere', params: { zoneId: ['other'] } }// confined elsewhere
     ]
     const r = offerRollup(v, untargeted, ads, zone, LIVE)
-    expect(r.total).toBe(5)
-    expect(r.inScope).toBe(3)
-    expect(r.freeRadical).toBe(2)
-    expect(r.freeRadicalAdIds).toEqual(['free1', 'free2'])
-    expect(r.adLevelTargeted).toBe(1)
-    expect(r.adLevelBlacklisted).toBe(1)
-    expect(r.confinedElsewhere).toBe(1)
+    t.is(r.total, 5)
+    t.is(r.inScope, 3)
+    t.is(r.freeRadical, 2)
+    t.deepEqual(r.freeRadicalAdIds, ['free1', 'free2'])
+    t.is(r.adLevelTargeted, 1)
+    t.is(r.adLevelBlacklisted, 1)
+    t.is(r.confinedElsewhere, 1)
   })
-})
+}
 
 /**
  * D3 from the 2026-08-03 contract review: an untargeted ad group whose ads are ALL
@@ -246,7 +246,7 @@ describe('offerRollup (the over-count the group grain hides)', () => {
  * Fixture recipe for a live run: untargeted group (params {}) on the zone's CAG,
  * holding ≥1 untargeted ad and ≥1 ad whose params.zoneId names the zone.
  */
-describe('D3 — the host row survives, the offer count does not', () => {
+{ // D3 — the host row survives, the offer count does not
   const untargeted = { id: 'host', name: 'host', creativeAssetGroupId: CAG, params: {} }
   const allWhitelisted = [
     { id: 'wl1', params: { zoneId: [ZONE] } },
@@ -254,23 +254,23 @@ describe('D3 — the host row survives, the offer count does not', () => {
     { id: 'wl3', params: { zoneId: [ZONE, 'other'] } }
   ]
 
-  it('group stays in the freeRadicals bucket (host row is never dropped)', () => {
+  test('D3 — the host row survives, the offer count does not > group stays in the freeRadicals bucket (host row is never dropped)', t => {
     const b = zoneEligibility([untargeted], zone, { host: allWhitelisted })
-    expect(b.freeRadicals.map((e) => e.adGroupId)).toEqual(['host'])
-    expect(b.directlyTargeted).toEqual([])
+    t.deepEqual(b.freeRadicals.map((e) => e.adGroupId), ['host'])
+    t.deepEqual(b.directlyTargeted, [])
   })
 
-  it('all three ads are ad-level-TARGETED, so zero free-radical offers', () => {
+  test('D3 — the host row survives, the offer count does not > all three ads are ad-level-TARGETED, so zero free-radical offers', t => {
     const v = eligibility({ adGroup: untargeted, zone, ads: allWhitelisted })
     const r = offerRollup(v, untargeted, allWhitelisted, zone, LIVE)
-    expect(r.total).toBe(3)
-    expect(r.inScope).toBe(3)
-    expect(r.freeRadical).toBe(0)
-    expect(r.adLevelTargeted).toBe(3)
-    expect(r.freeRadicalAdIds).toEqual([])
+    t.is(r.total, 3)
+    t.is(r.inScope, 3)
+    t.is(r.freeRadical, 0)
+    t.is(r.adLevelTargeted, 3)
+    t.deepEqual(r.freeRadicalAdIds, [])
   })
 
-  it('summary: 1 free-radical GROUP, 0 free-radical OFFERS, 3 ad-level-targeted', () => {
+  test('D3 — the host row survives, the offer count does not > summary: 1 free-radical GROUP, 0 free-radical OFFERS, 3 ad-level-targeted', t => {
     const v = eligibility({ adGroup: untargeted, zone, ads: allWhitelisted })
     const host = {
       id: 'host',
@@ -291,12 +291,12 @@ describe('D3 — the host row survives, the offer count does not', () => {
       offers: offerRollup(v, untargeted, allWhitelisted, zone, LIVE)
     }
     const s = summarizeEligibility([], [host], [])
-    expect(s.freeRadicalHosts).toBe(1)
-    expect(s.freeRadicalOffers).toBe(0)
-    expect(s.adLevelTargetedOffers).toBe(3)
+    t.is(s.freeRadicalHosts, 1)
+    t.is(s.freeRadicalOffers, 0)
+    t.is(s.adLevelTargetedOffers, 3)
   })
 
-  it('D2/D4 invariants hold on a mixed group', () => {
+  test('D3 — the host row survives, the offer count does not > D2/D4 invariants hold on a mixed group', t => {
     const ads = [
       { id: 'free1' }, { id: 'wl', params: { zoneId: [ZONE] } },
       { id: 'bl', exceptParams: { zoneId: [ZONE] } }, { id: 'away', params: { zoneId: ['other'] } }
@@ -304,18 +304,17 @@ describe('D3 — the host row survives, the offer count does not', () => {
     const v = eligibility({ adGroup: untargeted, zone, ads })
     const r = offerRollup(v, untargeted, ads, zone, LIVE)
     // D2: the disjoint-ish buckets never exceed the ad count
-    expect(r.freeRadical + r.adLevelTargeted + r.adLevelBlacklisted + r.confinedElsewhere)
-      .toBeLessThanOrEqual(r.total)
+    t.true(r.freeRadical + r.adLevelTargeted + r.adLevelBlacklisted + r.confinedElsewhere <= r.total)
     // D4: the id list is the free-radical count, not a superset
-    expect(r.freeRadicalAdIds).toHaveLength(r.freeRadical)
+    t.is(r.freeRadicalAdIds.length, r.freeRadical)
     // D5 (config side): every listed id is an untargeted, non-blacklisted ad
     for (const id of r.freeRadicalAdIds) {
       const ad = ads.find((a) => a.id === id)
-      expect(ad.params?.zoneId ?? []).toEqual([])
-      expect(ad.exceptParams?.zoneId ?? []).not.toContain(ZONE)
+      t.deepEqual(ad.params?.zoneId ?? [], [])
+      t.false(ad.exceptParams?.zoneId ?? [].includes(ZONE))
     }
   })
-})
+}
 
 /**
  * The live axis at the OFFER grain. Field case (`dr0xp2` on zone `6wahzt`, review
@@ -330,45 +329,45 @@ describe('D3 — the host row survives, the offer count does not', () => {
  * reads freeRadical: 1. The 4 ads below are a fixture for the multi-ad case, not a
  * copy of that row; the shape under test is dormant-host-with-free-radical-offers.
  */
-describe('free-radical offers have a live axis (the dr0xp2 shape)', () => {
+{ // free-radical offers have a live axis (the dr0xp2 shape)
   const untargeted = { id: 'dr0xp2', creativeAssetGroupId: CAG, params: {} }
   const v = eligibility({ adGroup: untargeted, zone, ads: [] })
   const ads = [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }, { id: 'a4' }]
 
-  it('campaign off → 4 free-radical offers, 0 of them live (standing trap, not exposure)', () => {
+  test('free-radical offers have a live axis (the dr0xp2 shape) > campaign off → 4 free-radical offers, 0 of them live (standing trap, not exposure)', t => {
     const r = offerRollup(v, untargeted, ads, zone, DARK)
-    expect(r.freeRadical).toBe(4)
-    expect(r.freeRadicalLive).toBe(0)
-    expect(r.inScope).toBe(4) // targeting passes at both levels…
-    expect(r.live).toBe(0) // …and none of it renders
+    t.is(r.freeRadical, 4)
+    t.is(r.freeRadicalLive, 0)
+    t.is(r.inScope, 4) // targeting passes at both levels…
+    t.is(r.live, 0) // …and none of it renders
   })
 
-  it('campaign on → the same 4 offers are live exposure', () => {
+  test('free-radical offers have a live axis (the dr0xp2 shape) > campaign on → the same 4 offers are live exposure', t => {
     const r = offerRollup(v, untargeted, ads, zone, LIVE)
-    expect(r.freeRadicalLive).toBe(4)
-    expect(r.live).toBe(4)
+    t.is(r.freeRadicalLive, 4)
+    t.is(r.live, 4)
   })
 
-  it('liveness is per ad, not per group', () => {
+  test('free-radical offers have a live axis (the dr0xp2 shape) > liveness is per ad, not per group', t => {
     const r = offerRollup(v, untargeted, ads, zone, (ad) => ad.id === 'a1' || ad.id === 'a3')
-    expect(r.freeRadical).toBe(4)
-    expect(r.freeRadicalLive).toBe(2)
+    t.is(r.freeRadical, 4)
+    t.is(r.freeRadicalLive, 2)
   })
 
-  it('live counts never exceed their targeting counts', () => {
+  test('free-radical offers have a live axis (the dr0xp2 shape) > live counts never exceed their targeting counts', t => {
     for (const isLive of [LIVE, DARK, (ad) => ad.id === 'a2']) {
       const r = offerRollup(v, untargeted, [...ads, { id: 'bl', exceptParams: { zoneId: [ZONE] } }], zone, isLive)
-      expect(r.freeRadicalLive).toBeLessThanOrEqual(r.freeRadical)
-      expect(r.live).toBeLessThanOrEqual(r.inScope)
+      t.true(r.freeRadicalLive <= r.freeRadical)
+      t.true(r.live <= r.inScope)
     }
   })
 
-  it('an ad-level-targeted ad is live but never a live FREE RADICAL', () => {
+  test('free-radical offers have a live axis (the dr0xp2 shape) > an ad-level-targeted ad is live but never a live FREE RADICAL', t => {
     const r = offerRollup(v, untargeted, [{ id: 'wl', params: { zoneId: [ZONE] } }], zone, LIVE)
-    expect(r.live).toBe(1)
-    expect(r.freeRadicalLive).toBe(0)
+    t.is(r.live, 1)
+    t.is(r.freeRadicalLive, 0)
   })
-})
+}
 
 /**
  * Field-found on Adnet (`xvret6`) 2026-08-04: 18 ads across 8 groups whitelist a zone
@@ -380,7 +379,7 @@ describe('free-radical offers have a live axis (the dr0xp2 shape)', () => {
  * Before this signal those groups were dropped from every bucket — the defect was
  * undiscoverable through the tools that exist to find exactly this.
  */
-describe('inert ad-level whitelist (dead config, the Adnet shape)', () => {
+{ // inert ad-level whitelist (dead config, the Adnet shape)
   const roofing = {
     id: 'p3a87b',
     name: 'Roofing',
@@ -389,34 +388,34 @@ describe('inert ad-level whitelist (dead config, the Adnet shape)', () => {
   }
   const escaping = { id: 'vk5xdn', params: { zoneId: [ZONE] } } // names the zone anyway
 
-  it('the offer carries the conflict and does not serve', () => {
+  test('inert ad-level whitelist (dead config, the Adnet shape) > the offer carries the conflict and does not serve', t => {
     const v = eligibility({ adGroup: roofing, zone, ads: [escaping] })
     const o = offerEligibility(v, roofing, escaping, zone)
-    expect(v.eligible).toBe(false)
-    expect(o.serves).toBe(false)
-    expect(o.conflicts).toEqual(['inert-ad-level-whitelist'])
-    expect(o.scoped_via).toContain('ad-level-whitelist')
-    expect(o.reasons).toContain('targets-other-zones')
-    expect(o.freeRadical).toBe(false)
+    t.is(v.eligible, false)
+    t.is(o.serves, false)
+    t.deepEqual(o.conflicts, ['inert-ad-level-whitelist'])
+    t.true(o.scoped_via.includes('ad-level-whitelist'))
+    t.true(o.reasons.includes('targets-other-zones'))
+    t.is(o.freeRadical, false)
   })
 
-  it('a whitelist under an ELIGIBLE group is not inert (narrowing, the common idiom)', () => {
+  test('inert ad-level whitelist (dead config, the Adnet shape) > a whitelist under an ELIGIBLE group is not inert (narrowing, the common idiom)', t => {
     const targeted = { id: '1oby5f', creativeAssetGroupId: CAG, params: { zoneId: [ZONE, 'hh4x9w'] } }
     const narrowing = { id: 'sk868g', params: { zoneId: [ZONE] } }
     const v = eligibility({ adGroup: targeted, zone, ads: [narrowing] })
     const o = offerEligibility(v, targeted, narrowing, zone)
-    expect(o.serves).toBe(true)
-    expect(o.conflicts).toEqual([])
+    t.is(o.serves, true)
+    t.deepEqual(o.conflicts, [])
   })
 
-  it('the group surfaces in its own bucket instead of being dropped', () => {
+  test('inert ad-level whitelist (dead config, the Adnet shape) > the group surfaces in its own bucket instead of being dropped', t => {
     const b = zoneEligibility([roofing], zone, { p3a87b: [escaping] })
-    expect(b.inertWhitelists.map((e) => e.adGroupId)).toEqual(['p3a87b'])
-    expect(b.inertWhitelists[0].conflicts).toContain('inert-ad-level-whitelist')
+    t.deepEqual(b.inertWhitelists.map((e) => e.adGroupId), ['p3a87b'])
+    t.true(b.inertWhitelists[0].conflicts.includes('inert-ad-level-whitelist'))
     // …and stays out of every reconciliation bucket.
-    expect(b.directlyTargeted).toEqual([])
-    expect(b.conflicting).toEqual([])
-    expect(b.freeRadicals).toEqual([])
+    t.deepEqual(b.directlyTargeted, [])
+    t.deepEqual(b.conflicting, [])
+    t.deepEqual(b.freeRadicals, [])
   })
 
   /**
@@ -426,28 +425,28 @@ describe('inert ad-level whitelist (dead config, the Adnet shape)', () => {
    * cag-mismatch was structurally unreachable rather than merely absent. It is reachable;
    * Adnet has none.
    */
-  it('admits every ineligibility cause, distinguishable by reasons[]', () => {
+  test('inert ad-level whitelist (dead config, the Adnet shape) > admits every ineligibility cause, distinguishable by reasons[]', t => {
     const wrongCag = { id: 'othercag', creativeAssetGroupId: 'different', params: { zoneId: ['z9'] } }
     const archived = { id: 'gone', creativeAssetGroupId: CAG, params: { zoneId: ['z9'] }, archived: true }
     const wl = { id: 'a', params: { zoneId: [ZONE] } }
 
     const b = zoneEligibility([wrongCag, archived], zone, { othercag: [wl], gone: [wl] })
-    expect(b.inertWhitelists.map((e) => e.adGroupId).sort()).toEqual(['gone', 'othercag'])
+    t.deepEqual(b.inertWhitelists.map((e) => e.adGroupId).sort(), ['gone', 'othercag'])
 
     const byId = new Map(b.inertWhitelists.map((e) => [e.adGroupId, e]))
-    expect(byId.get('othercag').reasons).toEqual(['cag-mismatch'])
-    expect(byId.get('othercag').via).toEqual([]) // no zone-selection — the tell
-    expect(byId.get('gone').reasons).toEqual(['archived'])
-    for (const e of b.inertWhitelists) expect(e.conflicts).toContain('inert-ad-level-whitelist')
+    t.deepEqual(byId.get('othercag').reasons, ['cag-mismatch'])
+    t.deepEqual(byId.get('othercag').via, []) // no zone-selection — the tell
+    t.deepEqual(byId.get('gone').reasons, ['archived'])
+    for (const e of b.inertWhitelists) t.true(e.conflicts.includes('inert-ad-level-whitelist'))
   })
 
-  it('an out-of-scope group with no whitelisted ad is still dropped (no noise)', () => {
+  test('inert ad-level whitelist (dead config, the Adnet shape) > an out-of-scope group with no whitelisted ad is still dropped (no noise)', t => {
     const plain = { id: 'ordinary' }
     const b = zoneEligibility([roofing], zone, { p3a87b: [plain] })
-    expect(b.inertWhitelists).toEqual([])
+    t.deepEqual(b.inertWhitelists, [])
   })
 
-  it('rolls up per group, counting only the dead ads', () => {
+  test('inert ad-level whitelist (dead config, the Adnet shape) > rolls up per group, counting only the dead ads', t => {
     const ads = [
       { id: 'vk5xdn', params: { zoneId: [ZONE] } }, // inert
       { id: '2j5j7q', params: { zoneId: [ZONE] } }, // inert
@@ -456,16 +455,16 @@ describe('inert ad-level whitelist (dead config, the Adnet shape)', () => {
     ]
     const v = eligibility({ adGroup: roofing, zone, ads })
     const r = offerRollup(v, roofing, ads, zone, LIVE)
-    expect(r.total).toBe(4)
-    expect(r.inScope).toBe(0) // group can't reach the zone — nothing serves
-    expect(r.inertWhitelisted).toBe(2)
-    expect(r.inertWhitelistedAdIds).toEqual(['vk5xdn', '2j5j7q'])
-    expect(r.freeRadical).toBe(0)
+    t.is(r.total, 4)
+    t.is(r.inScope, 0) // group can't reach the zone — nothing serves
+    t.is(r.inertWhitelisted, 2)
+    t.deepEqual(r.inertWhitelistedAdIds, ['vk5xdn', '2j5j7q'])
+    t.is(r.freeRadical, 0)
   })
-})
+}
 
 /** C3 — scoped_via is ONE enum across the tools that emit it. */
-describe('C3 — shared scoped_via domain', () => {
+{ // C3 — shared scoped_via domain
   const inventoryRow = (over, ads) => rollupZoneTargeting({
     zoneId: ZONE,
     zoneCag: CAG,
@@ -477,30 +476,30 @@ describe('C3 — shared scoped_via domain', () => {
     mode: 'all'
   }).groups[0]
 
-  it('the group-grain rollup emits ad-group-blacklist (the value that used to be missing)', () => {
+  test('C3 — shared scoped_via domain > the group-grain rollup emits ad-group-blacklist (the value that used to be missing)', t => {
     const r = inventoryRow({ params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } }, [])
-    expect(r.scoped_via).toContain('ad-group-blacklist')
+    t.true(r.scoped_via.includes('ad-group-blacklist'))
   })
 
-  it('group-grain values are all members of SCOPED_VIA', () => {
+  test('C3 — shared scoped_via domain > group-grain values are all members of SCOPED_VIA', t => {
     const r = inventoryRow(
       { params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } },
       [{ id: 'a1', params: { zoneId: [ZONE] } }, { id: 'a2', exceptParams: { zoneId: [ZONE] } }]
     )
-    expect(r.scoped_via).toHaveLength(5)
-    for (const v of r.scoped_via) expect(SCOPED_VIA).toContain(v)
+    t.is(r.scoped_via.length, 5)
+    for (const v of r.scoped_via) t.true(SCOPED_VIA.includes(v))
   })
 
-  it('offer-grain values are all members of the same SCOPED_VIA', () => {
+  test('C3 — shared scoped_via domain > offer-grain values are all members of the same SCOPED_VIA', t => {
     const ag = { id: 'ag1', creativeAssetGroupId: CAG, params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } }
     const v = eligibility({ adGroup: ag, zone, ads: [] })
     const o = offerEligibility(v, ag, { id: 'a1', params: { zoneId: [ZONE] }, exceptParams: { zoneId: [ZONE] } }, zone)
-    expect(o.scoped_via).toHaveLength(5)
-    for (const s of o.scoped_via) expect(SCOPED_VIA).toContain(s)
+    t.is(o.scoped_via.length, 5)
+    for (const s of o.scoped_via) t.true(SCOPED_VIA.includes(s))
   })
-})
+}
 
-describe('summarizeEligibility (bucket grain in the tool summary)', () => {
+{ // summarizeEligibility (bucket grain in the tool summary)
   const rollup = (o) => ({
     total: 0,
     inScope: 0,
@@ -535,75 +534,74 @@ describe('summarizeEligibility (bucket grain in the tool summary)', () => {
     ...over
   })
 
-  it('free-radical offers come from the free-radical bucket only; ad-level totals span both serving buckets', () => {
+  test('summarizeEligibility (bucket grain in the tool summary) > free-radical offers come from the free-radical bucket only; ad-level totals span both serving buckets', t => {
     const direct = [row('d1', { adLevelTargeted: 2, adLevelBlacklisted: 1, freeRadical: 99 })] // freeRadical impossible here
     const radicals = [row('r1', { freeRadical: 3, adLevelTargeted: 1 }), row('r2', { freeRadical: 0 })]
     const conflict = [row('c1', { adLevelTargeted: 7 }, { eligible: false, fully_live: false })]
     const s = summarizeEligibility(direct, radicals, conflict)
-    expect(s.freeRadicalOffers).toBe(3)
-    expect(s.adLevelTargetedOffers).toBe(3) // 2 direct + 1 radical, conflicting excluded
-    expect(s.adLevelBlacklistedOffers).toBe(1)
-    expect(s.freeRadicalHosts).toBe(2) // host grain still counts r2
-    expect(s.directlyTargeted).toBe(1)
-    expect(s.conflicting).toBe(1)
+    t.is(s.freeRadicalOffers, 3)
+    t.is(s.adLevelTargetedOffers, 3) // 2 direct + 1 radical, conflicting excluded
+    t.is(s.adLevelBlacklistedOffers, 1)
+    t.is(s.freeRadicalHosts, 2) // host grain still counts r2
+    t.is(s.directlyTargeted, 1)
+    t.is(s.conflicting, 1)
   })
 
   /** D1 at the live grain: the summary is the exact Σ over the free-radical rows,
    * and a dormant host contributes offers to freeRadicalOffers but none to Live. */
-  it('freeRadicalOffersLive sums only the live free-radical offers', () => {
+  test('summarizeEligibility (bucket grain in the tool summary) > freeRadicalOffersLive sums only the live free-radical offers', t => {
     const radicals = [
       row('live', { freeRadical: 3, freeRadicalLive: 3 }),
       row('dormant', { freeRadical: 5, freeRadicalLive: 0 }, { fully_live: false, campaign_on: false, off_reason: ['campaign'] }),
       row('partial', { freeRadical: 4, freeRadicalLive: 1 })
     ]
     const s = summarizeEligibility([], radicals, [])
-    expect(s.freeRadicalOffers).toBe(12)
-    expect(s.freeRadicalOffersLive).toBe(4)
-    expect(s.freeRadicalOffersLive).toBeLessThanOrEqual(s.freeRadicalOffers)
-    expect(s.freeRadicalHosts).toBe(3)
-    expect(s.freeRadicalHostsLive).toBe(2)
+    t.is(s.freeRadicalOffers, 12)
+    t.is(s.freeRadicalOffersLive, 4)
+    t.true(s.freeRadicalOffersLive <= s.freeRadicalOffers)
+    t.is(s.freeRadicalHosts, 3)
+    t.is(s.freeRadicalHostsLive, 2)
     // the standing traps the reviewer wants derivable per row, no headline counter
-    expect(radicals.filter((r) => r.offers.freeRadical > 0 && r.offers.freeRadicalLive === 0).map((r) => r.id))
-      .toEqual(['dormant'])
+    t.deepEqual(radicals.filter((r) => r.offers.freeRadical > 0 && r.offers.freeRadicalLive === 0).map((r) => r.id), ['dormant'])
   })
 
-  it('config-broken targeted groups stay counted in directlyTargeted and are flagged ineligible', () => {
+  test('summarizeEligibility (bucket grain in the tool summary) > config-broken targeted groups stay counted in directlyTargeted and are flagged ineligible', t => {
     const direct = [row('ok', {}), row('broken', {}, { eligible: false, fully_live: false })]
     const s = summarizeEligibility(direct, [], [])
-    expect(s.directlyTargeted).toBe(2)
-    expect(s.directlyTargetedIneligible).toBe(1)
-    expect(s.directlyTargetedLive).toBe(1)
+    t.is(s.directlyTargeted, 2)
+    t.is(s.directlyTargetedIneligible, 1)
+    t.is(s.directlyTargetedLive, 1)
   })
-})
+}
 
-describe('adGroupReach (group → zones it can serve/leak into)', () => {
+{ // adGroupReach (group → zones it can serve/leak into)
   const zones = [
     { id: 'za', creativeAssetGroupId: CAG },
     { id: 'zb', creativeAssetGroupId: CAG },
     { id: 'zc', creativeAssetGroupId: 'other' }
   ]
 
-  it('a free-radical group reaches every zone sharing its CAG', () => {
+  test('adGroupReach (group → zones it can serve/leak into) > a free-radical group reaches every zone sharing its CAG', t => {
     const r = adGroupReach({ id: 'ag', creativeAssetGroupId: CAG, params: {} }, zones, [])
-    expect(r.map((e) => e.zoneId)).toEqual(['za', 'zb'])
-    expect(r.every((e) => e.via.includes('zone-selection'))).toBe(true)
+    t.deepEqual(r.map((e) => e.zoneId), ['za', 'zb'])
+    t.is(r.every((e) => e.via.includes('zone-selection')), true)
   })
 
   // E1 as literally worded ("reach(X) ∋ Z ⟺ eligible(Z) ∋ X") does NOT hold on
   // response membership: a whitelisted-but-ineligible group is deliberately RETAINED
   // in directlyTargeted[] (so config breakage surfaces instead of vanishing) while
   // reach() filters to eligible only. The symmetry is over the ELIGIBLE set.
-  it('E1 — symmetry holds on eligibility, not on response membership', () => {
+  test('adGroupReach (group → zones it can serve/leak into) > E1 — symmetry holds on eligibility, not on response membership', t => {
     const broken = { id: 'mismatch', creativeAssetGroupId: 'other', params: { zoneId: ['za'] } }
     const zoneA = { id: 'za', creativeAssetGroupId: CAG }
     const b = zoneEligibility([broken], zoneA, {})
-    expect(b.directlyTargeted.map((e) => e.adGroupId)).toEqual(['mismatch']) // retained…
-    expect(b.directlyTargeted[0].eligible).toBe(false) // …but ineligible
-    expect(adGroupReach(broken, [zoneA], []).map((e) => e.zoneId)).toEqual([]) // so not reachable
+    t.deepEqual(b.directlyTargeted.map((e) => e.adGroupId), ['mismatch']) // retained…
+    t.is(b.directlyTargeted[0].eligible, false) // …but ineligible
+    t.deepEqual(adGroupReach(broken, [zoneA], []).map((e) => e.zoneId), []) // so not reachable
   })
 
-  it('a whitelisted group reaches only the zone it targets', () => {
+  test('adGroupReach (group → zones it can serve/leak into) > a whitelisted group reaches only the zone it targets', t => {
     const r = adGroupReach({ id: 'ag', creativeAssetGroupId: CAG, params: { zoneId: ['zb'] } }, zones, [])
-    expect(r.map((e) => e.zoneId)).toEqual(['zb'])
+    t.deepEqual(r.map((e) => e.zoneId), ['zb'])
   })
-})
+}

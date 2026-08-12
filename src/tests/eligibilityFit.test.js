@@ -8,7 +8,7 @@
  * targeted + 124 free-radical groups, which measured ~118k chars unpaged
  * against a 30k guard.
  */
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import { fitEligibility, summarizeEligibility } from '../tools/zoneEligibilityTools.js'
 
 const LIMIT = 30_000
@@ -97,145 +97,145 @@ function walk (full, bucket) {
 
 const FIELDS = ['offers', 'scoped_via', 'via', 'reasons', 'conflicts', 'fully_live', 'off_reason', 'eligible']
 
-describe('fitEligibility — small zone fits in one call (B1–B4)', () => {
+{ // fitEligibility — small zone fits in one call (B1–B4)
   const full = payload(5, 4, 1)
   const { header, json } = parse(fitEligibility(full, 'all', 0, LIMIT))
 
-  it('returns every bucket in full, complete:true, no next_offset', () => {
-    expect(json.complete).toBe(true)
-    expect(json.page.next_offset).toBeUndefined()
-    expect(json.directlyTargeted).toHaveLength(5)
-    expect(json.freeRadicals).toHaveLength(4)
-    expect(json.conflicting).toHaveLength(1)
+  test('fitEligibility — small zone fits in one call (B1–B4) > returns every bucket in full, complete:true, no next_offset', t => {
+    t.is(json.complete, true)
+    t.is(json.page.next_offset, undefined)
+    t.is(json.directlyTargeted.length, 5)
+    t.is(json.freeRadicals.length, 4)
+    t.is(json.conflicting.length, 1)
   })
 
-  it('B1/B2 — array lengths match the summary counts one-for-one', () => {
-    expect(json.directlyTargeted).toHaveLength(json.summary.directlyTargeted)
-    expect(json.freeRadicals).toHaveLength(json.summary.freeRadicalHosts)
-    expect(json.conflicting).toHaveLength(json.summary.conflicting)
+  test('fitEligibility — small zone fits in one call (B1–B4) > B1/B2 — array lengths match the summary counts one-for-one', t => {
+    t.is(json.directlyTargeted.length, json.summary.directlyTargeted)
+    t.is(json.freeRadicals.length, json.summary.freeRadicalHosts)
+    t.is(json.conflicting.length, json.summary.conflicting)
   })
 
-  it('header states exact counts and no page warning', () => {
-    expect(header).toContain('5 targeted')
-    expect(header).not.toContain('PARTIAL PAGE')
+  test('fitEligibility — small zone fits in one call (B1–B4) > header states exact counts and no page warning', t => {
+    t.true(header.includes('5 targeted'))
+    t.false(header.includes('PARTIAL PAGE'))
   })
-})
+}
 
-describe('fitEligibility — the inertWhitelists bucket', () => {
+{ // fitEligibility — the inertWhitelists bucket
   const full = payload(5, 4, 1, 3)
 
-  it('is selectable on its own and returns only inert rows', () => {
+  test('fitEligibility — the inertWhitelists bucket > is selectable on its own and returns only inert rows', t => {
     const { json } = parse(fitEligibility(full, 'inertWhitelists', 0, LIMIT))
-    expect(json.inertWhitelists).toHaveLength(3)
-    expect(json.directlyTargeted).toBeUndefined()
-    expect(json.page.total).toBe(3)
+    t.is(json.inertWhitelists.length, 3)
+    t.is(json.directlyTargeted, undefined)
+    t.is(json.page.total, 3)
     for (const r of json.inertWhitelists) {
-      expect(r.conflicts).toContain('inert-ad-level-whitelist')
-      expect(r.offers.inertWhitelisted).toBe(1)
-      expect(r.eligible).toBe(false) // nothing here serves
-      expect(r.offers.inScope).toBe(0)
+      t.true(r.conflicts.includes('inert-ad-level-whitelist'))
+      t.is(r.offers.inertWhitelisted, 1)
+      t.is(r.eligible, false) // nothing here serves
+      t.is(r.offers.inScope, 0)
     }
   })
 
-  it("counts at both grains in the summary and rides in bucket:'all'", () => {
+  test('fitEligibility — the inertWhitelists bucket > counts at both grains in the summary and rides in bucket:\'all\'', t => {
     const { header, json } = parse(fitEligibility(full, 'all', 0, LIMIT))
-    expect(json.summary.inertWhitelistGroups).toBe(3)
-    expect(json.summary.inertWhitelistOffers).toBe(3)
-    expect(json.page.total).toBe(13) // 5 + 4 + 1 + 3
-    expect(header).toContain('INERT ad-level whitelists')
+    t.is(json.summary.inertWhitelistGroups, 3)
+    t.is(json.summary.inertWhitelistOffers, 3)
+    t.is(json.page.total, 13) // 5 + 4 + 1 + 3
+    t.true(header.includes('INERT ad-level whitelists'))
   })
 
-  it('stays out of the reconciliation buckets', () => {
+  test('fitEligibility — the inertWhitelists bucket > stays out of the reconciliation buckets', t => {
     const { json } = parse(fitEligibility(full, 'all', 0, LIMIT))
     const ids = (k) => (json[k]).map((r) => r.id)
     for (const id of ids('inertWhitelists')) {
-      expect(ids('directlyTargeted')).not.toContain(id)
-      expect(ids('conflicting')).not.toContain(id)
+      t.false(ids('directlyTargeted').includes(id))
+      t.false(ids('conflicting').includes(id))
     }
     // directlyTargeted + conflicting is unchanged by the new bucket.
-    expect(json.summary.directlyTargeted + json.summary.conflicting).toBe(6)
+    t.is(json.summary.directlyTargeted + json.summary.conflicting, 6)
   })
 
-  it('says nothing in the header when there is no dead config', () => {
+  test('fitEligibility — the inertWhitelists bucket > says nothing in the header when there is no dead config', t => {
     const { header } = parse(fitEligibility(payload(5, 4, 1, 0), 'all', 0, LIMIT))
-    expect(header).not.toContain('INERT')
+    t.false(header.includes('INERT'))
   })
-})
+}
 
-describe('fitEligibility — review fixture scale, 83 + 124 (B5)', () => {
+{ // fitEligibility — review fixture scale, 83 + 124 (B5)
   const full = payload(83, 124)
 
-  it('stays under the response guard', () => {
-    expect(size(fitEligibility(full, 'all', 0, LIMIT))).toBeLessThanOrEqual(LIMIT)
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > stays under the response guard', t => {
+    t.true(size(fitEligibility(full, 'all', 0, LIMIT)) <= LIMIT)
   })
 
-  it('B5 — every returned row keeps its FULL field set (no id-string degradation)', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > B5 — every returned row keeps its FULL field set (no id-string degradation)', t => {
     const { json } = parse(fitEligibility(full, 'all', 0, LIMIT))
     const rows = [...json.directlyTargeted, ...json.freeRadicals]
-    expect(rows.length).toBeGreaterThan(0)
+    t.true(rows.length > 0)
     for (const r of rows) {
-      expect(typeof r).toBe('object')
-      for (const f of FIELDS) expect(r[f]).toBeDefined()
-      expect(Object.keys(r.offers)).toContain('freeRadical')
+      t.is(typeof r, 'object')
+      for (const f of FIELDS) t.not(r[f], undefined)
+      t.true(Object.keys(r.offers).includes('freeRadical'))
     }
   })
 
-  it('signals the partial page in both the body and the header', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > signals the partial page in both the body and the header', t => {
     const { header, json } = parse(fitEligibility(full, 'all', 0, LIMIT))
-    expect(json.complete).toBe(false)
-    expect(json.page.next_offset).toBe(json.page.returned)
-    expect(json.page.total).toBe(207)
-    expect(header).toContain('PARTIAL PAGE')
-    expect(header).toContain('offset:')
+    t.is(json.complete, false)
+    t.is(json.page.next_offset, json.page.returned)
+    t.is(json.page.total, 207)
+    t.true(header.includes('PARTIAL PAGE'))
+    t.true(header.includes('offset:'))
   })
 
-  it('summary is exact over the WHOLE set at every offset', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > summary is exact over the WHOLE set at every offset', t => {
     for (const offset of [0, 40, 150, 206]) {
       const { json } = parse(fitEligibility(full, 'all', offset, LIMIT))
-      expect(json.summary).toEqual(full.summary)
-      expect(json.summary.directlyTargeted).toBe(83)
-      expect(json.summary.freeRadicalHosts).toBe(124)
-      expect(json.summary.freeRadicalOffers).toBe(372) // 124 radical groups × 3 free-radical ads
+      t.deepEqual(json.summary, full.summary)
+      t.is(json.summary.directlyTargeted, 83)
+      t.is(json.summary.freeRadicalHosts, 124)
+      t.is(json.summary.freeRadicalOffers, 372) // 124 radical groups × 3 free-radical ads
     }
   })
 
-  it('paging is lossless — each row exactly once, no gaps, no duplicates', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > paging is lossless — each row exactly once, no gaps, no duplicates', t => {
     const { rows, pages } = walk(full, 'all')
-    expect(pages).toBeGreaterThan(1)
-    expect(rows).toHaveLength(207)
+    t.true(pages > 1)
+    t.is(rows.length, 207)
     const ids = rows.map((r) => r.id)
-    expect(new Set(ids).size).toBe(207)
-    expect(ids).toEqual([...full.directlyTargeted, ...full.freeRadicals].map((r) => r.id))
+    t.is(new Set(ids).size, 207)
+    t.deepEqual(ids, [...full.directlyTargeted, ...full.freeRadicals].map((r) => r.id))
   })
 
-  it("bucket:'freeRadicals' returns only free radicals, still fully paged and lossless", () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > bucket:\'freeRadicals\' returns only free radicals, still fully paged and lossless', t => {
     const { json } = parse(fitEligibility(full, 'freeRadicals', 0, LIMIT))
-    expect(json.directlyTargeted).toBeUndefined()
-    expect(json.conflicting).toBeUndefined()
-    expect(json.page.total).toBe(124)
-    expect(json.summary.directlyTargeted).toBe(83) // summary unaffected by the bucket filter
+    t.is(json.directlyTargeted, undefined)
+    t.is(json.conflicting, undefined)
+    t.is(json.page.total, 124)
+    t.is(json.summary.directlyTargeted, 83) // summary unaffected by the bucket filter
     const { rows } = walk(full, 'freeRadicals')
-    expect(rows.map((r) => r.id)).toEqual(full.freeRadicals.map((r) => r.id))
-    for (const r of rows) expect(r.offers.freeRadical).toBe(3)
+    t.deepEqual(rows.map((r) => r.id), full.freeRadicals.map((r) => r.id))
+    for (const r of rows) t.is(r.offers.freeRadical, 3)
   })
 
-  it('every page stays under the guard', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > every page stays under the guard', t => {
     let offset = 0
     while (offset !== undefined) {
       const result = fitEligibility(full, 'all', offset, LIMIT)
-      expect(size(result)).toBeLessThanOrEqual(LIMIT)
+      t.true(size(result) <= LIMIT)
       offset = parse(result).json.page?.next_offset
     }
   })
 
-  it('an offset past the end returns an empty page (never an error), and never claims complete', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > an offset past the end returns an empty page (never an error), and never claims complete', t => {
     const { json } = parse(fitEligibility(full, 'all', 999, LIMIT))
-    expect(json.page.returned).toBe(0)
-    expect(json.directlyTargeted).toEqual([])
-    expect(json.complete).toBe(false) // 0 rows is not the whole answer
+    t.is(json.page.returned, 0)
+    t.deepEqual(json.directlyTargeted, [])
+    t.is(json.complete, false) // 0 rows is not the whole answer
   })
 
-  it('a TAIL page never claims complete — complete means this one response holds everything', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > a TAIL page never claims complete — complete means this one response holds everything', t => {
     // Walk to the last page: it has no next_offset but is only a slice of 207.
     let offset = 0; let last
     while (true) {
@@ -244,14 +244,14 @@ describe('fitEligibility — review fixture scale, 83 + 124 (B5)', () => {
       if (json.page.next_offset === undefined) break
       offset = json.page.next_offset
     }
-    expect(offset).toBeGreaterThan(0)
-    expect(last.page.returned).toBeLessThan(last.page.total)
-    expect(last.complete).toBe(false)
+    t.true(offset > 0)
+    t.true(last.page.returned < last.page.total)
+    t.is(last.complete, false)
   })
 
   /** …and says so in the header. Field-reported twice as "complete is broken", so the
    * tail page states the rule instead of leaving it to be inferred from the flag. */
-  it('the tail page header announces FINAL PAGE and why complete is false', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > the tail page header announces FINAL PAGE and why complete is false', t => {
     let offset = 0; let header = ''
     while (true) {
       const result = fitEligibility(full, 'all', offset, LIMIT)
@@ -260,31 +260,31 @@ describe('fitEligibility — review fixture scale, 83 + 124 (B5)', () => {
       if (json.page.next_offset === undefined) break
       offset = json.page.next_offset
     }
-    expect(header).toContain('FINAL PAGE')
-    expect(header).toContain('no next_offset')
-    expect(header).not.toContain('PARTIAL PAGE')
+    t.true(header.includes('FINAL PAGE'))
+    t.true(header.includes('no next_offset'))
+    t.false(header.includes('PARTIAL PAGE'))
   })
 
-  it('complete:true implies the arrays equal the full selected slice (the B1/B2 key)', () => {
+  test('fitEligibility — review fixture scale, 83 + 124 (B5) > complete:true implies the arrays equal the full selected slice (the B1/B2 key)', t => {
     for (const bucket of ['all', 'directlyTargeted', 'freeRadicals', 'conflicting']) {
       for (const offset of [0, 5, 90, 999]) {
         const { json } = parse(fitEligibility(full, bucket, offset, LIMIT))
         if (!json.complete) continue
-        expect(json.page.offset).toBe(0)
-        expect(json.page.returned).toBe(json.page.total)
+        t.is(json.page.offset, 0)
+        t.is(json.page.returned, json.page.total)
       }
     }
   })
-})
+}
 
-describe('fitEligibility — pathological single oversize row', () => {
-  it('falls back to ids-only with complete:false and a re-run note, never a silent partial', () => {
+{ // fitEligibility — pathological single oversize row
+  test('fitEligibility — pathological single oversize row > falls back to ids-only with complete:false and a re-run note, never a silent partial', t => {
     const full = payload(1, 0)
     full.directlyTargeted[0].offers.freeRadicalAdIds = Array.from({ length: 5000 }, (_, i) => `ad${i}`)
     const { json } = parse(fitEligibility(full, 'all', 0, LIMIT))
-    expect(json.complete).toBe(false)
-    expect(json.ids).toEqual(['d0'])
-    expect(json.note).toContain('bucket')
-    expect(json.summary.directlyTargeted).toBe(1)
+    t.is(json.complete, false)
+    t.deepEqual(json.ids, ['d0'])
+    t.true(json.note.includes('bucket'))
+    t.is(json.summary.directlyTargeted, 1)
   })
-})
+}
