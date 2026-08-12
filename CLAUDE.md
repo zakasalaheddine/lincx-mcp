@@ -85,13 +85,13 @@ instead of separate `get_*_parents` tools — keeps the per-request tool surface
 
 ### Business tools never accept networkId
 Every business tool must get network context from the session, not from Claude.
-```ts
+```js
 // WRONG — never do this
 inputSchema: z.object({ networkId: z.string(), ... })
 
 // RIGHT — network comes from session automatically
-const data = await workApiRequest(session, "GET", "/api/your-endpoint", { params: { ... } });
-// → GET /api/your-endpoint?networkId=svce6t&...
+const data = await workApiRequest(session, 'GET', '/api/your-endpoint', { params: { ... } })
+// GET /api/your-endpoint?networkId=svce6t&...
 ```
 
 ### Always validate session before any API call
@@ -166,14 +166,17 @@ JWT authorizes Work API calls. They meet in Redis: `oauth:access:<token>` →
 
 ## Session model
 
-```ts
-interface Session {
-  session_id: string;       // UUID, lives in process memory only
-  user_id: string;          // decoded from JWT sub/user_id/email field
-  email: string;
-  auth_token: string;       // Lincx JWT — injected as Bearer on every API call
-  networks: Network[];      // fetched from /api/networks at login
-  active_network: string | null;  // short ID like "svce6t" — appended as ?networkId
+The shape (there are no type declarations any more — this is the documented
+contract, enforced by nothing but the code that reads it):
+
+```js
+{
+  session_id,      // UUID string, key of lincx:session:<uuid> in Redis
+  user_id,         // decoded from the JWT's sub/user_id/email field
+  email,
+  auth_token,      // Lincx JWT — injected as Bearer on every API call
+  networks,        // Network[] fetched from /api/networks at login
+  active_network   // short id like "svce6t", or null — appended as ?networkId
 }
 ```
 
@@ -270,42 +273,42 @@ defaults to `http://localhost:<PORT>`).
 1. Create `src/tools/yourDomainTools.js`
 2. Follow this pattern:
 
-```ts
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
-import { validateSession, resolveLincxSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded } from "../services/workApi.js";
+```js
+import { z } from 'zod'
+import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
+import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
 
-export function registerYourDomainTools(server: McpServer): void {
-  server.registerTool("your_tool_name", {
-    title: "Human Readable Name",
-    description: `Clear description of what this does and what it returns.`,
+export function registerYourDomainTools (server) {
+  server.registerTool('your_tool_name', {
+    title: 'Human Readable Name',
+    description: 'Clear description of what this does and what it returns.',
     inputSchema: z.object({
       // never include networkId here
-      limit: z.number().int().min(1).max(100).default(20),
+      limit: z.number().int().min(1).max(100).default(20)
     }).strict(),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId);
-    if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
+    const sessionId = await resolveLincxSession(extra?.sessionId)
+    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId);
-    if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
+    const v = await validateSession(sessionId)
+    if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
 
     try {
-      const data = await workApiRequest<YourResponseType>(v.session, "GET", "/api/your-endpoint", { params: { limit } });
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const data = await workApiRequest(v.session, 'GET', '/api/your-endpoint', { params: { limit } })
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
     } catch (err) {
-      return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
+      return { content: [{ type: 'text', text: handleWorkApiError(err) }] }
     }
-  });
+  })
 }
 ```
 
-3. Register it in `src/index.js`:
-```ts
-import { registerYourDomainTools } from "./tools/yourDomainTools.js";
-registerYourDomainTools(server);
+3. Register it in `createMcpServer()` in `src/server.js` (NOT `src/index.js` — that
+   is the bootstrap that loads secrets before importing the server):
+```js
+import { registerYourDomainTools } from './tools/yourDomainTools.js'
+registerYourDomainTools(server)
 ```
 
 4. Run `npm run lint`
@@ -593,3 +596,7 @@ concurrently, so anything sharing a module-level store or a global is
   leftover of the TypeScript era — do not remove it
 - `camelcase` is disabled per-file where OAuth params and Work API / tool-output
   fields are snake_case: those names are on the wire, not a style choice
+- `src/http/` owns everything Express used to do — `respond.js` (json/html/redirect),
+  `request.js` (query/header/clientIp/readBody, incl. the 100kb limit), `router.js`
+  (the route table). Never write to `res` directly in a route; use the helpers, which
+  no-op once `headersSent`
