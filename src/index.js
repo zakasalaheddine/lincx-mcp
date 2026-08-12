@@ -1,7 +1,7 @@
 /**
  * index.js — Lincx MCP Server entry point
  *
- * Two surfaces on the same Express app:
+ * Two surfaces on one bare Node HTTP server:
  *  1. HTTP login UI (GET /login, POST /api/login, GET /login/success)
  *  2. MCP Streamable HTTP transport (POST|GET|DELETE /mcp)
  *
@@ -9,11 +9,12 @@
  * transport; everything (Claude Code, Desktop, claude.ai) connects by URL.
  */
 
+import http from 'node:http'
+import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
-import express from 'express'
-import { randomUUID } from 'node:crypto'
+
 import { registerAuthTools } from './tools/authTools.js'
 import { registerNetworkTools } from './tools/networkTools.js'
 import { registerTemplateTools } from './tools/templateTools.js'
@@ -33,18 +34,16 @@ import { registerZoneInventoryTools } from './tools/zoneInventoryTools.js'
 import { registerZoneEligibilityTools } from './tools/zoneEligibilityTools.js'
 import { registerAnalysisTools } from './tools/analysisTools.js'
 import { registerResources } from './tools/resources.js'
-import { mcpLimiter } from './middleware/rateLimit.js'
 import { installToolGuards } from './middleware/toolGuard.js'
+import { mcpLimiter } from './middleware/rateLimit.js'
 import { SERVER_PORT, IS_PRODUCTION, PUBLIC_BASE_URL } from './constants.js'
 import {
   resolveLincxSessionFromBearer,
   bindMcpToLincxSession
 } from './services/sessionManager.js'
-import { wellKnownRouter } from './routes/wellKnown.js'
-import { oauthRegisterRouter } from './routes/oauthRegister.js'
-import { oauthTokenRouter } from './routes/oauthToken.js'
-import { statsRouter } from './routes/stats.js'
-import { loginRouter } from './routes/login.js'
+import { buildRouter, onRouterError } from './http/router.js'
+import { json, noContent } from './http/respond.js'
+import { header, readBody } from './http/request.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MCP SERVER
@@ -84,55 +83,6 @@ function createMcpServer () {
   return server
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// EXPRESS
-// ─────────────────────────────────────────────────────────────────────────────
-
-const app = express()
-app.set('trust proxy', 1) // exactly ONE reverse-proxy hop in front; needed for correct rate-limit IPs
-app.use(express.json())
-app.use(express.urlencoded({ extended: true }))
-
-// ── /health (no auth, fast — the platform healthcheck/probe target) ─────────
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    uptime_s: Math.round(process.uptime()),
-    active_sessions: transports.size
-  })
-})
-
-// ── OAuth discovery + registration (public, no access-key gate) ──────────────
-app.use('/.well-known', wellKnownRouter)
-app.use('/oauth', oauthRegisterRouter)
-app.use('/oauth', oauthTokenRouter)
-app.use(statsRouter)
-
-// ── Login UI + OAuth authorize/token-exchange (public — OAuth handles auth) ──
-app.use(loginRouter)
-
-// ── Dev debug routes (non-production only) ───────────────────────────────────
-if (!IS_PRODUCTION) {
-  const devServer = createMcpServer()
-  const registeredTools = (devServer)._registeredTools
-
-  app.get('/dev/tools', (_req, res) => {
-    const tools = Object.entries(registeredTools).map(([name, t]) => ({ name, description: t.description }))
-    res.json({ tools })
-  })
-
-  app.post('/dev/tools/:name', async (req, res) => {
-    const tool = registeredTools[req.params.name]
-    if (!tool) { res.status(404).json({ error: `Tool '${req.params.name}' not found` }); return }
-    try {
-      const result = await tool.handler(req.body ?? {}, { sessionId: 'stdio' })
-      res.json(result)
-    } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
-    }
-  })
-}
-
 // ── MCP HTTP transport — per-session ────────────────────────────────────────
 const transports = new Map()
 
@@ -166,40 +116,59 @@ function bearerChallengeHeader () {
   return `Bearer resource_metadata="${PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"`
 }
 
-app.post('/mcp', mcpLimiter, async (req, res) => {
+/** 401 + the RFC-9728 challenge. `withBody` matches what each method used to send. */
+function unauthorized (res, withBody) {
+  res.setHeader('WWW-Authenticate', bearerChallengeHeader())
+  if (withBody) {
+    json(res, 401, { error: 'unauthorized', error_description: 'Bearer token required.' })
+  } else {
+    noContent(res, 401)
+  }
+}
+
+async function mcpPost (req, res, _opts, cb) {
+  if (!mcpLimiter(req, res)) return
+
   // TEMPORARY probe (remove after the Phase 0 GAE decision — see #64).
   // Gives GET /mcp below a denominator to be measured against.
-  console.error(JSON.stringify({ probe: 'POST /mcp', ua: req.header('user-agent') ?? '' }))
-  try {
-    const lincxSessionId = await resolveLincxSessionFromBearer(req.header('authorization'))
-    if (!lincxSessionId) {
-      res.setHeader('WWW-Authenticate', bearerChallengeHeader())
-      res.status(401).json({ error: 'unauthorized', error_description: 'Bearer token required.' })
-      return
-    }
+  console.error(JSON.stringify({ probe: 'POST /mcp', ua: header(req, 'user-agent') ?? '' }))
 
-    const existingId = req.header('mcp-session-id')
+  let body
+  try {
+    // POST reads the stream HERE and hands the parsed body to the transport
+    // below. The SDK accepts a pre-parsed body as handleRequest's 3rd argument
+    // or reads the stream itself — doing half of each (reading here, not
+    // passing it) leaves it awaiting a consumed stream forever.
+    body = await readBody(req)
+  } catch (err) {
+    return cb(err)
+  }
+
+  try {
+    const lincxSessionId = await resolveLincxSessionFromBearer(header(req, 'authorization'))
+    if (!lincxSessionId) return unauthorized(res, true)
+
+    const existingId = header(req, 'mcp-session-id')
     let transport
 
     if (existingId && transports.has(existingId)) {
       // Established session — reuse its transport (and its server).
       transport = transports.get(existingId)
-    } else if (!existingId && isInitializeRequest(req.body)) {
+    } else if (!existingId && isInitializeRequest(body)) {
       // New session handshake — stand up a fresh transport + server.
       transport = await createTransport()
     } else {
       // Unknown/stale session id, or a non-initialize request without a session.
       // (Common after a server restart drops in-memory transports — tell the
       // client to re-initialize instead of silently minting a new session.)
-      res.status(400).json({
+      return json(res, 400, {
         jsonrpc: '2.0',
-        id: (req.body)?.id ?? null,
+        id: body?.id ?? null,
         error: {
           code: -32000,
           message: 'Bad Request: unknown or missing MCP session ID. Re-initialize the session.'
         }
       })
-      return
     }
 
     // Refresh the transport→Lincx binding on every request so reconnects (new
@@ -208,20 +177,23 @@ app.post('/mcp', mcpLimiter, async (req, res) => {
       await bindMcpToLincxSession(transport.sessionId, lincxSessionId)
     }
 
-    await transport.handleRequest(req, res, req.body)
+    await transport.handleRequest(req, res, body)
   } catch (err) {
     console.error('[MCP]    POST /mcp error:', err instanceof Error ? err.message : String(err))
     if (!res.headersSent) {
-      res.status(500).json({
+      json(res, 500, {
         jsonrpc: '2.0',
-        id: (req.body)?.id ?? null,
+        id: body?.id ?? null,
         error: { code: -32603, message: 'Internal server error.' }
       })
     }
   }
-})
+}
 
-app.get('/mcp', async (req, res) => {
+// GET and DELETE take NO body reader. GET /mcp is the long-lived SSE stream;
+// awaiting a body on it would hang the request forever, and the SDK reads
+// whatever it needs from the raw request itself.
+async function mcpGet (req, res) {
   // TEMPORARY probe (remove after the Phase 0 GAE decision — see #64).
   //
   // enableJsonResponse:true above means POST /mcp answers with application/json,
@@ -233,64 +205,101 @@ app.get('/mcp', async (req, res) => {
   // is a credential.
   console.error(JSON.stringify({
     probe: 'GET /mcp',
-    ua: req.header('user-agent') ?? '',
-    has_session: Boolean(req.header('mcp-session-id')),
-    has_auth: Boolean(req.header('authorization')),
-    accept: req.header('accept') ?? ''
+    ua: header(req, 'user-agent') ?? '',
+    has_session: Boolean(header(req, 'mcp-session-id')),
+    has_auth: Boolean(header(req, 'authorization')),
+    accept: header(req, 'accept') ?? ''
   }))
-  const lincxSessionId = await resolveLincxSessionFromBearer(req.header('authorization'))
-  if (!lincxSessionId) {
-    res.setHeader('WWW-Authenticate', bearerChallengeHeader())
-    res.status(401).end()
-    return
-  }
-  const existingId = req.header('mcp-session-id')
-  if (!existingId || !transports.has(existingId)) {
-    res.status(404).json({ error: 'Unknown MCP session.' })
-    return
-  }
-  await transports.get(existingId).handleRequest(req, res)
-})
 
-app.delete('/mcp', async (req, res) => {
-  const lincxSessionId = await resolveLincxSessionFromBearer(req.header('authorization'))
-  if (!lincxSessionId) {
-    res.setHeader('WWW-Authenticate', bearerChallengeHeader())
-    res.status(401).end()
-    return
-  }
-  const existingId = req.header('mcp-session-id')
+  const lincxSessionId = await resolveLincxSessionFromBearer(header(req, 'authorization'))
+  if (!lincxSessionId) return unauthorized(res, false)
+
+  const existingId = header(req, 'mcp-session-id')
   if (!existingId || !transports.has(existingId)) {
-    res.status(404).end()
-    return
+    return json(res, 404, { error: 'Unknown MCP session.' })
   }
   await transports.get(existingId).handleRequest(req, res)
-})
+}
+
+async function mcpDelete (req, res) {
+  const lincxSessionId = await resolveLincxSessionFromBearer(header(req, 'authorization'))
+  if (!lincxSessionId) return unauthorized(res, false)
+
+  const existingId = header(req, 'mcp-session-id')
+  if (!existingId || !transports.has(existingId)) return noContent(res, 404)
+  await transports.get(existingId).handleRequest(req, res)
+}
+
+// ── Dev debug routes (non-production only) ───────────────────────────────────
+
+function buildDevHandlers () {
+  if (IS_PRODUCTION) return null
+  const registeredTools = createMcpServer()._registeredTools
+  return {
+    list: (_req, res) => {
+      const tools = Object.entries(registeredTools).map(([name, t]) => ({ name, description: t.description }))
+      json(res, 200, { tools })
+    },
+    call: async (req, res, opts, cb) => {
+      const tool = registeredTools[opts.params.name]
+      if (!tool) return json(res, 404, { error: `Tool '${opts.params.name}' not found` })
+      let body
+      try { body = await readBody(req) } catch (err) { return cb(err) }
+      try {
+        json(res, 200, await tool.handler(body ?? {}, { sessionId: 'stdio' }))
+      } catch (err) {
+        json(res, 500, { error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STARTUP
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function main () {
-  const httpServer = app.listen(SERVER_PORT)
-  httpServer.on('listening', () => {
-    console.error(`[HTTP]   Listening on :${SERVER_PORT}`)
-    console.error('[HTTP]   /health, /login, /mcp')
+/**
+ * Everything below is inside start() DELIBERATELY — importing this module must
+ * have no side effects. buildDevHandlers() constructs a whole McpServer (19 tool
+ * registrations), so at module scope every test that imports this file would pay
+ * for it at import time and could not choose a port.
+ *
+ * `port: 0` asks the OS for a free port — that is how a test avoids colliding
+ * with a running dev server.
+ */
+export function start ({ port = SERVER_PORT } = {}) {
+  const router = buildRouter({
+    health: (_req, res) => json(res, 200, {
+      status: 'ok',
+      uptime_s: Math.round(process.uptime()),
+      active_sessions: transports.size
+    }),
+    mcp: { post: mcpPost, get: mcpGet, del: mcpDelete },
+    dev: buildDevHandlers()
   })
+
+  const httpServer = http.createServer((req, res) => {
+    router(req, res, {}, (err) => onRouterError(err, req, res))
+  })
+
   httpServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(`[HTTP]   Port ${SERVER_PORT} in use — aborting.`)
-      process.exit(1)
+      console.error(`[HTTP]   Port ${port} in use — aborting.`)
     } else {
       console.error('[HTTP]   Server error:', err.message)
-      process.exit(1)
     }
+    process.exit(1)
   })
 
-  console.error('[MCP]    HTTP transport ready')
+  return new Promise((resolve) => {
+    httpServer.listen(port, () => {
+      const actual = httpServer.address().port
+      console.error(`[HTTP]   Listening on :${actual}`)
+      console.error('[HTTP]   /health, /login, /mcp')
+      console.error('[MCP]    HTTP transport ready')
+      resolve({ server: httpServer, port: actual })
+    })
+  })
 }
 
-main().catch((err) => {
-  console.error('[FATAL]', err)
-  process.exit(1)
-})
+await start()

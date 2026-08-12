@@ -4,14 +4,9 @@ import request from 'supertest'
 // Set the token BEFORE importing constants/route (constants read env at load).
 process.env.STATS_TOKEN = 'secret-xyz'
 
-const { buildTestApp } = await import('./helpers/testApp.js')
-const { statsRouter } = await import('../routes/stats.js')
+const { buildContractApp } = await import('./contract/buildApp.js')
 
-function app () {
-  const a = buildTestApp()
-  a.use(statsRouter)
-  return a
-}
+const app = () => buildContractApp()
 
 // GET /stats
 test('GET /stats > 401s without the right bearer token', async t => {
