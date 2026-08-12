@@ -116,4 +116,21 @@ test.serial('recordEventAsync > never throws when the session can\'t be resolved
     t.is(s.sequences.transitions['list_zones>get_zone'], 1)
     t.is(s.window.events, 3)
   })
+
+  // Every timestamp-derived field, in one test: these all read `event.ts`, and a
+  // rename that missed one returned undefined/NaN here while every other
+  // assertion above stayed green.
+  test.serial('computeStats > reports real timestamps for the window, per-user span and session order', t => {
+    const s = computeStats(events)
+
+    t.is(s.window.oldest_ts, 100)
+    t.is(s.window.newest_ts, 300)
+
+    const a = s.users.find((u) => u.user_id === 'a')
+    t.is(a.first_seen, 100)
+    t.is(a.last_seen, 200)
+
+    // s2's last event (300) is newer than s1's (200), so it sorts first.
+    t.deepEqual(s.sequences.recent.map((r) => r.session), ['s2', 's1'])
+  })
 }
