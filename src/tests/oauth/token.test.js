@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import request from 'supertest'
 import express from 'express'
 import { createHash } from 'node:crypto'
@@ -10,13 +10,13 @@ function challenge (verifier) {
   return createHash('sha256').update(verifier).digest('base64url')
 }
 
-describe('POST /oauth/token', () => {
+{ // POST /oauth/token
   const app = express()
   app.use(express.urlencoded({ extended: true }))
   app.use(express.json())
   app.use('/oauth', oauthTokenRouter)
 
-  it('exchanges auth_code (with PKCE) for tokens', async () => {
+  test('POST /oauth/token > exchanges auth_code (with PKCE) for tokens', async t => {
     const client = await registerClient({ redirect_uris: ['https://x/cb'] })
     const verifier = 'a'.repeat(64)
     const code = await issueAuthCode({
@@ -34,13 +34,13 @@ describe('POST /oauth/token', () => {
       code_verifier: verifier
     })
 
-    expect(res.status).toBe(200)
-    expect(res.body.access_token).toMatch(/^[a-f0-9]{64}$/)
-    expect(res.body.refresh_token).toMatch(/^[a-f0-9]{64}$/)
-    expect(res.body.token_type).toBe('Bearer')
+    t.is(res.status, 200)
+    t.regex(res.body.access_token, /^[a-f0-9]{64}$/)
+    t.regex(res.body.refresh_token, /^[a-f0-9]{64}$/)
+    t.is(res.body.token_type, 'Bearer')
   })
 
-  it('rejects wrong code_verifier', async () => {
+  test('POST /oauth/token > rejects wrong code_verifier', async t => {
     const client = await registerClient({ redirect_uris: ['https://x/cb'] })
     const code = await issueAuthCode({
       client_id: client.client_id,
@@ -56,11 +56,11 @@ describe('POST /oauth/token', () => {
       client_id: client.client_id,
       code_verifier: 'b'.repeat(64)
     })
-    expect(res.status).toBe(400)
-    expect(res.body.error).toBe('invalid_grant')
+    t.is(res.status, 400)
+    t.is(res.body.error, 'invalid_grant')
   })
 
-  it('rejects code reuse', async () => {
+  test('POST /oauth/token > rejects code reuse', async t => {
     const client = await registerClient({ redirect_uris: ['https://x/cb'] })
     const verifier = 'a'.repeat(64)
     const code = await issueAuthCode({
@@ -77,7 +77,7 @@ describe('POST /oauth/token', () => {
       client_id: client.client_id,
       code_verifier: verifier
     })
-    expect(ok.status).toBe(200)
+    t.is(ok.status, 200)
 
     const reused = await request(app).post('/oauth/token').type('form').send({
       grant_type: 'authorization_code',
@@ -86,7 +86,7 @@ describe('POST /oauth/token', () => {
       client_id: client.client_id,
       code_verifier: verifier
     })
-    expect(reused.status).toBe(400)
-    expect(reused.body.error).toBe('invalid_grant')
+    t.is(reused.status, 400)
+    t.is(reused.body.error, 'invalid_grant')
   })
-})
+}

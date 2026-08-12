@@ -1,43 +1,43 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
 import request from 'supertest'
 import { buildTestApp } from './helpers/testApp.js'
 import { wellKnownRouter } from '../routes/wellKnown.js'
 
-describe('smoke', () => {
-  it('test harness boots', async () => {
+{ // smoke
+  test('smoke > test harness boots', async t => {
     const app = buildTestApp()
     app.get('/ok', (_req, res) => {
       res.json({ ok: true })
     })
     const res = await request(app).get('/ok')
-    expect(res.status).toBe(200)
-    expect(res.body).toEqual({ ok: true })
+    t.is(res.status, 200)
+    t.deepEqual(res.body, { ok: true })
   })
 
-  it('serves authorization-server metadata', async () => {
+  test('smoke > serves authorization-server metadata', async t => {
     const app = buildTestApp()
     app.use('/.well-known', wellKnownRouter)
     const res = await request(app).get('/.well-known/oauth-authorization-server')
-    expect(res.status).toBe(200)
-    expect(res.body.token_endpoint).toMatch(/\/oauth\/token$/)
-    expect(res.body.code_challenge_methods_supported).toContain('S256')
+    t.is(res.status, 200)
+    t.regex(res.body.token_endpoint, /\/oauth\/token$/)
+    t.true(res.body.code_challenge_methods_supported.includes('S256'))
   })
 
-  it('serves protected-resource metadata', async () => {
+  test('smoke > serves protected-resource metadata', async t => {
     const app = buildTestApp()
     app.use('/.well-known', wellKnownRouter)
     const res = await request(app).get('/.well-known/oauth-protected-resource')
-    expect(res.status).toBe(200)
-    expect(res.body.resource).toMatch(/\/mcp$/)
-    expect(res.body.authorization_servers).toBeInstanceOf(Array)
+    t.is(res.status, 200)
+    t.regex(res.body.resource, /\/mcp$/)
+    t.true(res.body.authorization_servers instanceof Array)
   })
 
-  it('serves protected-resource metadata at the RFC 9728 path-scoped URL', async () => {
+  test('smoke > serves protected-resource metadata at the RFC 9728 path-scoped URL', async t => {
     const app = buildTestApp()
     app.use('/.well-known', wellKnownRouter)
     const res = await request(app).get('/.well-known/oauth-protected-resource/mcp')
-    expect(res.status).toBe(200)
-    expect(res.body.resource).toMatch(/\/mcp$/)
-    expect(res.body.authorization_servers).toBeInstanceOf(Array)
+    t.is(res.status, 200)
+    t.regex(res.body.resource, /\/mcp$/)
+    t.true(res.body.authorization_servers instanceof Array)
   })
-})
+}
