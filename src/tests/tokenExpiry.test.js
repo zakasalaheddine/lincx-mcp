@@ -2,11 +2,11 @@ import { describe, it, expect } from "vitest";
 import { getJwtExpiry, isJwtExpired } from "../services/auth.js";
 import { validateSession } from "../services/sessionManager.js";
 import { getSessionStore } from "../services/sessionStore.js";
-import type { Session } from "../types.js";
+                                           
 
 // Build an unsigned-but-structurally-valid JWT (header.payload.sig) for testing.
-const b64url = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
-const jwt = (payload: object) => `${b64url({ alg: "none", typ: "JWT" })}.${b64url(payload)}.sig`;
+const b64url = (o        ) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const jwt = (payload        ) => `${b64url({ alg: "none", typ: "JWT" })}.${b64url(payload)}.sig`;
 
 const NOW = 1_700_000_000_000; // fixed clock for determinism
 
@@ -29,7 +29,7 @@ describe("getJwtExpiry / isJwtExpired", () => {
 });
 
 describe("validateSession token-expiry gate", () => {
-  const baseSession = (token: string): Session => ({
+  const baseSession = (token        )          => ({
     session_id: "s-expiry-test",
     user_id: "u@x.com",
     email: "u@x.com",

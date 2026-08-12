@@ -7,7 +7,7 @@ const { getEntityWithIncludes } = await import("../tools/_shared.js");
 // getEntityWithIncludes only passes the session through to the (mocked)
 // workApiRequest, so a stub is sufficient here.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const session = {} as any;
+const session = {}       ;
 
 describe("getEntityWithIncludes", () => {
   beforeEach(() => reset());

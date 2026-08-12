@@ -6,7 +6,7 @@ import { oauthTokenRouter } from "../../routes/oauthToken.js";
 import { registerClient } from "../../services/oauth/clients.js";
 import { issueAuthCode } from "../../services/oauth/codes.js";
 
-function challenge(verifier: string) {
+function challenge(verifier        ) {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 

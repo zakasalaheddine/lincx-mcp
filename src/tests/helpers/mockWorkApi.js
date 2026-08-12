@@ -32,13 +32,13 @@ import { vi } from "vitest";
 // Module-level handler registry (mutable by exported setters below)
 // ---------------------------------------------------------------------------
 
-type Handler = {
-  method: string;
-  pathRe: RegExp;
-  handler: (params?: Record<string, unknown>) => unknown;
-};
+                
+                 
+                 
+                                                         
+  
 
-const handlers: Handler[] = [];
+const handlers            = [];
 
 // ---------------------------------------------------------------------------
 // vi.mock declarations — MUST stay at module top-level so vitest hoists them
@@ -46,10 +46,10 @@ const handlers: Handler[] = [];
 
 vi.mock("../../services/workApi.js", () => ({
   workApiRequest: vi.fn(async (
-    _session: unknown,
-    method: string,
-    path: string,
-    opts?: { params?: Record<string, unknown> }
+    _session         ,
+    method        ,
+    path        ,
+    opts                                       
   ) => {
     const match = handlers.find(
       (h) => h.method === method && h.pathRe.test(path)
@@ -59,9 +59,9 @@ vi.mock("../../services/workApi.js", () => ({
     }
     return match.handler(opts?.params);
   }),
-  handleWorkApiError: (err: Error) => `Error: ${err.message}`,
-  truncateIfNeeded: (s: string) => s,
-  stripListItems: (d: unknown) => d,
+  handleWorkApiError: (err       ) => `Error: ${err.message}`,
+  truncateIfNeeded: (s        ) => s,
+  stripListItems: (d         ) => d,
 }));
 
 vi.mock("../../services/sessionManager.js", () => ({
@@ -80,17 +80,17 @@ vi.mock("../../services/sessionManager.js", () => ({
  * Handlers are tested in insertion order; the first match wins.
  */
 export function on(
-  method: string,
-  pathRe: RegExp,
-  handler: (params?: Record<string, unknown>) => unknown
-): void {
+  method        ,
+  pathRe        ,
+  handler                                               
+)       {
   handlers.push({ method, pathRe, handler });
 }
 
 /**
  * Remove all registered handlers. Call in beforeEach() to keep tests isolated.
  */
-export function reset(): void {
+export function reset()       {
   handlers.length = 0;
 }
 
@@ -98,6 +98,6 @@ export function reset(): void {
  * Convenience wrapper that returns { on, reset } — mirrors the plan's
  * originally described API.
  */
-export function mockWorkApi(): { on: typeof on; reset: typeof reset } {
+export function mockWorkApi()                                         {
   return { on, reset };
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { fitEntityToText } from "../services/workApi.js";
 
 const LIMIT = 25_000;
-const huge = (n: number) => "x".repeat(n);
+const huge = (n        ) => "x".repeat(n);
 
 describe("fitEntityToText", () => {
   it("returns small entities unchanged and parseable", () => {
@@ -65,7 +65,7 @@ describe("fitEntityToText", () => {
 
   // The contract: parseable JSON for ANY input, oversized or not.
   it("never produces unparseable JSON across object / array / primitive / null", () => {
-    const inputs: unknown[] = [
+    const inputs            = [
       { id: "a", blob: huge(60_000) },
       [{ id: "1", body: huge(40_000) }, { id: "2", body: huge(40_000) }],
       huge(40_000),

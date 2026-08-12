@@ -4,14 +4,14 @@ import { fitAnalysis } from "../tools/analysisTools.js";
 const LIMIT = 30_000;
 
 /** The wire format is `header\n\ncompact JSON` — parse what the model parses. */
-function parse(result: { content: { type: "text"; text: string }[] }) {
+function parse(result                                               ) {
   const text = result.content[0].text;
   const blank = text.indexOf("\n\n");
   expect(blank).toBeGreaterThan(0);
   return JSON.parse(text.slice(blank + 2));
 }
 
-const creatives = (n: number) =>
+const creatives = (n        ) =>
   Array.from({ length: n }, (_, i) => ({
     adGroupId: `ag${i}`,
     adId: `ad${i}`,
@@ -28,7 +28,7 @@ const creatives = (n: number) =>
     assignedRank: i,
   }));
 
-const rankRows = (n: number) =>
+const rankRows = (n        ) =>
   Array.from({ length: n }, (_, i) => ({
     adGroupId: `ag${i % 20}`,
     adId: `ad${i % 20}`,
@@ -42,7 +42,7 @@ const rankRows = (n: number) =>
     daysAtRank: 7,
   }));
 
-const succeeded = (opts: { creatives?: number; ranks?: number; localTiers?: number } = {}) => ({
+const succeeded = (opts                                                              = {}) => ({
   _id: "cl123",
   status: "succeeded",
   analysisType: "offerTiering",
@@ -93,7 +93,7 @@ describe("fitAnalysis", () => {
 
   it("always drops rawResponse and the rendered prompt, whatever the size", () => {
     const doc = succeeded();
-    (doc.input as Record<string, unknown>).prompt = { rendered: "you are the lincx analyst..." };
+    (doc.input                           ).prompt = { rendered: "you are the lincx analyst..." };
     const parsed = parse(fitAnalysis(doc, LIMIT));
 
     expect(parsed.output.rawResponse).toBeUndefined();
@@ -141,7 +141,7 @@ describe("fitAnalysis", () => {
     doc.output.json = {
       tier_grouping: { recommended_tier_count: 3 },
       tier_tables: { TIER_1: creatives(400) },
-    } as never;
+    }         ;
     const parsed = parse(fitAnalysis(doc, 5_000));
 
     expect(parsed.complete).toBe(false);

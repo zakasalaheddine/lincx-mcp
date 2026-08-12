@@ -11,7 +11,7 @@ function getReportTool() {
   const server = new McpServer({ name: "test", version: "0.0.0" });
   registerReportingTools(server);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (server as any)._registeredTools["report_query"];
+  return (server       )._registeredTools["report_query"];
 }
 
 const ROWS = [

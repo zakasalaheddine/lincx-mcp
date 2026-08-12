@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { classifyResult, getEventSink, type UsageEvent, recordEventAsync } from "../services/usageAnalytics.js";
+import { classifyResult, getEventSink,                  recordEventAsync } from "../services/usageAnalytics.js";
 import { getSessionStore } from "../services/sessionStore.js";
 import { bindMcpToLincxSession } from "../services/sessionManager.js";
-import type { Session } from "../types.js";
+                                           
 
 describe("classifyResult", () => {
   it("marks a normal result ok", () => {
@@ -31,7 +31,7 @@ describe("classifyResult", () => {
   });
 });
 
-const ev = (over: Partial<UsageEvent> = {}): UsageEvent => ({
+const ev = (over                      = {})             => ({
   ts: Date.now(), type: "tool", name: "list_zones", status: "ok",
   duration_ms: 5, response_chars: 100, params_keys: [], ...over,
 });
@@ -48,7 +48,7 @@ describe("EventSink (in-memory)", () => {
 
 describe("recordEventAsync", () => {
   it("resolves and attaches the real user from the mcp session id", async () => {
-    const session: Session = {
+    const session          = {
       session_id: "lincx-rec", user_id: "u@x.com", email: "u@x.com",
       auth_token: "t", networks: [{ id: "n1", name: "N" }], active_network: "n1",
     };
@@ -77,8 +77,8 @@ describe("recordEventAsync", () => {
 import { computeStats } from "../services/usageAnalytics.js";
 
 describe("computeStats", () => {
-  const base = { duration_ms: 10, response_chars: 100, params_keys: [] as string[] };
-  const events: UsageEvent[] = [
+  const base = { duration_ms: 10, response_chars: 100, params_keys: []             };
+  const events               = [
     { ts: 100, type: "tool", name: "list_zones", status: "ok",    user_id: "a", email: "a@x", mcp_session_id: "s1", ...base },
     { ts: 200, type: "tool", name: "get_zone",   status: "ok",    user_id: "a", email: "a@x", mcp_session_id: "s1", ...base },
     { ts: 300, type: "tool", name: "report_query", status: "error", error_kind: "auth_expired", user_id: "b", email: "b@x", mcp_session_id: "s2", ...base },
@@ -87,16 +87,16 @@ describe("computeStats", () => {
   it("aggregates tool health, users, errors, and sequences", () => {
     const s = computeStats(events);
 
-    const lz = s.tools.find((t) => t.name === "list_zones")!;
+    const lz = s.tools.find((t) => t.name === "list_zones") ;
     expect(lz.calls).toBe(1);
     expect(lz.error_rate).toBe(0);
 
-    const rq = s.tools.find((t) => t.name === "report_query")!;
+    const rq = s.tools.find((t) => t.name === "report_query") ;
     expect(rq.errors).toBe(1);
     expect(rq.error_rate).toBe(1);
 
-    expect(s.users.find((u) => u.user_id === "a")!.distinct_tools).toBe(2);
-    expect(s.errors.find((e) => e.kind === "auth_expired")!.count).toBe(1);
+    expect(s.users.find((u) => u.user_id === "a") .distinct_tools).toBe(2);
+    expect(s.errors.find((e) => e.kind === "auth_expired") .count).toBe(1);
     expect(s.sequences.transitions["list_zones>get_zone"]).toBe(1);
     expect(s.window.events).toBe(3);
   });

@@ -8,14 +8,14 @@ describe("buildListEnvelope", () => {
 
     const page1 = buildListEnvelope(items, { limit: 25, offset: 0 });
     expect(page1.items).toHaveLength(25);
-    expect((page1.items[0] as { id: string }).id).toBe("0");
+    expect((page1.items[0]                  ).id).toBe("0");
     expect(page1.total).toBe(100);
     expect(page1.has_more).toBe(true);
     expect(page1.next_offset).toBe(25);
 
     const page2 = buildListEnvelope(items, { limit: 25, offset: 25 });
     // The bug: offset was ignored so page2 === page1. It must now differ.
-    expect((page2.items[0] as { id: string }).id).toBe("25");
+    expect((page2.items[0]                  ).id).toBe("25");
     expect(page2.total).toBe(100);
   });
 
@@ -45,11 +45,11 @@ describe("buildListEnvelope", () => {
 
   it("projects to { id, name } + status by default; ['*'] returns full rows minus heavy fields", () => {
     const row = { id: "1", name: "a", status: "active", note: "keep-me", html: "<huge/>" };
-    const projected = buildListEnvelope([row], { limit: 25, offset: 0 }).items[0] as Record<string, unknown>;
+    const projected = buildListEnvelope([row], { limit: 25, offset: 0 }).items[0]                           ;
     expect(projected).toEqual({ id: "1", name: "a", status: "active" });
     expect(projected).not.toHaveProperty("note");
 
-    const full = buildListEnvelope([row], { limit: 25, offset: 0, fields: ["*"] }).items[0] as Record<string, unknown>;
+    const full = buildListEnvelope([row], { limit: 25, offset: 0, fields: ["*"] }).items[0]                           ;
     // '*' keeps non-heavy fields like `note` but still drops content blobs like `html`.
     expect(full).toEqual({ id: "1", name: "a", status: "active", note: "keep-me" });
     expect(full).not.toHaveProperty("html");
@@ -70,7 +70,7 @@ describe("dotted field paths", () => {
 
   it("projects the leaf under its dotted key, not the whole parent object", () => {
     const env = buildListEnvelope(rows, { limit: 25, offset: 0, fields: ["params.zoneId", "exceptParams.zoneId"] });
-    const [a, b] = env.items as Record<string, unknown>[];
+    const [a, b] = env.items                             ;
     expect(a["params.zoneId"]).toEqual(["z1", "z2"]);
     expect(a.params).toBeUndefined();          // the heavy parent is NOT included
     expect(a["exceptParams.zoneId"]).toBeUndefined(); // absent on this row, fine
@@ -148,7 +148,7 @@ describe("listEnvelopeToText", () => {
    * rest of the collection is unreachable. The walk must always advance.
    */
   describe("a single row bigger than the whole budget", () => {
-    const poison = (id: string) => ({ id, name: "n", params: { zoneId: Array.from({ length: 20_000 }, (_, i) => `z${i}`) } });
+    const poison = (id        ) => ({ id, name: "n", params: { zoneId: Array.from({ length: 20_000 }, (_, i) => `z${i}`) } });
 
     it("advances next_offset past the poison row instead of stalling", () => {
       // Exactly the field shape: the poison row sits AT the requested offset.
@@ -173,8 +173,8 @@ describe("listEnvelopeToText", () => {
 
     it("a full walk terminates even when the collection is all poison rows", () => {
       const items = [poison("a"), poison("b"), poison("c")];
-      const seen: string[] = [];
-      let offset: number | null = 0;
+      const seen           = [];
+      let offset                = 0;
       let guard = 0;
       while (offset !== null) {
         if (++guard > 10) throw new Error("walk did not terminate");

@@ -10,16 +10,16 @@ beforeEach(() => vi.spyOn(console, "error").mockImplementation(() => {}));
 afterEach(() => vi.restoreAllMocks());
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function guardedTool(result: unknown): any {
+function guardedTool(result         )      {
   const server = new McpServer({ name: "t", version: "0.0.0" });
   server.registerTool(
     "x",
     { description: "test", inputSchema: z.object({}).strict() },
-    async () => result as never,
+    async () => result         ,
   );
   installToolGuards(server);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (server as any)._registeredTools["x"];
+  return (server       )._registeredTools["x"];
 }
 
 describe("installToolGuards (T2-4 response-size guard)", () => {
@@ -52,7 +52,7 @@ describe("installToolGuards (T2-4 response-size guard)", () => {
     );
     installToolGuards(server);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tool = (server as any)._registeredTools["boom"];
+    const tool = (server       )._registeredTools["boom"];
     await expect(tool.handler({}, { sessionId: "s" })).rejects.toThrow("kaboom");
   });
 });
@@ -61,10 +61,10 @@ describe("installToolGuards records usage events", () => {
   it("records a returned Error: result as a usage error", async () => {
     const server = new McpServer({ name: "t", version: "0.0.0" });
     server.registerTool("err_tool", { description: "t", inputSchema: z.object({}).strict() },
-      async () => ({ content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] }));
+      async () => ({ content: [{ type: "text"         , text: "Error: Not authenticated. Use 'auth_login' first." }] }));
     installToolGuards(server);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tool = (server as any)._registeredTools["err_tool"];
+    const tool = (server       )._registeredTools["err_tool"];
 
     await tool.handler({}, { sessionId: "s-guard" });
     // recordEvent is fire-and-forget — let the microtask/append settle.

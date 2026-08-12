@@ -18,8 +18,8 @@ describe("OAuth tokens", () => {
 
     const b = await refreshTokens(a.refresh_token, "c");
     expect(b).not.toBeNull();
-    expect(b!.access_token).not.toBe(a.access_token);
-    expect(b!.refresh_token).not.toBe(a.refresh_token);
+    expect(b .access_token).not.toBe(a.access_token);
+    expect(b .refresh_token).not.toBe(a.refresh_token);
 
     expect(await refreshTokens(a.refresh_token, "c")).toBeNull();
   });

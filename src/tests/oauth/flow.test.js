@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import express from "express";
 
 vi.mock("../../services/auth.js", () => ({
-  loginWithCredentials: vi.fn(async (email: string) => ({ authToken: `jwt-for-${email}` })),
+  loginWithCredentials: vi.fn(async (email        ) => ({ authToken: `jwt-for-${email}` })),
   revokeToken: vi.fn(async () => {}),
 }));
 vi.mock("../../services/networkService.js", () => ({
@@ -27,7 +27,7 @@ import { oauthTokenRouter } from "../../routes/oauthToken.js";
 import { loginRouter } from "../../routes/login.js";
 import { resolveLincxSessionFromBearer } from "../../services/sessionManager.js";
 
-function challenge(verifier: string) {
+function challenge(verifier        ) {
   return createHash("sha256").update(verifier).digest("base64url");
 }
 
@@ -60,7 +60,7 @@ describe("OAuth end-to-end", () => {
       code_challenge_method: "S256",
     });
     expect(auth.status).toBe(302);
-    const loc = auth.headers.location as string;
+    const loc = auth.headers.location          ;
     const reqId = new URL(loc, "http://x").searchParams.get("req");
     expect(reqId).toBeTruthy();
 
@@ -72,7 +72,7 @@ describe("OAuth end-to-end", () => {
     expect(login.status).toBe(200);
     expect(login.body.success).toBe(true);
     const redirect = new URL(login.body.redirect);
-    const code = redirect.searchParams.get("code")!;
+    const code = redirect.searchParams.get("code") ;
     expect(redirect.searchParams.get("state")).toBe("abc");
 
     // 4. Exchange code → access + refresh tokens

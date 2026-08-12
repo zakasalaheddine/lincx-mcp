@@ -9,19 +9,19 @@
  * against a 30k guard.
  */
 import { describe, it, expect } from "vitest";
-import { fitEligibility, summarizeEligibility, type EnrichedRow, type EligibilityPayload, type Bucket } from "../tools/zoneEligibilityTools.js";
-import type { OfferRollup } from "../tools/eligibility.js";
+import { fitEligibility, summarizeEligibility,                                                        } from "../tools/zoneEligibilityTools.js";
+                                                           
 
 const LIMIT = 30_000;
 const ZONE = "8z7wzb";
 const CAG = "0bckt2";
 
-const offers = (o: Partial<OfferRollup> = {}): OfferRollup => ({
+const offers = (o                       = {})              => ({
   total: 3, inScope: 3, live: 3, freeRadicalLive: 0, freeRadical: 0, adLevelTargeted: 0, adLevelBlacklisted: 0,
   confinedElsewhere: 0, inertWhitelisted: 0, freeRadicalAdIds: [], inertWhitelistedAdIds: [], ...o,
 });
 
-const row = (id: string, targeted: boolean): EnrichedRow => ({
+const row = (id        , targeted         )              => ({
   id, name: `Some Advertiser — Campaign ${id} (US Desktop)`, archived: false,
   campaign_on: true, adgroup_on: true, has_enabled_ad: true, creative_resolves: true,
   has_live_viable_ad: true, fully_live: true, off_reason: [],
@@ -32,7 +32,7 @@ const row = (id: string, targeted: boolean): EnrichedRow => ({
   offers: targeted ? offers() : offers({ freeRadical: 3, freeRadicalAdIds: ["ad000001", "ad000002", "ad000003"] }),
 });
 
-const payload = (nDirect: number, nRadical: number, nConflict = 0, nInert = 0): EligibilityPayload => {
+const payload = (nDirect        , nRadical        , nConflict = 0, nInert = 0)                     => {
   const direct = Array.from({ length: nDirect }, (_, i) => row(`d${i}`, true));
   const radicals = Array.from({ length: nRadical }, (_, i) => row(`r${i}`, false));
   const conflict = Array.from({ length: nConflict }, (_, i) => row(`c${i}`, true));
@@ -50,22 +50,22 @@ const payload = (nDirect: number, nRadical: number, nConflict = 0, nInert = 0): 
   };
 };
 
-const parse = (r: { content: { text: string }[] }) => {
+const parse = (r                                 ) => {
   const text = r.content[0].text;
   const body = text.slice(text.indexOf("\n\n") + 2);
-  return { header: text.slice(0, text.indexOf("\n\n")), json: JSON.parse(body) as Record<string, any> };
+  return { header: text.slice(0, text.indexOf("\n\n")), json: JSON.parse(body)                        };
 };
-const size = (r: unknown) => JSON.stringify(r).length;
+const size = (r         ) => JSON.stringify(r).length;
 
 /** Walk every page of a bucket, returning the concatenated rows. */
-function walk(full: EligibilityPayload, bucket: Bucket) {
-  const rows: EnrichedRow[] = [];
-  let offset: number | undefined = 0;
+function walk(full                    , bucket        ) {
+  const rows                = [];
+  let offset                     = 0;
   let pages = 0;
   while (offset !== undefined) {
     const { json } = parse(fitEligibility(full, bucket, offset, LIMIT));
     for (const k of ["directlyTargeted", "freeRadicals", "conflicting", "inertWhitelists"]) {
-      if (Array.isArray(json[k])) rows.push(...(json[k] as EnrichedRow[]));
+      if (Array.isArray(json[k])) rows.push(...(json[k]                 ));
     }
     offset = json.page?.next_offset;
     if (++pages > 50) throw new Error("paging did not terminate");
@@ -73,7 +73,7 @@ function walk(full: EligibilityPayload, bucket: Bucket) {
   return { rows, pages };
 }
 
-const FIELDS = ["offers", "scoped_via", "via", "reasons", "conflicts", "fully_live", "off_reason", "eligible"] as const;
+const FIELDS = ["offers", "scoped_via", "via", "reasons", "conflicts", "fully_live", "off_reason", "eligible"]         ;
 
 describe("fitEligibility — small zone fits in one call (B1–B4)", () => {
   const full = payload(5, 4, 1);
@@ -125,7 +125,7 @@ describe("fitEligibility — the inertWhitelists bucket", () => {
 
   it("stays out of the reconciliation buckets", () => {
     const { json } = parse(fitEligibility(full, "all", 0, LIMIT));
-    const ids = (k: string) => (json[k] as { id: string }[]).map((r) => r.id);
+    const ids = (k        ) => (json[k]                    ).map((r) => r.id);
     for (const id of ids("inertWhitelists")) {
       expect(ids("directlyTargeted")).not.toContain(id);
       expect(ids("conflicting")).not.toContain(id);
@@ -198,7 +198,7 @@ describe("fitEligibility — review fixture scale, 83 + 124 (B5)", () => {
   });
 
   it("every page stays under the guard", () => {
-    let offset: number | undefined = 0;
+    let offset                     = 0;
     while (offset !== undefined) {
       const result = fitEligibility(full, "all", offset, LIMIT);
       expect(size(result)).toBeLessThanOrEqual(LIMIT);
@@ -215,7 +215,7 @@ describe("fitEligibility — review fixture scale, 83 + 124 (B5)", () => {
 
   it("a TAIL page never claims complete — complete means this one response holds everything", () => {
     // Walk to the last page: it has no next_offset but is only a slice of 207.
-    let offset = 0, last: Record<string, any> | undefined;
+    let offset = 0, last                                 ;
     while (true) {
       const { json } = parse(fitEligibility(full, "all", offset, LIMIT));
       last = json;
@@ -223,8 +223,8 @@ describe("fitEligibility — review fixture scale, 83 + 124 (B5)", () => {
       offset = json.page.next_offset;
     }
     expect(offset).toBeGreaterThan(0);
-    expect(last!.page.returned).toBeLessThan(last!.page.total);
-    expect(last!.complete).toBe(false);
+    expect(last .page.returned).toBeLessThan(last .page.total);
+    expect(last .complete).toBe(false);
   });
 
   /** …and says so in the header. Field-reported twice as "complete is broken", so the
@@ -244,7 +244,7 @@ describe("fitEligibility — review fixture scale, 83 + 124 (B5)", () => {
   });
 
   it("complete:true implies the arrays equal the full selected slice (the B1/B2 key)", () => {
-    for (const bucket of ["all", "directlyTargeted", "freeRadicals", "conflicting"] as Bucket[]) {
+    for (const bucket of ["all", "directlyTargeted", "freeRadicals", "conflicting"]            ) {
       for (const offset of [0, 5, 90, 999]) {
         const { json } = parse(fitEligibility(full, bucket, offset, LIMIT));
         if (!json.complete) continue;

@@ -30,7 +30,7 @@ async function registerClient(redirectUri = "http://localhost:9999/callback") {
   const r = await request(app)
     .post("/oauth/register")
     .send({ redirect_uris: [redirectUri], client_name: "contract" });
-  return r.body.client_id as string;
+  return r.body.client_id          ;
 }
 
 // ── /health ──────────────────────────────────────────────────────────────────
@@ -211,7 +211,7 @@ describe("contract: token endpoint", () => {
 // ── Authorize + login UI ─────────────────────────────────────────────────────
 
 describe("contract: authorize", () => {
-  const validQuery = (clientId: string) =>
+  const validQuery = (clientId        ) =>
     `/oauth/authorize?response_type=code&client_id=${clientId}` +
     `&redirect_uri=${encodeURIComponent("http://localhost:9999/callback")}` +
     `&state=st&code_challenge=chal&code_challenge_method=S256`;
@@ -288,7 +288,7 @@ describe("contract: login UI", () => {
     const r = await request(app).get(`/login?req=${reqId}`);
     expect(r.status).toBe(200);
     expect(r.headers["content-type"]).toMatch(/html/);
-    expect(r.text).toContain(reqId as string);
+    expect(r.text).toContain(reqId          );
   });
 
   it("serves the success page as HTML", async () => {
@@ -341,7 +341,7 @@ describe("contract: method dispatch", () => {
   // does not. That is more correct and no MCP client depends on the 404 — but it
   // is a real behavioural delta, so it is pinned here and amended deliberately
   // rather than discovered in production.
-  const cases: Array<[string, string]> = [
+  const cases                          = [
     ["post", "/health"],
     ["put", "/health"],
     ["get", "/oauth/token"],
@@ -350,7 +350,7 @@ describe("contract: method dispatch", () => {
 
   for (const [method, path] of cases) {
     it(`${method.toUpperCase()} ${path} -> 404 (Express falls through)`, async () => {
-      const r = await (request(app) as unknown as Record<string, (p: string) => Promise<{ status: number }>>)[method](path);
+      const r = await (request(app)                                                                         )[method](path);
       expect(r.status).toBe(404);
     });
   }
@@ -365,7 +365,7 @@ describe("contract: trailing slashes", () => {
   // http-hash matches exact pathname segments and will 404 all of them. Phase 3
   // (#67) must therefore register both forms for every route below, or these
   // break silently for any client that appends a slash.
-  const cases: Array<[string, number]> = [
+  const cases                          = [
     ["/health/", 200],
     ["/.well-known/oauth-authorization-server/", 200],
     ["/.well-known/oauth-protected-resource/", 200],

@@ -5,7 +5,7 @@ const rows = [
   { advertiser: "Acme", zone: "Primary", date: "2026-07-14", hour: "00", loads: 100, revenue: 1.0 },
   { advertiser: "Acme", zone: "Primary", date: "2026-07-14", hour: "15", loads: 50, revenue: 2.0 },
   { advertiser: "Globex", zone: "Primary", date: "2026-07-14", hour: "00", loads: 20, revenue: 0.5 },
-] as Record<string, unknown>[];
+]                             ;
 
 describe("filterReportRows", () => {
   it("passes everything through when no filter", () => {
