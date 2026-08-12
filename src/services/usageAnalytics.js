@@ -50,6 +50,7 @@ export function classifyResult (result) {
 
 const EVENTS_KEY = 'usage:events'
 let _sinkP = null
+let _sinkRedis = null
 
 export function getEventSink () {
   if (_sinkP) return _sinkP
@@ -57,6 +58,7 @@ export function getEventSink () {
     if (REDIS_URL) {
       const { Redis } = await import('ioredis')
       const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 })
+      _sinkRedis = redis
       console.error('[Analytics] Using Redis event log')
       return {
         async append (event) {
@@ -82,6 +84,15 @@ export function getEventSink () {
     }
   })()
   return _sinkP
+}
+
+/** Close the event log's Redis connection — see closeKvStore() in sessionStore.js. */
+export async function closeEventSink () {
+  if (_sinkRedis) {
+    _sinkRedis.disconnect()
+    _sinkRedis = null
+  }
+  _sinkP = null
 }
 
 // ── recordEvent ───────────────────────────────────────────────────────────────

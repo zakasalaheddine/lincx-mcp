@@ -15,6 +15,7 @@
 import { REDIS_URL, SESSION_TTL_SECONDS, MEMORY_SWEEP_INTERVAL_MS } from '../constants.js'
 
 let _kv = null
+let _redis = null
 
 export async function getKvStore () {
   if (_kv) return _kv
@@ -22,6 +23,7 @@ export async function getKvStore () {
   if (REDIS_URL) {
     const { Redis } = await import('ioredis')
     const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 })
+    _redis = redis
     _kv = {
       async get (key) { return await redis.get(key) },
       async set (key, value, ttl) { await redis.setex(key, ttl, value) },
@@ -61,6 +63,20 @@ export async function getKvStore () {
   }
 
   return _kv
+}
+
+/**
+ * Close the Redis connection and forget the cached store.
+ *
+ * A long-lived server never needs this, but an open ioredis handle keeps a test
+ * worker (and a GAE instance handling /_ah/stop) alive with nothing left to do.
+ */
+export async function closeKvStore () {
+  if (_redis) {
+    _redis.disconnect()
+    _redis = null
+  }
+  _kv = null
 }
 
 // ── Typed Lincx-session accessors (backwards-compat façade) ───────────────
