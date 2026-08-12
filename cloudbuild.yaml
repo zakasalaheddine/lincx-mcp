@@ -1,0 +1,26 @@
+# Deploy on a push to master. Lint and tests gate the deploy — a red suite must
+# never reach production, so the gcloud step only runs if every step above it
+# exited 0.
+steps:
+  - name: 'node:22'
+    entrypoint: npm
+    args: ['ci']
+
+  - name: 'node:22'
+    entrypoint: npm
+    args: ['run', 'lint']
+
+  - name: 'node:22'
+    entrypoint: npm
+    args: ['test']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args: ['app', 'deploy', 'app.yaml', '--quiet']
+
+# A post-deploy smoke step is added in #69 Task 28, once scripts/smoke-prod.mjs
+# exists — referencing it from here before then would fail every build.
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: '1200s'

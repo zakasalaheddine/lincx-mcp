@@ -1,0 +1,22 @@
+# What NOT to upload to App Engine.
+#
+# src/ is NOT excluded: there is no build step, so `npm start` runs src/index.js
+# straight from the uploaded source. Verify with:
+#
+#   gcloud meta list-files-for-upload . | sort
+#
+# and confirm src/index.js is in the list before deploying.
+
+.git
+.gitignore
+node_modules
+.env
+.sessions
+.worktrees
+docs
+docker-compose.dev.yml
+scripts/dev-tunnel.mjs
+scripts/strip-types.mjs
+src/tests
+*.md
+!package.json

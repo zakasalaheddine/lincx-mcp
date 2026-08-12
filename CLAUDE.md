@@ -10,9 +10,9 @@ Read this fully before making any changes.
 An MCP (Model Context Protocol) server that gives Claude access to the Lincx / Interlincx platform.
 It handles authentication, multi-network context, and exposes business tools as MCP tools.
 
-The server is **HTTP-only** — there is no stdio transport. Everything runs on a
-single Express server on `PORT` (5001 dev default, 3000 in production via
-`docker-compose.yml`):
+The server is **HTTP-only** — there is no stdio transport. Everything runs on one
+bare `http.createServer` on `PORT` (5001 dev default; App Engine sets it in
+production), routed by `http-hash-router`:
 - the MCP Streamable HTTP transport at `POST|GET|DELETE /mcp`
 - the browser login UI and OAuth endpoints
 - `/health`
@@ -36,8 +36,17 @@ dumping thousands of raw rows into context (it exposes `raw: true` to opt out).
 
 ```
 src/
-├── index.js                  # Entry point — MCP server + Express login UI + HTML templates
+├── index.js                  # Bootstrap — awaits loadSecrets(), then imports server.js
+├── server.js                 # The server itself — MCP tool registration + start({ port })
 ├── constants.js              # Env vars with defaults — edit here first before touching logic
+│
+├── config/
+│   └── secrets.js            # Secret Manager fetch at boot (no-op off GAE)
+│
+├── http/
+│   ├── respond.js            # json / send / html / redirect / noContent
+│   ├── request.js            # query / header / clientIp / readBody (100kb limit)
+│   └── router.js             # http-hash-router table — the whole URL surface
 │
 ├── services/
 │   ├── auth.js               # loginWithCredentials() → POST ix-id.lincx.la/auth/login
@@ -189,7 +198,7 @@ TTLs:
 | `WORK_API_BASE_URL` | Yes | `http://localhost:3050` | Work API — all requests go here |
 | `IDENTITY_SERVER` | No | `https://ix-id.lincx.la` | Lincx auth server |
 | `PORT` | No | `5001` | Express HTTP port (login UI + MCP over HTTP) |
-| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production. `npm run dev` points this at a Dockerized Redis it starts automatically |
+| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production, where it comes from **Secret Manager** (`lincx-mcp-redis-url`), never `app.yaml`. `npm run dev` points this at a Dockerized Redis it starts automatically |
 | `NODE_ENV` | No | `development` | Set to `production` to disable the `/dev/*` debug routes |
 | `PUBLIC_BASE_URL` | No | `http://localhost:<PORT>` | Used when building browser login URLs returned to Claude |
 | `RESPONSE_SIZE_LIMIT` | No | `30000` | Hard per-response character ceiling enforced by `toolGuard`. Raise if your client tolerates larger tool results; floored at 5k. The soft serializer budget (`CHARACTER_LIMIT`) derives from it (−5k) |
@@ -217,9 +226,10 @@ https, so a tunnel is needed for local connector use). Requires `cloudflared`
 (`brew install cloudflared`). Use **`npm run dev:local`** for plain local work
 (e.g. connecting via `mcp-remote`, which accepts `http://localhost`).
 
-Both run a `predev` hook (`docker compose -f docker-compose.yml -f docker-compose.dev.yml
-up -d redis`) that brings up the bundled
-Redis on `localhost:6379` so the dev server always has persistent sessions. This
+Both run a `predev` hook (`docker compose -f docker-compose.dev.yml up -d redis`)
+that brings up the bundled Redis on `localhost:6380` (6379 collides with
+lincx-core's test stack, whose suite FLUSHALLs it) so the dev server always has
+persistent sessions. This
 requires Docker; if it isn't running the hook is a non-blocking no-op. To use the
 in-memory store instead, blank `REDIS_URL` in `.env`. Stop the dev Redis with
 `npm run redis:stop`.
@@ -462,7 +472,9 @@ log (`services/usageAnalytics.ts`) — Redis list `usage:events` (cap
 unset. Recording happens in `toolGuard` (tools) and `resources.js` (reads),
 fire-and-forget and failure-isolated — analytics can never delay or break a call.
 
-`GET /stats` (gated by the `STATS_TOKEN` env — accepted as `Authorization: Bearer
+`GET /stats` (gated by the `STATS_TOKEN` env — in production it comes from Secret
+Manager (`lincx-mcp-stats-token`), and an unresolved secret shows up as /stats
+returning **404** rather than 401 — accepted as `Authorization: Bearer
 <token>` or a `?token=<token>` query param for browser access; 404 when unset)
 returns tool health, per-user adoption, error friction, and usage sequences,
 computed on read by `computeStats`. The `?token=` form leaks the secret into
@@ -478,16 +490,20 @@ Privacy invariants: never store `auth_token`/OAuth tokens, never parameter VALUE
 ## Deployment
 
 **Operator guide lives in `DEPLOYMENT.md` — keep deployment prose there, not here.**
-Platform-agnostic: one Node container + Redis behind a TLS proxy, on any Docker host.
-Compose files: `docker-compose.yml` (portable, reads `.env`),
-`docker-compose.dev.yml` (local-dev overlay, passed explicitly by the npm scripts —
-never named `*.override.yml`, that auto-merges onto servers), `docker-compose.coolify.yml`
-(Coolify magic vars). Users get one URL — `https://<your-domain>/mcp`.
+Google App Engine Standard (`nodejs22`) + Memorystore Redis + Secret Manager.
+No build step and no container: App Engine uploads `src/` and runs `npm start`.
+Config splits three ways — `app.yaml` (committed, non-secret), Secret Manager
+(`REDIS_URL`, `STATS_TOKEN`), `.env` (local dev only). `cloudbuild.yaml` deploys on
+a master push, gated by lint + tests. Users get one URL — `https://<your-domain>/mcp`.
+
+Docker survives for exactly one local purpose: `docker-compose.dev.yml`, standalone,
+`redis` only, host port 6380.
 
 Two facts that constrain code changes:
-- **Single instance only.** MCP transport state is an in-process `Map`
-  (`src/index.js:137`); Redis holds auth, not connections. Multiple replicas =
-  intermittent "session not found". Making it horizontally scalable means moving that
+- **Single instance only.** MCP transport state is an in-process `Map` in
+  `src/server.js`; Redis holds auth, not connections. Multiple instances =
+  intermittent "session not found" — which is why `app.yaml` pins
+  `manual_scaling: instances: 1`. Making it horizontally scalable means moving that
   map into Redis, not a config flag.
 - **No auth gate in front of `/mcp`.** OAuth 2.1 (DCR + PKCE) is the sole identity
   layer — `/mcp` must be able to answer `401 WWW-Authenticate: Bearer
@@ -508,10 +524,10 @@ a pointer: if it resurfaces, add temporary request/response logging in
 and diff against the web app's login request in DevTools.
 
 ### Response size — access persistence & the guard (field-test Qs)
-- **Do sessions survive redeploys?** Yes. Redis persists to a named volume
-  (`redis-data` in `docker-compose.yml`), so OAuth tokens + Lincx sessions outlive
-  a redeploy — the connector stays authenticated across iterations. Only
-  rotating Redis (or `auth_logout`) drops access.
+- **Do sessions survive redeploys?** Yes. Redis is a separate Memorystore instance
+  that a deploy never touches, so OAuth tokens + Lincx sessions outlive a redeploy —
+  the connector stays authenticated across iterations. Only flushing Redis (or
+  `auth_logout`) drops access.
 - **Is the 30k guard hard or tunable?** Tunable via `RESPONSE_SIZE_LIMIT` (see the
   env table). The intended path for a legitimately large pull is server-side
   narrowing, not a bigger dump: `report_query` `filter` + `groupBy` aggregation

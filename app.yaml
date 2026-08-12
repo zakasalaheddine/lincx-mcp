@@ -1,0 +1,57 @@
+# GAE Standard service config for lincx-mcp-server.
+#
+# SINGLE INSTANCE IS A CORRECTNESS REQUIREMENT, not a cost choice: MCP transport
+# state lives in an in-process Map (src/server.js). More than one instance gives
+# intermittent "session not found". See CLAUDE.md § Deployment.
+#
+# Before the first deploy, replace every <PLACEHOLDER> below. `gcloud app deploy`
+# fails loudly on the vpc_access_connector one, so it cannot ship unnoticed.
+
+runtime: nodejs22
+service: default
+
+# MANUAL SCALING, pending the Phase 0 spike (#64 Task 3, not yet run).
+#
+# Two reasons this is the safe default rather than a guess:
+#   1. It pins the instance count at exactly one, which is the correctness
+#      requirement above. `automatic_scaling` with min=max=1 also holds it at one
+#      but still reschedules instances on its own schedule.
+#   2. Automatic scaling caps a request at 10 minutes. GET /mcp is the only SSE
+#      surface here (POST answers JSON — enableJsonResponse: true), so if the
+#      spike shows real clients holding that stream open, a request-duration cap
+#      is a hard blocker. Manual scaling has no such cap.
+#
+# Manual scaling sends /_ah/start; a non-200 there means the instance never
+# becomes healthy. src/http/router.js answers it (plus /_ah/stop, /_ah/warmup).
+manual_scaling:
+  instances: 1
+
+inbound_services:
+  - warmup
+
+# instance_class: deliberately left at the runtime default for the first deploy.
+# Task 23 measures real memory under a whole-network scan
+# (get_zone_eligible_ad_groups on the largest network) and sets it from that
+# measurement — a guessed tier is either an outage or a bill.
+
+env_variables:
+  NODE_ENV: "production"
+  WORK_API_BASE_URL: "https://api.lincx.com"
+  PUBLIC_BASE_URL: "https://mcp.lincx.com"
+  IDENTITY_SERVER: "https://ix-id.lincx.la"
+  RESPONSE_SIZE_LIMIT: "30000"
+  USAGE_EVENT_CAP: "50000"
+
+# PUBLIC_BASE_URL must match the URL clients actually hit, with NO trailing
+# slash: it is echoed as the OAuth `issuer` and in the WWW-Authenticate
+# resource_metadata challenge. A mismatch breaks the OAuth redirect with no
+# useful client-side error.
+
+# REDIS_URL and STATS_TOKEN are deliberately absent — this file is committed to
+# git. src/config/secrets.js reads them from Secret Manager at boot.
+
+# Memorystore is reachable only from inside the VPC, so the connector is
+# required, not optional: without it REDIS_URL times out and the server falls
+# back to the in-memory store, which logs every user out on each redeploy.
+vpc_access_connector:
+  name: projects/<PROJECT_ID>/locations/<REGION>/connectors/<CONNECTOR_NAME>
