@@ -104,8 +104,37 @@ fit — escalate to Cloud Run before starting Phase 1 (#65).
 
 ## Cutover verification (Phase 4, #68)
 
-_Filled at cutover._
+_Filled at cutover._ For each of Claude Code (via `mcp-remote`), Claude Desktop and
+claude.ai: connector added → browser login → `auth_status` → `network_list` →
+`list_zones` → `get_zone_targeting_inventory` on a large zone → `report_query` over
+7 days → idle over an hour, then one more tool call (exercises the 1h access-token
+refresh).
+
+| Check | Claude Code | Claude Desktop | claude.ai |
+|---|---|---|---|
+| Login redirects back, client connected | _ | _ | _ |
+| `auth_status` shows email + active network | _ | _ | _ |
+| `network_list` lists networks | _ | _ | _ |
+| `list_zones limit:5` returns rows | _ | _ | _ |
+| `get_zone_targeting_inventory` full rollup | _ | _ | _ |
+| `report_query` 7-day aggregate | _ | _ | _ |
+| Post-1h-idle call refreshes silently | _ | _ | _ |
+
+Redeploy behaviour with a client connected (`gcloud app deploy --quiet`, then run a
+tool): expected re-initialize with a new `mcp-session-id` and NO re-login, because
+the OAuth tokens live in Redis. Observed: _<record it>_.
 
 ## Soak results (Phase 5, #69)
 
-_Filled after the 60-minute soak._
+_Filled after the 60-minute soak._ Run:
+
+```bash
+read -rs SOAK_TOKEN && export SOAK_TOKEN     # stays out of shell history
+node scripts/soak.mjs https://mcp.lincx.com 3600
+```
+
+- `polls=` _ , `failures=` _ , `observed_restarts=` _
+- 40x `/health` during the run — distinct `uptime_s` clusters: _<n>_ (must be ONE;
+  two widely separated values mean two instances are serving and app.yaml is wrong)
+- If the final polls 401: that is the 1h access-token TTL, not a server fault — a
+  real client refreshes silently. Record which it was.
