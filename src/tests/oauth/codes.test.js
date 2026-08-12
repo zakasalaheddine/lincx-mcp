@@ -1,24 +1,27 @@
-import { describe, it, expect } from 'vitest'
+import test from 'ava'
+
+// test.serial throughout: these tests share a module-level store, and ava runs a
+// file's tests concurrently where vitest's forked pool ran them one at a time.
 import { issueAuthCode, consumeAuthCode } from '../../services/oauth/codes.js'
 
-describe('OAuth auth codes', () => {
-  it('issues, consumes once, then fails on reuse', async () => {
+{ // OAuth auth codes
+  test.serial('OAuth auth codes > issues, consumes once, then fails on reuse', async t => {
     const code = await issueAuthCode({
       client_id: 'c1',
       redirect_uri: 'https://x/cb',
       code_challenge: 'ch',
       lincx_session_id: 'lsid'
     })
-    expect(code).toMatch(/^[a-f0-9]{64}$/)
+    t.regex(code, /^[a-f0-9]{64}$/)
 
     const first = await consumeAuthCode(code)
-    expect(first?.lincx_session_id).toBe('lsid')
+    t.is(first?.lincx_session_id, 'lsid')
 
     const second = await consumeAuthCode(code)
-    expect(second).toBeNull()
+    t.is(second, null)
   })
 
-  it('returns null for unknown code', async () => {
-    expect(await consumeAuthCode('nope')).toBeNull()
+  test.serial('OAuth auth codes > returns null for unknown code', async t => {
+    t.is(await consumeAuthCode('nope'), null)
   })
-})
+}
