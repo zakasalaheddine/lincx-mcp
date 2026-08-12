@@ -167,6 +167,9 @@ function bearerChallengeHeader(): string {
 }
 
 app.post("/mcp", mcpLimiter, async (req, res) => {
+  // TEMPORARY probe (remove after the Phase 0 GAE decision — see #64).
+  // Gives GET /mcp below a denominator to be measured against.
+  console.error(JSON.stringify({ probe: "POST /mcp", ua: req.header("user-agent") ?? "" }));
   try {
     const lincxSessionId = await resolveLincxSessionFromBearer(req.header("authorization"));
     if (!lincxSessionId) {
@@ -219,6 +222,22 @@ app.post("/mcp", mcpLimiter, async (req, res) => {
 });
 
 app.get("/mcp", async (req, res) => {
+  // TEMPORARY probe (remove after the Phase 0 GAE decision — see #64).
+  //
+  // enableJsonResponse:true above means POST /mcp answers with application/json,
+  // so THIS handler is the only SSE surface in the whole server. Whether any real
+  // client opens it decides whether App Engine's request-duration behaviour
+  // matters at all. Measure before designing a spike around it.
+  //
+  // No token, no session id, no header values beyond the user-agent — nothing here
+  // is a credential.
+  console.error(JSON.stringify({
+    probe: "GET /mcp",
+    ua: req.header("user-agent") ?? "",
+    has_session: Boolean(req.header("mcp-session-id")),
+    has_auth: Boolean(req.header("authorization")),
+    accept: req.header("accept") ?? "",
+  }));
   const lincxSessionId = await resolveLincxSessionFromBearer(req.header("authorization"));
   if (!lincxSessionId) {
     res.setHeader("WWW-Authenticate", bearerChallengeHeader());
