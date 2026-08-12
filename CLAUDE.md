@@ -36,22 +36,21 @@ dumping thousands of raw rows into context (it exposes `raw: true` to opt out).
 
 ```
 src/
-├── index.ts                  # Entry point — MCP server + Express login UI + HTML templates
-├── types.ts                  # All shared TypeScript interfaces (Session, Network, etc.)
-├── constants.ts              # Env vars with defaults — edit here first before touching logic
+├── index.js                  # Entry point — MCP server + Express login UI + HTML templates
+├── constants.js              # Env vars with defaults — edit here first before touching logic
 │
 ├── services/
-│   ├── auth.ts               # loginWithCredentials() → POST ix-id.lincx.la/auth/login
-│   ├── sessionStore.ts       # Redis (with in-memory fallback) — session persistence
-│   ├── sessionManager.ts     # create / validate / switchNetwork / refreshNetworks / destroy
-│   ├── networkService.ts     # fetchUserNetworks() → GET WORK_API_BASE_URL/api/networks
-│   └── workApi.ts            # workApiRequest() — injects Bearer token + ?networkId on every call
+│   ├── auth.js               # loginWithCredentials() → POST ix-id.lincx.la/auth/login
+│   ├── sessionStore.js       # Redis (with in-memory fallback) — session persistence
+│   ├── sessionManager.js     # create / validate / switchNetwork / refreshNetworks / destroy
+│   ├── networkService.js     # fetchUserNetworks() → GET WORK_API_BASE_URL/api/networks
+│   └── workApi.js            # workApiRequest() — injects Bearer token + ?networkId on every call
 │
 └── tools/
-    ├── authTools.ts          # auth_login, auth_status, auth_logout
-    ├── networkTools.ts       # network_list, network_switch, network_refresh
-    ├── _shared.ts            # paginationShape / includeShape / READONLY_ANNOTATIONS + getEntityWithIncludes — reuse these in new tools
-    ├── resources.ts          # MCP Resources: lincx://networks + lincx://{entity}/{id} templates
+    ├── authTools.js          # auth_login, auth_status, auth_logout
+    ├── networkTools.js       # network_list, network_switch, network_refresh
+    ├── _shared.js            # paginationShape / includeShape / READONLY_ANNOTATIONS + getEntityWithIncludes — reuse these in new tools
+    ├── resources.js          # MCP Resources: lincx://networks + lincx://{entity}/{id} templates
     └── (add new domain tool files here)
 ```
 
@@ -109,7 +108,7 @@ GET /api/projects?networkId=svce6t&limit=20&offset=0
 POST /api/campaigns?networkId=svce6t
 ```
 
-`workApiRequest()` in `services/workApi.ts` handles this automatically — always use it, never call axios directly in tools.
+`workApiRequest()` in `services/workApi.js` handles this automatically — always use it, never call axios directly in tools.
 
 ---
 
@@ -203,10 +202,10 @@ There is no `NETWORK_API_BASE_URL` — networks come from `WORK_API_BASE_URL/api
 
 ```bash
 npm install          # first time only
-npm run build        # compile TS → dist/ — required after every source change
-npm start            # run the compiled server (node dist/index.js) on PORT
-npm run dev          # cloudflared tunnel + tsx watch (see below)
-npm run dev:local    # tsx watch only — no tunnel, http://localhost:5001
+npm start            # run the server (node src/index.js) on PORT — no build step
+npm run lint         # standard src/ scripts/ — the compiler's replacement
+npm run dev          # cloudflared tunnel + node --watch (see below)
+npm run dev:local    # node --watch only — no tunnel, http://localhost:5001
 ```
 
 **`npm run dev`** (`scripts/dev-tunnel.mjs`) starts a Cloudflare quick tunnel,
@@ -255,7 +254,7 @@ defaults to `http://localhost:<PORT>`).
 
 ## How to add a new business tool
 
-1. Create `src/tools/yourDomainTools.ts`
+1. Create `src/tools/yourDomainTools.js`
 2. Follow this pattern:
 
 ```ts
@@ -290,14 +289,13 @@ export function registerYourDomainTools(server: McpServer): void {
 }
 ```
 
-3. Register it in `src/index.ts`:
+3. Register it in `src/index.js`:
 ```ts
 import { registerYourDomainTools } from "./tools/yourDomainTools.js";
 registerYourDomainTools(server);
 ```
 
-4. Add the type to `src/types.ts` if needed
-5. Run `npm run build`
+4. Run `npm run lint`
 
 ---
 
@@ -313,7 +311,7 @@ registerYourDomainTools(server);
 - `network_switch` — change active network
 - `network_refresh` — re-fetch networks from API
 
-### Resources (MCP Resources, `src/tools/resources.ts`)
+### Resources (MCP Resources, `src/tools/resources.js`)
 Pull-based reference data — read by URI, not via a tool call. Not part of the
 per-request tool schema, so they cost nothing per turn.
 - `lincx://networks` — networks the session can access + the active one (the `network_list` tool stays as the discovery surface)
@@ -377,16 +375,16 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 - `get_zone_targeting_inventory` — composite: which ad groups are DIRECTLY targeted to a zone (via `params.zoneId`) and whether each is fully live (campaign + ad group + a live ad with a viable, non-archived creative), or where it's off. Scans the whole network's ad-groups/campaigns/ads/creatives **internally** (each list GET returns the full set — the MCP normally slices it client-side only to fit the LLM guard; internal calls bypass that) and returns only the compact matched rollup (`zone`, `summary`, `groups[]` with per-level flags + `off_reason`, `conflicting[]`, `scan`), size-capped like `report_query`. `exceptParams.zoneId` = exclusion (a group targeting AND excepting the zone is reported as `conflicting`). A level is "on" only if `enabled && !archived`; `has_live_viable_ad` is a per-ad conjunction. **Never drops ad groups** (the answer is exhaustive by contract): the full rollup rides in the `content` TEXT — a one-line header, a blank line, then compact JSON `{ zone, mode, summary, groups[], conflicting[], scan }`. It is NOT in `structuredContent`: MCP hosts (claude.ai included) feed only `content` to the model, so rows placed only in `structuredContent` are invisible — the model saw just the header. Text is the reliable channel (same as `report_query`); carrying the payload once (no `structuredContent` copy) also means the size guard counts it once, so more rows fit (83 rows ≈ 24k < 30k, full with names). If a mega-zone would still overflow, `fitZoneInventory` first sheds the optional `name` field (`namesOmitted:true`; ids+flags stay, ~105+ rows) and only as a last resort returns ids-only with `complete:false` and a "re-run with mode:'off'/'live'" instruction — never a silent partial. The **second sanctioned server-side composite** alongside `report_query` — the deliberate exception to the one-tool-≈-one-call rule, justified the same way (never dump a whole entity list into context). Each `groups[]` row also carries `scoped_via[]` — how the group is scoped to the zone: `ad-group-whitelist` (always — the selection criterion), `ad-level-whitelist` (an ad in the group also whitelists the zone), `ad-level-blacklist` (an ad excludes the zone via `ad.exceptParams.zoneId`), `zone-selection` (group shares the zone's `creativeAssetGroupId`). Annotate-only, group grain; the selected set is unchanged. Offer-grain (`ad group × ad`) scoping and free-radical counts live in `get_zone_eligible_ad_groups`.
 
 ### Zone eligibility join (composite)
-The general eligibility primitive (`tools/eligibility.ts`, pure + network-agnostic): an ad group is **eligible** in a zone when it is **not archived** (archived = out of service), its `creativeAssetGroupId` matches the zone's, it is not blacklisted (`exceptParams.zoneId` = blacklist, the opposite of `params`, and always wins), and it is in scope — the group's `params.zoneId` names the zone OR it targets **zero** zones (open within its CAG → *free radical*, leaks in with no direct targeting). **Ad-level** `params`/`exceptParams` are a per-ad LAST check (`adServesInZone`): they decide WHICH ads serve within an eligible group — an ad blacklisting the zone is hidden while its siblings still serve — and gate `has_live_viable_ad` in the rollup; they are not a group-scoping mechanism (`filterAdgroups()` runs before `filterAds()` in the serving engine, so an ad-level whitelist can never rescue an ineligible group). One pure join, three thin reads (same whole-network scan, compact result in the content text):
+The general eligibility primitive (`tools/eligibility.js`, pure + network-agnostic): an ad group is **eligible** in a zone when it is **not archived** (archived = out of service), its `creativeAssetGroupId` matches the zone's, it is not blacklisted (`exceptParams.zoneId` = blacklist, the opposite of `params`, and always wins), and it is in scope — the group's `params.zoneId` names the zone OR it targets **zero** zones (open within its CAG → *free radical*, leaks in with no direct targeting). **Ad-level** `params`/`exceptParams` are a per-ad LAST check (`adServesInZone`): they decide WHICH ads serve within an eligible group — an ad blacklisting the zone is hidden while its siblings still serve — and gate `has_live_viable_ad` in the rollup; they are not a group-scoping mechanism (`filterAdgroups()` runs before `filterAds()` in the serving engine, so an ad-level whitelist can never rescue an ineligible group). One pure join, three thin reads (same whole-network scan, compact result in the content text):
 - `get_zone_eligible_ad_groups` — zone → groups bucketed `directlyTargeted[]` (ad-group-whitelisted & not blacklisted — reconciles to the inventory tool's targeted set; config-broken-but-targeted groups stay here with `eligible:false` + `reasons`/`conflicts`, never dropped), `freeRadicals[]` (eligible via shared CAG only), `conflicting[]` (targets+excepts). Each row carries the live rollup (`fully_live`, `off_reason[]`, `scoped_via[]`) plus `eligible`, `via[]`, `reasons[]`, `conflicts[]`, `offers`.
 - `get_ad_group_zone_reach` — group → every zone it can serve/leak into (the flip).
 - `explain_serve` — (zone, adGroup|ad) pair → eligible? by what `via[]`? if not, `reasons[]` — the "why did X serve here" direction. With an `adId` it answers at the offer grain (`offer: { scoped_via[], freeRadical }`).
 
-**Free radicals have two grains.** HOST grain = the `freeRadicals[]` row set (`summary.freeRadicalHosts` / `freeRadicalHostsLive`): groups eligible only via the shared CAG. The free radical is the *offer*; the group only **hosts** it — hence the name (it was `freeRadicalGroups`, which read as if the group were the leak). OFFER grain = `(ad group × ad)` pairs that serve *solely* via the CAG — untargeted ad **and** untargeted group, net of blacklists at both levels (`summary.freeRadicalOffers`, `offerEligibility`/`offerRollup` in `tools/eligibility.ts`). Host grain **over-counts the leak**: an untargeted group whose only ad is zone-whitelisted is 1 free-radical host but **0** free-radical offers — that ad renders because it is ad-level-TARGETED, not via the CAG. The reconciliation invariant (`directlyTargeted + conflicting` = the inventory tool's targeted set) is untouched by this.
+**Free radicals have two grains.** HOST grain = the `freeRadicals[]` row set (`summary.freeRadicalHosts` / `freeRadicalHostsLive`): groups eligible only via the shared CAG. The free radical is the *offer*; the group only **hosts** it — hence the name (it was `freeRadicalGroups`, which read as if the group were the leak). OFFER grain = `(ad group × ad)` pairs that serve *solely* via the CAG — untargeted ad **and** untargeted group, net of blacklists at both levels (`summary.freeRadicalOffers`, `offerEligibility`/`offerRollup` in `tools/eligibility.js`). Host grain **over-counts the leak**: an untargeted group whose only ad is zone-whitelisted is 1 free-radical host but **0** free-radical offers — that ad renders because it is ad-level-TARGETED, not via the CAG. The reconciliation invariant (`directlyTargeted + conflicting` = the inventory tool's targeted set) is untouched by this.
 
 **Both grains carry a live axis, and only the live one is exposure.** `freeRadicalOffers` sums across *dormant* hosts too (field case: `gqe31y` contributes 1 with campaign and ad group both off), so on its own it reads as live leak and is not — `summary.freeRadicalOffersLive` counts only offers whose whole chain is on. The gap between the two is **standing-trap volume**: config one toggle away from landing in the zone, most often the campaign (`dr0xp2` on `6wahzt` — untargeted on the zone's CAG, group/ads/creatives all fine, held out only by campaign `nq7o5x`; 4 offers land the moment it flips). Per row, `offers.freeRadical > 0 && offers.freeRadicalLive === 0` names exactly those hosts, so there is deliberately **no** headline standing-trap counter — an earlier `standingTrapHosts` proposal keyed on `freeRadical: 0 && total > 0`, which catches the ad-level arming paths and *misses* campaign-state suppression, the dangerous one.
 
-Liveness at the offer grain is injected, not derived: `offerRollup` takes an `isLive(ad)` predicate (required, no default) so `tools/eligibility.ts` stays pure and network-agnostic; `enrich()` supplies `campaign_on && adgroup_on && adLiveViable(ad, creatives)`, `adLiveViable` being the same predicate `has_live_viable_ad` uses in `zoneInventoryTools`. Every row carries `offers: { total, inScope, live, freeRadical, freeRadicalLive, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, inertWhitelisted, freeRadicalAdIds[], inertWhitelistedAdIds[] }` so a pure free-radical subset is derivable. `inScope` is **targeting only** (group eligible + the ad neither blacklisted nor confined elsewhere) and says nothing about on/off state — it was called `serving`, which read as live exposure; `live` is that same set with the chain on.
+Liveness at the offer grain is injected, not derived: `offerRollup` takes an `isLive(ad)` predicate (required, no default) so `tools/eligibility.js` stays pure and network-agnostic; `enrich()` supplies `campaign_on && adgroup_on && adLiveViable(ad, creatives)`, `adLiveViable` being the same predicate `has_live_viable_ad` uses in `zoneInventoryTools`. Every row carries `offers: { total, inScope, live, freeRadical, freeRadicalLive, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, inertWhitelisted, freeRadicalAdIds[], inertWhitelistedAdIds[] }` so a pure free-radical subset is derivable. `inScope` is **targeting only** (group eligible + the ad neither blacklisted nor confined elsewhere) and says nothing about on/off state — it was called `serving`, which read as live exposure; `live` is that same set with the chain on.
 
 `conflicts[]` surfaces config contradictions (`targets-and-excepts`, `whitelisted-cag-mismatch`,
 `inert-ad-level-whitelist`), and stays open for more signals.
@@ -404,7 +402,7 @@ bucket for them and `offerEligibility` sets `conflicts: ['inert-ad-level-whiteli
 disjoint from `directlyTargeted`/`conflicting` by construction (an inert group is neither
 ad-group-whitelisted nor eligible), so the reconciliation invariant is untouched.
 
-**`scoped_via` is one shared enum** (`SCOPED_VIA` in `tools/eligibility.ts`) across every
+**`scoped_via` is one shared enum** (`SCOPED_VIA` in `tools/eligibility.js`) across every
 tool that emits the field — `ad-group-whitelist`, `ad-group-blacklist`, `ad-level-whitelist`,
 `ad-level-blacklist`, `zone-selection`. The group-grain rollup in `zoneInventoryTools` was
 missing `ad-group-blacklist`; same field name over two domains is a trap for a consumer
@@ -460,7 +458,7 @@ Two gotchas worth knowing before you touch these:
 Every tool call and resource read is recorded as one `UsageEvent` in a capped
 log (`services/usageAnalytics.ts`) — Redis list `usage:events` (cap
 `USAGE_EVENT_CAP`, default 50k) or an in-memory ring buffer when `REDIS_URL` is
-unset. Recording happens in `toolGuard` (tools) and `resources.ts` (reads),
+unset. Recording happens in `toolGuard` (tools) and `resources.js` (reads),
 fire-and-forget and failure-isolated — analytics can never delay or break a call.
 
 `GET /stats` (gated by the `STATS_TOKEN` env — accepted as `Authorization: Bearer
@@ -487,7 +485,7 @@ never named `*.override.yml`, that auto-merges onto servers), `docker-compose.co
 
 Two facts that constrain code changes:
 - **Single instance only.** MCP transport state is an in-process `Map`
-  (`src/index.ts:137`); Redis holds auth, not connections. Multiple replicas =
+  (`src/index.js:137`); Redis holds auth, not connections. Multiple replicas =
   intermittent "session not found". Making it horizontally scalable means moving that
   map into Redis, not a config flag.
 - **No auth gate in front of `/mcp`.** OAuth 2.1 (DCR + PKCE) is the sole identity
@@ -505,7 +503,7 @@ Two facts that constrain code changes:
 The earlier `ix-id.lincx.la/auth/login` 401 no longer reproduces; field testing
 authenticated cleanly end-to-end (OAuth dance + Work API calls). Left here only as
 a pointer: if it resurfaces, add temporary request/response logging in
-`services/auth.ts` (log status + `err.response?.data`, never the password/token)
+`services/auth.js` (log status + `err.response?.data`, never the password/token)
 and diff against the web app's login request in DevTools.
 
 ### Response size — access persistence & the guard (field-test Qs)
@@ -549,11 +547,11 @@ field survives.
 boolean (absent when active — upstream deletes the flag on unarchive). `getAll`
 returns active + archived together, so `network_list`/`auth_status` filter to
 active by default (`includeArchived` to opt in) and page with `limit`/`offset`.
-`networkService.ts` still accepts the other tolerant shapes; harmless, low priority.
+`networkService.js` still accepts the other tolerant shapes; harmless, low priority.
 
 ### Token expiry handling
 authentic-server JWTs expire after ~30 days. `validateSession()` decodes the JWT's
-`exp` claim (`isJwtExpired` in `services/auth.ts` — an unverified read; the Work API
+`exp` claim (`isJwtExpired` in `services/auth.js` — an unverified read; the Work API
 still verifies the signature) and short-circuits with a clear "session has expired,
 use 'auth_login'" prompt before any Work API call, instead of letting every tool 401.
 It fails open when `exp` is unreadable. Re-login is still manual (no auto-refresh of
@@ -561,10 +559,15 @@ the Lincx JWT — only the OAuth access token refreshes).
 
 ---
 
-## TypeScript conventions
+## JavaScript conventions
 
-- All imports use `.js` extension (required for NodeNext ESM): `import { x } from "./module.js"`
-- Strict mode is on — no implicit `any`, no unhandled nulls
-- Tool handler return type is always `{ content: Array<{ type: "text", text: string }>, structuredContent?: ... }`
-- `z.object({}).strict()` on all tool input schemas to reject unexpected params
-- `as const` on all `type: "text"` literals in content arrays (MCP SDK requirement)
+Plain ESM JavaScript — no TypeScript, no build step. `npm run lint` (`standard`)
+is what replaced the compiler; run it before you commit.
+
+- All imports keep the `.js` extension — ESM does not resolve extensionless paths
+- Tool handlers always return `{ content: [{ type: "text", text }], structuredContent? }`
+- `z.object({}).strict()` on all tool input schemas to reject unexpected params.
+  zod is a **protocol** dependency (the MCP SDK needs runtime schemas), not a
+  leftover of the TypeScript era — do not remove it
+- `camelcase` is disabled per-file where OAuth params and Work API / tool-output
+  fields are snake_case: those names are on the wire, not a style choice

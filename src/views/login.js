@@ -1,7 +1,7 @@
-import { IDENTITY_SERVER } from "../constants.js";
+import { IDENTITY_SERVER } from '../constants.js'
 
-export function buildLoginPage(requestId        )         {
-  const safeReq = encodeURIComponent(requestId);
+export function buildLoginPage (requestId) {
+  const safeReq = encodeURIComponent(requestId)
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -72,31 +72,31 @@ export function buildLoginPage(requestId        )         {
     function showErr(msg) { const el = document.getElementById('err'); el.textContent = msg; el.classList.add('show'); }
   </script>
 </body>
-</html>`;
+</html>`
 }
 
-export function buildSuccessPage()         {
+export function buildSuccessPage () {
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"/><title>Signed in</title>
 <style>body{font-family:system-ui,sans-serif;background:#0a0a0f;color:#e8e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .card{max-width:440px;padding:40px;background:#111118;border:1px solid #1e1e2e;border-radius:12px;text-align:center}
 h1{color:#63ffb4;margin:0 0 12px;font-size:22px}p{color:#6b6b8a;line-height:1.6;margin:0}</style></head>
 <body><div class="card"><h1>You're signed in</h1>
-<p>Close this tab and return to your MCP client. Run <code>auth_status</code> to confirm.</p></div></body></html>`;
+<p>Close this tab and return to your MCP client. Run <code>auth_status</code> to confirm.</p></div></body></html>`
 }
 
-export function buildErrorPage(message        )         {
+export function buildErrorPage (message) {
   const safeMsg = String(message)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"/><title>Login error</title>
 <style>body{font-family:system-ui,sans-serif;background:#0a0a0f;color:#e8e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
 .card{max-width:440px;padding:40px;background:#111118;border:1px solid #1e1e2e;border-radius:12px;text-align:center}
 h1{color:#ff6b6b;margin:0 0 12px;font-size:22px}p{color:#6b6b8a;line-height:1.6;margin:0}</style></head>
 <body><div class="card"><h1>${safeMsg}</h1>
-<p>Return to your MCP client and try again.</p></div></body></html>`;
+<p>Return to your MCP client and try again.</p></div></body></html>`
 }
