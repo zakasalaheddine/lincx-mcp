@@ -1,96 +1,95 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import test from 'ava'
+import esmock from 'esmock'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { mockWorkApi } from './helpers/mockWorkApi.js'
+import { workApiMock, sessionMock } from './helpers/mockWorkApi.js'
 
-const api = mockWorkApi()
+const extra = { sessionId: 'test-session' }
 
-// Import AFTER the helper so vi.mock has hoisted.
-const { registerResources } = await import('../tools/resources.js')
-
-function build () {
+/** Fresh module graph per test — routes are per-test state, not a shared registry. */
+async function build (routes = []) {
+  const { registerResources } = await esmock('../tools/resources.js', {
+    '../services/workApi.js': workApiMock(routes),
+    '../services/sessionManager.js': sessionMock()
+  })
   const server = new McpServer({ name: 'test', version: '0.0.0' })
   registerResources(server)
   return server
 }
-const extra = { sessionId: 'test-session' }
 
-beforeEach(() => api.reset())
+test('resources (T1-3 / T4-6) > registers lincx://networks as a static (listable) resource', async t => {
+  const server = await build()
+  const res = server._registeredResources['lincx://networks']
+  t.not(res, undefined)
 
-describe('resources (T1-3 / T4-6)', () => {
-  it('registers lincx://networks as a static (listable) resource', async () => {
-    const server = build()
-    const res = server._registeredResources['lincx://networks']
-    expect(res).toBeDefined()
+  const out = await res.readCallback(new URL('lincx://networks'), extra)
+  t.is(out.contents[0].mimeType, 'application/json')
+  const body = JSON.parse(out.contents[0].text)
+  t.is(Array.isArray(body.networks), true)
+  // (active_network is present on a real Session; the test stub omits it, so
+  // JSON.stringify drops the undefined key — not asserted here.)
+})
 
-    const out = await res.readCallback(new URL('lincx://networks'), extra)
-    expect(out.contents[0].mimeType).toBe('application/json')
-    const body = JSON.parse(out.contents[0].text)
-    expect(Array.isArray(body.networks)).toBe(true)
-    // (active_network is present on a real Session; the test stub omits it, so
-    // JSON.stringify drops the undefined key — not asserted here.)
-  })
+test('resources (T1-3 / T4-6) > registers entity resource templates that fetch by id', async t => {
+  const server = await build([
+    ['GET', /^\/api\/campaigns\/c1$/, () => ({ id: 'c1', name: 'Camp' })]
+  ])
+  const tmpl = server._registeredResourceTemplates['campaign-by-id']
+  t.not(tmpl, undefined)
 
-  it('registers entity resource templates that fetch by id', async () => {
-    api.on('GET', /^\/api\/campaigns\/c1$/, () => ({ id: 'c1', name: 'Camp' }))
-    const server = build()
-    const tmpl = server._registeredResourceTemplates['campaign-by-id']
-    expect(tmpl).toBeDefined()
+  const out = await tmpl.readCallback(new URL('lincx://campaign/c1'), { id: 'c1' }, extra)
+  t.deepEqual(JSON.parse(out.contents[0].text), { id: 'c1', name: 'Camp' })
+})
 
-    const out = await tmpl.readCallback(new URL('lincx://campaign/c1'), { id: 'c1' }, extra)
-    expect(JSON.parse(out.contents[0].text)).toEqual({ id: 'c1', name: 'Camp' })
-  })
+test('resources (T1-3 / T4-6) > entity templates carry no list callback — zero per-request (resources/list) cost', async t => {
+  const server = await build()
+  // Static resource is listed; templates without a list callback are not.
+  t.true(Object.keys(server._registeredResources).includes('lincx://networks'))
+  t.is(server._registeredResourceTemplates['zone-by-id'].resourceTemplate.listCallback, undefined)
+})
 
-  it('entity templates carry no list callback — zero per-request (resources/list) cost', () => {
-    const server = build()
-    // Static resource is listed; templates without a list callback are not.
-    expect(Object.keys(server._registeredResources)).toContain('lincx://networks')
-    expect(server._registeredResourceTemplates['zone-by-id'].resourceTemplate.listCallback).toBeUndefined()
-  })
+test('resources (T1-3 / T4-6) > a resource read surfaces a clean error (not a throw) on upstream failure', async t => {
+  // No route registered for zones/zX → workApiMock throws → handleWorkApiError formats it.
+  const server = await build()
+  const tmpl = server._registeredResourceTemplates['zone-by-id']
+  const out = await tmpl.readCallback(new URL('lincx://zone/zX'), { id: 'zX' }, extra)
+  t.is(out.contents[0].mimeType, 'text/plain')
+  t.regex(out.contents[0].text, /^Error:/)
+})
 
-  it('a resource read surfaces a clean error (not a throw) on upstream failure', async () => {
-    // No handler registered for ads/zX → mockWorkApi throws → handleWorkApiError formats it.
-    const server = build()
-    const tmpl = server._registeredResourceTemplates['zone-by-id']
-    const out = await tmpl.readCallback(new URL('lincx://zone/zX'), { id: 'zX' }, extra)
-    expect(out.contents[0].mimeType).toBe('text/plain')
-    expect(out.contents[0].text).toMatch(/^Error:/)
-  })
+test.serial('resources (T1-3 / T4-6) > records a usage event when a resource is read', async t => {
+  const { getEventSink } = await import('../services/usageAnalytics.js')
+  const server = await build([
+    ['GET', /^\/api\/campaigns\/c9$/, () => ({ id: 'c9', name: 'C' })]
+  ])
+  const tmpl = server._registeredResourceTemplates['campaign-by-id']
 
-  it('records a usage event when a resource is read', async () => {
-    const { getEventSink } = await import('../services/usageAnalytics.js')
-    api.on('GET', /^\/api\/campaigns\/c9$/, () => ({ id: 'c9', name: 'C' }))
-    const server = build()
-    const tmpl = server._registeredResourceTemplates['campaign-by-id']
+  await tmpl.readCallback(new URL('lincx://campaign/c9'), { id: 'c9' }, extra)
+  await new Promise((resolve) => setTimeout(resolve, 20))
 
-    await tmpl.readCallback(new URL('lincx://campaign/c9'), { id: 'c9' }, extra)
-    await new Promise((resolve) => setTimeout(resolve, 20))
+  const recent = await (await getEventSink()).readRecent(5)
+  const rec = recent.find((e) => e.type === 'resource' && e.name === 'campaign-by-id')
+  t.is(rec?.status, 'ok')
+})
 
-    const recent = await (await getEventSink()).readRecent(5)
-    const rec = recent.find((e) => e.type === 'resource' && e.name === 'campaign-by-id')
-    expect(rec?.status).toBe('ok')
-  })
+test('resources (T1-3 / T4-6) > e2e: a real client sees lincx://networks in resources/list and can read it', async t => {
+  const server = await build()
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: 'c', version: '0.0.0' })
+  await Promise.all([server.connect(serverT), client.connect(clientT)])
 
-  it('e2e: a real client sees lincx://networks in resources/list and can read it', async () => {
-    const server = new McpServer({ name: 'test', version: '0.0.0' })
-    registerResources(server)
-    const [clientT, serverT] = InMemoryTransport.createLinkedPair()
-    const client = new Client({ name: 'c', version: '0.0.0' })
-    await Promise.all([server.connect(serverT), client.connect(clientT)])
+  try {
+    const list = await client.listResources()
+    t.true(list.resources.map((r) => r.uri).includes('lincx://networks'))
 
-    try {
-      const list = await client.listResources()
-      expect(list.resources.map((r) => r.uri)).toContain('lincx://networks')
+    const tmpls = await client.listResourceTemplates()
+    t.true(tmpls.resourceTemplates.map((x) => x.uriTemplate).includes('lincx://campaign/{id}'))
 
-      const tmpls = await client.listResourceTemplates()
-      expect(tmpls.resourceTemplates.map((t) => t.uriTemplate)).toContain('lincx://campaign/{id}')
-
-      const read = await client.readResource({ uri: 'lincx://networks' })
-      expect(Array.isArray(JSON.parse(read.contents[0].text).networks)).toBe(true)
-    } finally {
-      await client.close()
-      await server.close()
-    }
-  })
+    const read = await client.readResource({ uri: 'lincx://networks' })
+    t.is(Array.isArray(JSON.parse(read.contents[0].text).networks), true)
+  } finally {
+    await client.close()
+    await server.close()
+  }
 })
