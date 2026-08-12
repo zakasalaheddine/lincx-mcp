@@ -327,14 +327,14 @@ test.serial('contract: /stats gating > 404s when STATS_TOKEN is unset, so it is 
 // ── Method dispatch ──────────────────────────────────────────────────────────
 
 { // contract: method dispatch
-  // RECORDED against Express: an unlisted method on a known path falls through
-  // the Router and lands on the 404 handler.
+  // AMENDED IN PHASE 3 (#67), the first of exactly two sanctioned amendments to
+  // this file. Express fell through its Router to the 404 handler for an unlisted
+  // method on a known path; http-hash-router dispatches through http-methods,
+  // which answers 405 — the correct status, and no MCP client depends on the 404.
   //
-  // PHASE 3 (#67) WILL CHANGE THESE TO 405. http-hash-router dispatches methods
-  // through http-methods, which answers 405 for a path it knows with a method it
-  // does not. That is more correct and no MCP client depends on the 404 — but it
-  // is a real behavioural delta, so it is pinned here and amended deliberately
-  // rather than discovered in production.
+  // The delta was recorded in Phase 0 precisely so it could be accepted here
+  // deliberately instead of discovered in production. Nothing else in this file
+  // changed for the router swap.
   const cases = [
     ['post', '/health'],
     ['put', '/health'],
@@ -343,9 +343,9 @@ test.serial('contract: /stats gating > 404s when STATS_TOKEN is unset, so it is 
   ]
 
   for (const [method, path] of cases) {
-    test.serial(`contract: method dispatch > ${method.toUpperCase()} ${path} -> 404 (Express falls through)`, async t => {
+    test.serial(`contract: method dispatch > ${method.toUpperCase()} ${path} -> 405 (http-methods knows the path)`, async t => {
       const r = await (request(app))[method](path)
-      t.is(r.status, 404)
+      t.is(r.status, 405)
     })
   }
 }
@@ -356,9 +356,11 @@ test.serial('contract: /stats gating > 404s when STATS_TOKEN is unset, so it is 
   // RECORDED against Express: a Router mounted with app.use() matches BOTH the
   // bare and the slashed form, so every one of these currently serves.
   //
-  // http-hash matches exact pathname segments and will 404 all of them. Phase 3
-  // (#67) must therefore register both forms for every route below, or these
-  // break silently for any client that appends a slash.
+  // PHASE 3 (#67) OUTCOME: unchanged, and no route had to be registered twice.
+  // http-hash ignores a trailing empty segment, so `/health/` hits the same
+  // handler as `/health` — the second sanctioned amendment turned out not to be
+  // needed. (Registering both forms is in fact impossible: http-hash rejects the
+  // slashed variant as a route conflict.)
   const cases = [
     ['/health/', 200],
     ['/.well-known/oauth-authorization-server/', 200],

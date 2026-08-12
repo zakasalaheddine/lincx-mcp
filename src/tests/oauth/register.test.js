@@ -1,12 +1,9 @@
 import test from 'ava'
 import request from 'supertest'
-import express from 'express'
-import { oauthRegisterRouter } from '../../routes/oauthRegister.js'
+import { buildContractApp } from '../contract/buildApp.js'
 
 { // POST /oauth/register
-  const app = express()
-  app.use(express.json())
-  app.use('/oauth', oauthRegisterRouter)
+  const app = buildContractApp()
 
   test('POST /oauth/register > registers a client', async t => {
     const res = await request(app).post('/oauth/register').send({

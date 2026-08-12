@@ -1,8 +1,7 @@
 import test from 'ava'
 import request from 'supertest'
-import express from 'express'
 import { createHash } from 'node:crypto'
-import { oauthTokenRouter } from '../../routes/oauthToken.js'
+import { buildContractApp } from '../contract/buildApp.js'
 import { registerClient } from '../../services/oauth/clients.js'
 import { issueAuthCode } from '../../services/oauth/codes.js'
 
@@ -11,10 +10,7 @@ function challenge (verifier) {
 }
 
 { // POST /oauth/token
-  const app = express()
-  app.use(express.urlencoded({ extended: true }))
-  app.use(express.json())
-  app.use('/oauth', oauthTokenRouter)
+  const app = buildContractApp()
 
   test.serial('POST /oauth/token > exchanges auth_code (with PKCE) for tokens', async t => {
     const client = await registerClient({ redirect_uris: ['https://x/cb'] })

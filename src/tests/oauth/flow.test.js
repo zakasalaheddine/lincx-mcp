@@ -2,12 +2,7 @@
 import test from 'ava'
 import request from 'supertest'
 import { createHash, randomBytes } from 'node:crypto'
-import express from 'express'
-
-import { wellKnownRouter } from '../../routes/wellKnown.js'
-import { oauthRegisterRouter } from '../../routes/oauthRegister.js'
-import { oauthTokenRouter } from '../../routes/oauthToken.js'
-import { loginRouter } from '../../routes/login.js'
+import { buildContractApp } from '../contract/buildApp.js'
 import { resolveLincxSessionFromBearer } from '../../services/sessionManager.js'
 
 // This flow spans FOUR routers and the OAuth client/code/token stores, and it
@@ -57,13 +52,7 @@ function challenge (verifier) {
   return createHash('sha256').update(verifier).digest('base64url')
 }
 
-const app = express()
-app.use(express.json())
-app.use(express.urlencoded({ extended: true }))
-app.use('/.well-known', wellKnownRouter)
-app.use('/oauth', oauthRegisterRouter)
-app.use('/oauth', oauthTokenRouter)
-app.use(loginRouter)
+const app = buildContractApp()
 
 /** Register a client, then walk authorize → login → code → tokens. */
 async function fullFlow (t) {

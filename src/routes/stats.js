@@ -12,27 +12,26 @@
  * Authorization header for anything but quick manual viewing, and rotate the
  * token (change STATS_TOKEN) if a URL leaks.
  */
-import { Router } from 'express'
 import { STATS_TOKEN, USAGE_EVENT_CAP } from '../constants.js'
 import { getEventSink, computeStats } from '../services/usageAnalytics.js'
+import { json, noContent } from '../http/respond.js'
+import { query, header } from '../http/request.js'
 
-export const statsRouter = Router()
+export async function getStats (req, res) {
+  if (!STATS_TOKEN) return noContent(res, 404)
 
-statsRouter.get('/stats', async (req, res) => {
-  if (!STATS_TOKEN) { res.status(404).end(); return }
-  const presented = req.header('authorization') === `Bearer ${STATS_TOKEN}` ||
-    req.query.token === STATS_TOKEN
-  if (!presented) {
-    res.status(401).json({ error: 'unauthorized' })
-    return
-  }
-  const parsed = parseInt(String(req.query.limit ?? ''), 10)
+  const q = query(req)
+  const presented = header(req, 'authorization') === `Bearer ${STATS_TOKEN}` ||
+    q.get('token') === STATS_TOKEN
+  if (!presented) return json(res, 401, { error: 'unauthorized' })
+
+  const parsed = parseInt(q.get('limit') ?? '', 10)
   const limit = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, USAGE_EVENT_CAP) : USAGE_EVENT_CAP
   try {
     const events = await (await getEventSink()).readRecent(limit)
-    res.json(computeStats(events))
+    json(res, 200, computeStats(events))
   } catch (err) {
     console.error('[Stats] read failed:', err instanceof Error ? err.message : String(err))
-    res.json(computeStats([])) // degrade to empty, never 500
+    json(res, 200, computeStats([])) // degrade to empty, never 500
   }
-})
+}

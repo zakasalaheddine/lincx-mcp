@@ -1,71 +1,54 @@
 /* eslint-disable camelcase -- OAuth params and Work API / tool-output fields are snake_case on the wire: protocol, not style. */
-import { Router } from 'express'
 import { consumeAuthCode } from '../services/oauth/codes.js'
 import { issueTokens, refreshTokens } from '../services/oauth/tokens.js'
 import { verifyPkce } from '../services/oauth/pkce.js'
 import { getClient } from '../services/oauth/clients.js'
+import { json } from '../http/respond.js'
+import { readBody } from '../http/request.js'
 
-export const oauthTokenRouter = Router()
+export async function postToken (req, res, _opts, cb) {
+  let body
+  try {
+    body = await readBody(req)
+  } catch (err) {
+    return cb(err)
+  }
 
-oauthTokenRouter.post('/token', async (req, res) => {
-  const { grant_type } = req.body ?? {}
+  const { grant_type } = body ?? {}
 
   if (grant_type === 'authorization_code') {
-    const { code, redirect_uri, client_id, code_verifier } = req.body
+    const { code, redirect_uri, client_id, code_verifier } = body
 
     if (!code || !redirect_uri || !client_id || !code_verifier) {
-      res.status(400).json({ error: 'invalid_request' })
-      return
+      return json(res, 400, { error: 'invalid_request' })
     }
 
     const client = await getClient(client_id)
-    if (!client) {
-      res.status(400).json({ error: 'invalid_client' })
-      return
-    }
+    if (!client) return json(res, 400, { error: 'invalid_client' })
 
     const authCode = await consumeAuthCode(code)
-    if (!authCode) {
-      res.status(400).json({ error: 'invalid_grant' })
-      return
-    }
-
-    if (authCode.client_id !== client_id) {
-      res.status(400).json({ error: 'invalid_grant' })
-      return
-    }
-    if (authCode.redirect_uri !== redirect_uri) {
-      res.status(400).json({ error: 'invalid_grant' })
-      return
-    }
+    if (!authCode) return json(res, 400, { error: 'invalid_grant' })
+    if (authCode.client_id !== client_id) return json(res, 400, { error: 'invalid_grant' })
+    if (authCode.redirect_uri !== redirect_uri) return json(res, 400, { error: 'invalid_grant' })
     if (!verifyPkce(code_verifier, authCode.code_challenge, 'S256')) {
-      res.status(400).json({ error: 'invalid_grant' })
-      return
+      return json(res, 400, { error: 'invalid_grant' })
     }
 
     const tokens = await issueTokens({
       client_id,
       lincx_session_id: authCode.lincx_session_id
     })
-    res.json(tokens)
-    return
+    return json(res, 200, tokens)
   }
 
   if (grant_type === 'refresh_token') {
-    const { refresh_token, client_id } = req.body
-    if (!refresh_token || !client_id) {
-      res.status(400).json({ error: 'invalid_request' })
-      return
-    }
+    const { refresh_token, client_id } = body
+    if (!refresh_token || !client_id) return json(res, 400, { error: 'invalid_request' })
 
     const tokens = await refreshTokens(refresh_token, client_id)
-    if (!tokens) {
-      res.status(400).json({ error: 'invalid_grant' })
-      return
-    }
-    res.json(tokens)
-    return
+    if (!tokens) return json(res, 400, { error: 'invalid_grant' })
+    return json(res, 200, tokens)
   }
 
-  res.status(400).json({ error: 'unsupported_grant_type' })
-})
+  json(res, 400, { error: 'unsupported_grant_type' })
+}
