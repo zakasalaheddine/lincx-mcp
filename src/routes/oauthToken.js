@@ -4,7 +4,7 @@ import { issueTokens, refreshTokens } from "../services/oauth/tokens.js";
 import { verifyPkce } from "../services/oauth/pkce.js";
 import { getClient } from "../services/oauth/clients.js";
 
-export const oauthTokenRouter: Router = Router();
+export const oauthTokenRouter         = Router();
 
 oauthTokenRouter.post("/token", async (req, res) => {
   const { grant_type } = req.body ?? {};

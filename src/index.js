@@ -54,7 +54,7 @@ import { loginRouter } from "./routes/login.js";
 // The Streamable HTTP transport is per-session, so we build a fresh server for
 // each session via this factory rather than sharing one across all sessions —
 // sharing throws "Already connected to a transport" on the second session.
-function createMcpServer(): McpServer {
+function createMcpServer()            {
   const server = new McpServer({ name: "lincx-mcp-server", version: "1.0.0" });
 
   registerAuthTools(server);
@@ -114,7 +114,7 @@ app.use(loginRouter);
 // ── Dev debug routes (non-production only) ───────────────────────────────────
 if (!IS_PRODUCTION) {
   const devServer = createMcpServer();
-  const registeredTools = (devServer as unknown as { _registeredTools: Record<string, { description?: string; handler: (args: Record<string, unknown>, extra: unknown) => Promise<unknown> }> })._registeredTools;
+  const registeredTools = (devServer                                                                                                                                                           )._registeredTools;
 
   app.get("/dev/tools", (_req, res) => {
     const tools = Object.entries(registeredTools).map(([name, t]) => ({ name, description: t.description }));
@@ -134,9 +134,9 @@ if (!IS_PRODUCTION) {
 }
 
 // ── MCP HTTP transport — per-session ────────────────────────────────────────
-const transports = new Map<string, StreamableHTTPServerTransport>();
+const transports = new Map                                       ();
 
-async function createTransport(): Promise<StreamableHTTPServerTransport> {
+async function createTransport()                                         {
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     enableJsonResponse: true,
@@ -162,7 +162,7 @@ async function createTransport(): Promise<StreamableHTTPServerTransport> {
   return transport;
 }
 
-function bearerChallengeHeader(): string {
+function bearerChallengeHeader()         {
   return `Bearer resource_metadata="${PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"`;
 }
 
@@ -179,11 +179,11 @@ app.post("/mcp", mcpLimiter, async (req, res) => {
     }
 
     const existingId = req.header("mcp-session-id");
-    let transport: StreamableHTTPServerTransport;
+    let transport                               ;
 
     if (existingId && transports.has(existingId)) {
       // Established session — reuse its transport (and its server).
-      transport = transports.get(existingId)!;
+      transport = transports.get(existingId) ;
     } else if (!existingId && isInitializeRequest(req.body)) {
       // New session handshake — stand up a fresh transport + server.
       transport = await createTransport();
@@ -193,7 +193,7 @@ app.post("/mcp", mcpLimiter, async (req, res) => {
       // client to re-initialize instead of silently minting a new session.)
       res.status(400).json({
         jsonrpc: "2.0",
-        id: (req.body as { id?: unknown })?.id ?? null,
+        id: (req.body                    )?.id ?? null,
         error: {
           code: -32000,
           message: "Bad Request: unknown or missing MCP session ID. Re-initialize the session.",
@@ -214,7 +214,7 @@ app.post("/mcp", mcpLimiter, async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: "2.0",
-        id: (req.body as { id?: unknown })?.id ?? null,
+        id: (req.body                    )?.id ?? null,
         error: { code: -32603, message: "Internal server error." },
       });
     }
@@ -249,7 +249,7 @@ app.get("/mcp", async (req, res) => {
     res.status(404).json({ error: "Unknown MCP session." });
     return;
   }
-  await transports.get(existingId)!.handleRequest(req, res);
+  await transports.get(existingId) .handleRequest(req, res);
 });
 
 app.delete("/mcp", async (req, res) => {
@@ -264,20 +264,20 @@ app.delete("/mcp", async (req, res) => {
     res.status(404).end();
     return;
   }
-  await transports.get(existingId)!.handleRequest(req, res);
+  await transports.get(existingId) .handleRequest(req, res);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STARTUP
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function main(): Promise<void> {
+async function main()                {
   const httpServer = app.listen(SERVER_PORT);
   httpServer.on("listening", () => {
     console.error(`[HTTP]   Listening on :${SERVER_PORT}`);
     console.error(`[HTTP]   /health, /login, /mcp`);
   });
-  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+  httpServer.on("error", (err                       ) => {
     if (err.code === "EADDRINUSE") {
       console.error(`[HTTP]   Port ${SERVER_PORT} in use — aborting.`);
       process.exit(1);

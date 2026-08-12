@@ -16,7 +16,7 @@ import { Router } from "express";
 import { STATS_TOKEN, USAGE_EVENT_CAP } from "../constants.js";
 import { getEventSink, computeStats } from "../services/usageAnalytics.js";
 
-export const statsRouter: Router = Router();
+export const statsRouter         = Router();
 
 statsRouter.get("/stats", async (req, res) => {
   if (!STATS_TOKEN) { res.status(404).end(); return; }
