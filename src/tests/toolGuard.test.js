@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import test from 'ava'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { installToolGuards } from '../middleware/toolGuard.js'
@@ -6,8 +6,11 @@ import { RESPONSE_SIZE_LIMIT } from '../constants.js'
 import { getEventSink } from '../services/usageAnalytics.js'
 
 // The guard logs one JSON metrics line per call to stderr — silence it in tests.
-beforeEach(() => vi.spyOn(console, 'error').mockImplementation(() => {}))
-afterEach(() => vi.restoreAllMocks())
+// ava runs tests within a file concurrently, so console.error is shared state:
+// every test here is test.serial.
+const realConsoleError = console.error
+test.beforeEach(() => { console.error = () => {} })
+test.afterEach(() => { console.error = realConsoleError })
 
 function guardedTool (result) {
   const server = new McpServer({ name: 't', version: '0.0.0' })
@@ -20,28 +23,28 @@ function guardedTool (result) {
   return (server)._registeredTools.x
 }
 
-describe('installToolGuards (T2-4 response-size guard)', () => {
-  it('passes a normal-sized response through untouched', async () => {
+{ // installToolGuards (T2-4 response-size guard)
+  test.serial('installToolGuards (T2-4 response-size guard) > passes a normal-sized response through untouched', async t => {
     const tool = guardedTool({ content: [{ type: 'text', text: 'small' }] })
     const r = await tool.handler({}, { sessionId: 's' })
-    expect(r.isError).toBeUndefined()
-    expect(r.content[0].text).toBe('small')
+    t.is(r.isError, undefined)
+    t.is(r.content[0].text, 'small')
   })
 
-  it('replaces an oversized response with a structured response_too_large error', async () => {
+  test.serial('installToolGuards (T2-4 response-size guard) > replaces an oversized response with a structured response_too_large error', async t => {
     const big = 'x'.repeat(RESPONSE_SIZE_LIMIT + 100)
     const tool = guardedTool({ content: [{ type: 'text', text: big }] })
     const r = await tool.handler({}, { sessionId: 's' })
 
-    expect(r.isError).toBe(true)
+    t.is(r.isError, true)
     const body = JSON.parse(r.content[0].text)
-    expect(body.error).toBe('response_too_large')
-    expect(body.limit).toBe(RESPONSE_SIZE_LIMIT)
-    expect(body.size).toBeGreaterThan(RESPONSE_SIZE_LIMIT)
-    expect(body.hint).toMatch(/pagination|field|filter/i)
+    t.is(body.error, 'response_too_large')
+    t.is(body.limit, RESPONSE_SIZE_LIMIT)
+    t.true(body.size > RESPONSE_SIZE_LIMIT)
+    t.regex(body.hint, /pagination|field|filter/i)
   })
 
-  it('propagates handler errors (and does not swallow them as oversized)', async () => {
+  test.serial('installToolGuards (T2-4 response-size guard) > propagates handler errors (and does not swallow them as oversized)', async t => {
     const server = new McpServer({ name: 't', version: '0.0.0' })
     server.registerTool(
       'boom',
@@ -50,12 +53,12 @@ describe('installToolGuards (T2-4 response-size guard)', () => {
     )
     installToolGuards(server)
     const tool = (server)._registeredTools.boom
-    await expect(tool.handler({}, { sessionId: 's' })).rejects.toThrow('kaboom')
+    await t.throwsAsync(tool.handler({}, { sessionId: 's' }), { message: 'kaboom' })
   })
-})
+}
 
-describe('installToolGuards records usage events', () => {
-  it('records a returned Error: result as a usage error', async () => {
+{ // installToolGuards records usage events
+  test.serial('installToolGuards records usage events > records a returned Error: result as a usage error', async t => {
     const server = new McpServer({ name: 't', version: '0.0.0' })
     server.registerTool('err_tool', { description: 't', inputSchema: z.object({}).strict() },
       async () => ({ content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }))
@@ -68,7 +71,7 @@ describe('installToolGuards records usage events', () => {
 
     const recent = await (await getEventSink()).readRecent(5)
     const rec = recent.find((e) => e.name === 'err_tool')
-    expect(rec?.status).toBe('error')
-    expect(rec?.error_kind).toBe('not_authenticated')
+    t.is(rec?.status, 'error')
+    t.is(rec?.error_kind, 'not_authenticated')
   })
-})
+}
