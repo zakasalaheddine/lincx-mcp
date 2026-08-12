@@ -1,27 +1,20 @@
-# Local-dev overlay. NOT auto-merged (that's why it isn't named
-# docker-compose.override.yml — on a server the auto-merge silently overrode the
-# real PUBLIC_BASE_URL/REDIS_URL with the localhost literals below). Pass it
-# explicitly:
+# Local-dev Redis, and nothing else.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
-#   → http://localhost:3000/health
+# This is the ONLY compose file left in the repo — production is App Engine (see
+# DEPLOYMENT.md). It used to be an overlay on docker-compose.yml; that file is
+# gone, so this one is now standalone and defines only `redis`. The npm scripts
+# pass it explicitly:
 #
-# The npm predev/redis:stop scripts already pass both files.
+#   docker compose -f docker-compose.dev.yml up -d redis
+#   npm run redis:stop
 #
-# Edit WORK_API_BASE_URL to point at a local Work API instead. The Redis
-# password is a throwaway local value — it just has to match on both services.
+# The password is a throwaway local value. Point .env at it with:
+#   REDIS_URL=redis://default:localdev@localhost:6380
 services:
-  app:
-    environment:
-      - PUBLIC_BASE_URL=http://localhost:3000
-      - WORK_API_BASE_URL=https://api.lincx.com
-      - REDIS_URL=redis://default:localdev@redis:6379
-    ports:
-      - "3000:3000"
   redis:
+    image: redis:7-alpine
     command: redis-server --requirepass localdev --appendonly yes
-    # Exposed to the host so `npm run dev` (running outside Docker) shares this
-    # same Redis. Connect with REDIS_URL=redis://default:localdev@localhost:6380.
+    restart: unless-stopped
     # Host port is 6380, not 6379: lincx-core's test stack binds 6379, so this
     # container failed to start and the dev server silently fell through to
     # lincx-core's redis — which never held this server's oauth:client:* keys
@@ -29,3 +22,13 @@ services:
     # unsafe: lincx-core's test suite FLUSHALLs it.
     ports:
       - "6380:6379"
+    volumes:
+      - redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "localdev", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-dev-data:

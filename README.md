@@ -458,15 +458,15 @@ registerYourDomainTools(server, getSessionId);
 
 Full step-by-step guide: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
-The service is one Node container plus Redis behind a TLS-terminating proxy, and runs
-on any Docker host. Start with the deployment contract in
-[DEPLOYMENT.md §1](DEPLOYMENT.md#1-the-deployment-contract) — the one requirement that
-bites is **exactly one running instance** (MCP transport state is in process memory;
-Redis holds auth, not connections).
+Production is Google App Engine Standard (`nodejs22`) with Memorystore Redis and
+Secret Manager — no build step, no container. See [DEPLOYMENT.md](DEPLOYMENT.md).
+The requirement that bites is **exactly one running instance** (MCP transport state
+is in process memory; Redis holds auth, not connections), which is why `app.yaml`
+pins `manual_scaling: instances: 1`.
 
 | File | Use |
 |------|-----|
-| `docker-compose.yml` | Portable — any Docker host (VM, on-prem, laptop). Reads `.env`. |
-| `docker-compose.dev.yml` | Local-dev overlay; pass it explicitly (`-f docker-compose.yml -f docker-compose.dev.yml`). The npm scripts do. |
-| `docker-compose.coolify.yml` | Coolify resources (uses Coolify's `SERVICE_*` magic vars). |
-| `Dockerfile` | The image itself — for Cloud Run, GKE, ECS, or any registry-based platform. |
+| `app.yaml` | App Engine service config: runtime, scaling, non-secret env vars, VPC connector. Committed — secrets live in Secret Manager. |
+| `.gcloudignore` | What not to upload. `src/` is uploaded; `src/tests/` is not. |
+| `cloudbuild.yaml` | Deploy on master push, gated by `npm run lint` + `npm test`. |
+| `docker-compose.dev.yml` | Local-dev Redis only, standalone, host port 6380. The npm scripts pass it explicitly. |
