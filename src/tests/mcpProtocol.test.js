@@ -117,7 +117,7 @@ test.serial('MCP > GET and DELETE do not hang waiting for a body', async t => {
         method,
         headers: { authorization: 'Bearer test-token', 'mcp-session-id': 'nope' }
       }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`${method} hung`)), 3000))
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error(`${method} hung`)), 3000))
     ])
     t.is(r.status, 404, `${method} with an unknown session should 404`)
   }
