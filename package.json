@@ -10,6 +10,8 @@
     "lint:fix": "standard --fix src/ scripts/",
     "predev": "docker compose -f docker-compose.dev.yml up -d redis || echo '[predev] Could not start Redis (is Docker running?) — continuing; set REDIS_URL= in .env for the in-memory store.'",
     "dev": "node scripts/dev-tunnel.mjs",
+    "dev:ngrok": "node scripts/dev-tunnel.mjs ngrok",
+    "dev:cloudflared": "node scripts/dev-tunnel.mjs cloudflared",
     "predev:local": "docker compose -f docker-compose.dev.yml up -d redis || echo '[predev:local] Could not start Redis (is Docker running?) — continuing; set REDIS_URL= in .env for the in-memory store.'",
     "dev:local": "node --watch --env-file=.env src/index.js",
     "redis:stop": "docker compose -f docker-compose.dev.yml stop redis",

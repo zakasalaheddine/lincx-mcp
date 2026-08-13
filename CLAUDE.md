@@ -219,17 +219,35 @@ npm run lint         # standard src/ scripts/ — the compiler's replacement
 npm test             # ava (config lives in package.json)
 npm run smoke <url>  # read-only post-deploy checks against a live server
 npm run soak  <url>  # SOAK_TOKEN=… — holds a session an hour, proves ONE instance
-npm run dev          # cloudflared tunnel + node --watch (see below)
+npm run dev          # tunnel (ngrok, else cloudflared) + node --watch (see below)
 npm run dev:local    # node --watch only — no tunnel, http://localhost:5001
 ```
 
-**`npm run dev`** (`scripts/dev-tunnel.mjs`) starts a Cloudflare quick tunnel,
-captures the generated `https://<random>.trycloudflare.com` URL, then boots the
-watch server with `PUBLIC_BASE_URL` set to it and prints a banner with the
-`<url>/mcp` to paste into a Claude Desktop / claude.ai connector (those require
-https, so a tunnel is needed for local connector use). Requires `cloudflared`
-(`brew install cloudflared`). Use **`npm run dev:local`** for plain local work
-(e.g. connecting via `mcp-remote`, which accepts `http://localhost`).
+**`npm run dev`** (`scripts/dev-tunnel.mjs`) starts a tunnel — **ngrok** if it is
+installed, else **cloudflared** (`npm run dev:ngrok` / `npm run dev:cloudflared`
+force one) — learns the generated https URL from the agent, then boots the watch
+server with `PUBLIC_BASE_URL` set to **that URL** and prints a banner with the
+`<url>/mcp` to paste into a Claude Desktop / claude.ai connector. Those clients
+require https, hence the tunnel.
+
+`PUBLIC_BASE_URL` matching the URL the client hits is not cosmetic: the OAuth
+discovery document is built from it, so a stale value makes the client fetch
+discovery over https and then read a `registration_endpoint` on
+`http://localhost` — which it refuses, reporting only *"Couldn't register with
+… sign-in service"*. Nothing fails server-side, which is what makes it expensive
+to diagnose. Two guards exist now: the tunnel script refuses to start if
+something already owns `PORT` (otherwise the tunnel serves a stale server with
+its own `PUBLIC_BASE_URL`), and `routes/wellKnown.js` logs a one-line warning
+when discovery is served for a host that does not match `PUBLIC_BASE_URL`.
+
+On the ngrok free plan the edge shows a browser interstitial the first time the
+LOGIN PAGE is opened — one click ("Visit Site"). API traffic is unaffected, and
+`--request-header-add ngrok-skip-browser-warning` does not suppress it (the edge
+decides before traffic policy runs). `npm run dev:cloudflared` has no
+interstitial.
+
+Use **`npm run dev:local`** for plain local work with no tunnel (Claude Code via
+`mcp-remote`, or curl).
 
 Both run a `predev` hook (`docker compose -f docker-compose.dev.yml up -d redis`)
 that brings up the bundled Redis on `localhost:6380` (6379 collides with

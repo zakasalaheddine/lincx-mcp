@@ -136,19 +136,32 @@ The server is HTTP-only — it serves the login UI and the MCP `/mcp` endpoint o
 npm start
 ```
 
-**Dev mode** — `npm run dev` starts a Cloudflare tunnel and prints a public
-`https://…/mcp` URL you can paste into a Claude Desktop / claude.ai connector
-(both require https). It also starts a Dockerized Redis via the `predev` hook.
-Requires [`cloudflared`](https://github.com/cloudflare/cloudflared) (`brew install cloudflared`):
+**Dev mode** — `npm run dev` starts a tunnel and prints a public `https://…/mcp`
+URL to paste into a Claude Desktop / claude.ai connector (both require https). It
+also starts a Dockerized Redis via the `predev` hook. It uses **ngrok** if
+installed, otherwise **cloudflared**; `npm run dev:ngrok` and
+`npm run dev:cloudflared` force one (`brew install ngrok` / `brew install cloudflared`).
 
 ```bash
 npm run dev
-# ════════════════════════════════════════════════
-#   Public URL:   https://<random>.trycloudflare.com
-#   MCP endpoint: https://<random>.trycloudflare.com/mcp
+# ══════════════════════════════════════════════════════════════
+#   ngrok tunnel is live
+#   Public URL:   https://<random>.ngrok-free.app
+#   MCP endpoint: https://<random>.ngrok-free.app/mcp
 #   Local:        http://localhost:5001
-# ════════════════════════════════════════════════
+#   PUBLIC_BASE_URL is set to the public URL, so OAuth discovery matches it.
+# ══════════════════════════════════════════════════════════════
 ```
+
+**Do not start a tunnel by hand against `npm run dev:local`.** The server would
+still advertise `http://localhost:5001` in its OAuth discovery document, the
+client would fetch discovery over https and then refuse a `registration_endpoint`
+on plain localhost, and the only symptom is *"Couldn't register with … sign-in
+service"*. `npm run dev` exists to set `PUBLIC_BASE_URL` to the tunnel URL; the
+server also logs a warning if discovery is ever served for a mismatched host.
+
+On the ngrok free plan the login page shows an interstitial once — click "Visit
+Site". `npm run dev:cloudflared` has none.
 
 For plain local work without a tunnel (e.g. connecting via `mcp-remote`, which
 accepts `http://localhost`):
