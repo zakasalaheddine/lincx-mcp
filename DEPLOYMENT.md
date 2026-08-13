@@ -24,9 +24,24 @@ stays either way; it is the local Redis and nothing else.
 
 ## Coolify — what production runs today
 
-Coolify deploys this repo as a **Docker Compose** resource pointed at
-`docker-compose.coolify.yml`. It builds the app from `Dockerfile`, provisions
-Redis, wires the two, and assigns a public HTTPS domain through its Traefik proxy.
+Coolify deploys this repo as a **Docker Compose** resource. It builds the app from
+`Dockerfile`, provisions Redis, wires the two, and assigns a public HTTPS domain
+through its Traefik proxy.
+
+**Which compose file is it pointed at?** Both work now, and they differ in where
+config comes from:
+
+| File | Domain / `PUBLIC_BASE_URL` | Redis password |
+|---|---|---|
+| `docker-compose.coolify.yml` | derived from Coolify's `SERVICE_FQDN_APP` | `SERVICE_PASSWORD_REDIS` |
+| `docker-compose.yml` | **you** set `PUBLIC_BASE_URL` in the UI | `REDIS_PASSWORD`, falling back to `SERVICE_PASSWORD_REDIS` |
+
+The portable file used to hard-require `REDIS_PASSWORD`, so a resource pointed at
+it failed during interpolation — before any build output — with
+`required variable REDIS_PASSWORD is missing a value`. It now accepts Coolify's
+generated variable as a fallback. Prefer the portable file when you serve a custom
+domain (it keeps `PUBLIC_BASE_URL` explicit); prefer the Coolify file when you want
+Coolify to own the domain too.
 
 Nothing about the deploy changed in the migration. What changed inside the image:
 

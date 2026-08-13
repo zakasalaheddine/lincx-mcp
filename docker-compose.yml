@@ -8,6 +8,12 @@
 #   docker compose up -d --build
 #   curl http://127.0.0.1:3000/health
 #
+# The Redis password is read from REDIS_PASSWORD, falling back to Coolify's
+# generated SERVICE_PASSWORD_REDIS. That fallback exists because a Coolify resource
+# pointed at THIS file (rather than at docker-compose.coolify.yml) supplies only the
+# SERVICE_* magic vars, and the deploy then dies during interpolation — before any
+# build output — with "required variable REDIS_PASSWORD is missing a value".
+#
 # Full step-by-step guide (VM, Cloud Run, any platform): see DEPLOYMENT.md.
 #
 # TLS is NOT terminated here. Put a reverse proxy (Caddy, nginx, a cloud load
@@ -36,7 +42,7 @@ services:
       - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required (e.g. https://mcp.example.com)}
       - WORK_API_BASE_URL=${WORK_API_BASE_URL:?WORK_API_BASE_URL is required}
       - IDENTITY_SERVER=${IDENTITY_SERVER:-https://ix-id.lincx.la}
-      - REDIS_URL=redis://default:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379
+      - REDIS_URL=redis://default:${REDIS_PASSWORD:-${SERVICE_PASSWORD_REDIS:?set REDIS_PASSWORD (or let Coolify provide SERVICE_PASSWORD_REDIS)}}@redis:6379
       - STATS_TOKEN=${STATS_TOKEN:-}
       - USAGE_EVENT_CAP=${USAGE_EVENT_CAP:-50000}
       - RESPONSE_SIZE_LIMIT=${RESPONSE_SIZE_LIMIT:-30000}
@@ -57,11 +63,11 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required} --appendonly yes
+    command: redis-server --requirepass ${REDIS_PASSWORD:-${SERVICE_PASSWORD_REDIS:?set REDIS_PASSWORD (or let Coolify provide SERVICE_PASSWORD_REDIS)}} --appendonly yes
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-${SERVICE_PASSWORD_REDIS}}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
