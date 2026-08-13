@@ -513,7 +513,16 @@ Privacy invariants: never store `auth_token`/OAuth tokens, never parameter VALUE
 ## Deployment
 
 **Operator guide lives in `DEPLOYMENT.md` — keep deployment prose there, not here.**
-Google App Engine Standard (`nodejs22`) + Memorystore Redis + Secret Manager.
+
+**Two platforms are live at once during the migration.** Production runs on
+**Coolify** today (`Dockerfile` + `docker-compose.coolify.yml`); the target is
+**App Engine** (`app.yaml` + `cloudbuild.yaml`). The same code serves both —
+`src/config/secrets.js` keys off `GAE_ENV`, which only App Engine sets, so on
+Coolify it no-ops and config comes from the environment as before. The Docker
+files are transitional and get deleted after cutover, per DEPLOYMENT.md's
+§ Cutover order. Do not delete them earlier: they are the rollback.
+
+Target platform: Google App Engine Standard (`nodejs22`) + Memorystore Redis + Secret Manager.
 No build step and no container: App Engine uploads `src/` and runs `npm start`.
 Config splits three ways — `app.yaml` (committed, non-secret), Secret Manager
 (`REDIS_URL`, `STATS_TOKEN`), `.env` (local dev only). `cloudbuild.yaml` deploys on

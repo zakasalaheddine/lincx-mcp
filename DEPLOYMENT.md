@@ -1,8 +1,67 @@
 # Deploying lincx-mcp-server
 
-Production is **Google App Engine Standard** (`nodejs22`) with **Memorystore for
-Redis** and **Secret Manager**. There is no build step and no container: App
-Engine uploads `src/` and runs `npm start`.
+**Two platforms are supported on purpose, for as long as the migration takes.**
+
+| | Today | Target |
+|---|---|---|
+| Platform | **Coolify** (Docker Compose) | **Google App Engine Standard** (`nodejs22`) |
+| Files | `Dockerfile`, `docker-compose.coolify.yml` | `app.yaml`, `cloudbuild.yaml` |
+| Redis | the `redis` service in the same stack | Memorystore, over a VPC connector |
+| Secrets | Coolify's Environment Variables tab | Secret Manager, read at boot |
+| Guide | [§ Coolify](#coolify-what-production-runs-today) | [§ App Engine](#app-engine-the-target) |
+
+The application code is identical on both. `src/config/secrets.js` keys off
+`GAE_ENV`, which only App Engine sets, so on Coolify it no-ops and every value
+still comes from the environment as before. There is no build step on either —
+`npm start` runs `src/index.js` straight from source.
+
+**The Docker files are transitional.** Delete `Dockerfile`, `.dockerignore`,
+`docker-compose.yml` and `docker-compose.coolify.yml` only after traffic is on App
+Engine and verified — see [§ Cutover order](#cutover-order). `docker-compose.dev.yml`
+stays either way; it is the local Redis and nothing else.
+
+---
+
+## Coolify — what production runs today
+
+Coolify deploys this repo as a **Docker Compose** resource pointed at
+`docker-compose.coolify.yml`. It builds the app from `Dockerfile`, provisions
+Redis, wires the two, and assigns a public HTTPS domain through its Traefik proxy.
+
+Nothing about the deploy changed in the migration. What changed inside the image:
+
+- No `dist/`, no `tsc`. The Dockerfile is a single stage that copies `src/` and
+  runs `node src/index.js`.
+- `src/tests` is deleted from the image (its ava/esmock deps are dev-only).
+- One new runtime dependency, `@google-cloud/secret-manager`, which is inert off
+  GAE.
+
+Set in the Coolify UI (Environment Variables): `WORK_API_BASE_URL`, optionally
+`IDENTITY_SERVER`, `STATS_TOKEN`, `USAGE_EVENT_CAP`, `RESPONSE_SIZE_LIMIT`.
+`PUBLIC_BASE_URL`, `PORT` and `REDIS_URL` are derived in the compose file from
+Coolify's magic vars — do not set them by hand.
+
+After any deploy, verify from outside:
+
+```bash
+node scripts/smoke-prod.mjs https://<your-coolify-domain>
+```
+
+8/8 or it is not serving correctly. The check that matters most is the metadata
+one: `PUBLIC_BASE_URL` must equal the domain clients actually hit, or dynamic
+client registration fails with nothing useful on the server side.
+
+Verified locally against the post-migration code: image builds, container serves
+`/health`, `POST /oauth/register` returns 201, keys land in Redis
+(`[SessionStore] Using Redis`), and `smoke-prod.mjs` is 8/8.
+
+---
+
+## App Engine — the target
+
+Production **will be** App Engine Standard (`nodejs22`) with Memorystore for Redis
+and Secret Manager. No build step and no container: App Engine uploads `src/` and
+runs `npm start`.
 
 Users get one URL: `https://mcp.lincx.com/mcp`.
 
@@ -199,6 +258,35 @@ session — all clients must log in again.
 
 ---
 
+## Cutover order
+
+Do these in order. The point is that Coolify keeps serving until App Engine is
+proven, and nothing is deleted until traffic has moved.
+
+1. **Leave Coolify running.** Do not touch it, and do not delete the Docker files.
+2. Deploy to App Engine with `--no-promote`, then run the two checks that catch the
+   real failures: `/stats` answers 401 (not 404), and the logs say
+   `[SessionStore] Using Redis`.
+3. `node scripts/smoke-prod.mjs https://<version>-dot-<project>.<region>.r.appspot.com`
+   — 8/8.
+4. Promote traffic on App Engine, map the domain, and run the smoke against the
+   real domain.
+5. Verify all three clients by hand (Claude Code, Claude Desktop, claude.ai) —
+   login, a tool call, and one call after an hour's idle. Record it in
+   `docs/superpowers/plans/phase0-findings.md`.
+6. Run the 60-minute soak: `observed_restarts=0 failures=0`.
+7. Move the connector URL(s) that people actually use over to the App Engine
+   domain. **Keep Coolify running through this step** — it is the rollback.
+8. Only now: stop the Coolify resource, watch for a week, then delete
+   `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
+   `docker-compose.coolify.yml` and this section.
+
+Sessions do NOT transfer. The two platforms have separate Redis instances, so
+everyone logs in once more after the connector URL changes. That is a one-time
+browser login, not a support incident — but say so beforehand.
+
+---
+
 ## Logs
 
 ```bash
@@ -237,7 +325,9 @@ Claude.
 
 ## Local development
 
-Docker is used for **one** thing locally: Redis.
+Docker is used for **one** thing locally: Redis. (`Dockerfile` and the two
+non-dev compose files exist for the Coolify deployment, not for local work — see
+the top of this document.)
 
 ```bash
 npm install
