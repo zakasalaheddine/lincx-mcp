@@ -1,0 +1,66 @@
+# Coolify deployment — app + Redis as one stack.
+#
+# TRANSITIONAL — see the header of Dockerfile. This is what production runs TODAY.
+# It keeps working against the post-migration code (plain JS, no build step, the
+# src/index.js bootstrap): GAE_ENV is unset here, so src/config/secrets.js no-ops and
+# every value below still comes from this file / the Coolify UI.
+#
+# Deploy this on Coolify as a "Docker Compose" resource pointed at this repo.
+# Coolify builds the app from the local Dockerfile, provisions Redis, wires the
+# two together, and assigns a public HTTPS domain via its Traefik proxy.
+#
+# Coolify "magic" variables used below (filled in automatically by Coolify):
+#   SERVICE_FQDN_APP_3000  — declaring this key tells Coolify to generate a public
+#                            domain for the `app` service and route it to port 3000.
+#   SERVICE_FQDN_APP       — the generated domain (no scheme), reused for PUBLIC_BASE_URL.
+#   SERVICE_PASSWORD_REDIS — a random password generated once and shared below.
+#
+# Set WORK_API_BASE_URL (and optionally IDENTITY_SERVER) in the Coolify UI's
+# Environment Variables tab. The `:?` guard makes a missing value fail the deploy
+# fast instead of silently falling back to localhost.
+#
+# NOTE: `docker compose up` locally will NOT expand the SERVICE_* magic vars —
+# those exist only inside Coolify. For local runs use `npm run dev` or set the
+# vars yourself. This file is intended for Coolify.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      # Domain + proxy routing (key presence is the trigger; no value needed)
+      - SERVICE_FQDN_APP_3000
+      - NODE_ENV=production
+      - PORT=3000
+      - PUBLIC_BASE_URL=https://${SERVICE_FQDN_APP}
+      - IDENTITY_SERVER=${IDENTITY_SERVER:-https://ix-id.lincx.la}
+      - WORK_API_BASE_URL=${WORK_API_BASE_URL:?WORK_API_BASE_URL is required}
+      - REDIS_URL=redis://default:${SERVICE_PASSWORD_REDIS}@redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${SERVICE_PASSWORD_REDIS} --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${SERVICE_PASSWORD_REDIS}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  redis-data:
