@@ -20,8 +20,12 @@ process.env.USAGE_EVENT_CAP = '10'
 const clients = []
 const closers = []
 
-// Skipped unless a Redis is reachable — CI without one still passes, but the skip
-// is LOUD so it can never be mistaken for coverage.
+// Skipped unless a Redis is reachable — a local run without one still passes, but
+// the skip is LOUD so it can never be mistaken for coverage.
+//
+// TEST_REDIS_REQUIRED=1 turns the skip into a failure. CI sets it alongside a
+// redis service container: there, an unreachable Redis is a broken workflow, and
+// silently passing would hand back a green run that covered nothing.
 let available = false
 test.before(async () => {
   const { Redis } = await import('ioredis')
@@ -31,6 +35,9 @@ test.before(async () => {
     await r.ping()
     available = true
   } catch (err) {
+    if (process.env.TEST_REDIS_REQUIRED === '1') {
+      throw new Error(`[redisIntegration] TEST_REDIS_REQUIRED=1 but no Redis at ${REDIS_URL}: ${err.message}`)
+    }
     console.error(`[redisIntegration] SKIPPING — no Redis at ${REDIS_URL}: ${err.message}`)
   } finally {
     // Always disconnect: a client left retrying keeps the ava worker alive and the
