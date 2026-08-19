@@ -1,4 +1,6 @@
+import http from 'node:http'
 import test from 'ava'
+import request from 'supertest'
 import esmock from 'esmock'
 
 // sessionStore has a Redis path and an in-memory path. Only the in-memory one is
@@ -46,11 +48,26 @@ test.before(async () => {
   }
 })
 
-/** A fresh sessionStore module bound to the test Redis. */
-async function store () {
-  const mod = await esmock('../services/sessionStore.js', {})
+/** A fresh sessionStore MODULE bound to the test Redis, registered for closing. */
+async function storeModule (constants = {}) {
+  const mod = await esmock('../services/sessionStore.js', { '../constants.js': constants })
   closers.push(mod.closeKvStore)
-  return mod.getSessionStore()
+  return mod
+}
+
+/** A fresh sessionStore bound to the test Redis. */
+async function store () {
+  return (await storeModule()).getSessionStore()
+}
+
+/** /health over a real listener, bound to `storeMod` and the given environment. */
+async function healthApp (storeMod, { isProduction }) {
+  const { buildHealthHandler } = await esmock('../http/health.js', {
+    '../services/sessionStore.js': storeMod,
+    '../constants.js': { IS_PRODUCTION: isProduction }
+  })
+  const handler = buildHealthHandler({ getActiveSessions: () => 0 })
+  return http.createServer((req, res) => { handler(req, res) })
 }
 
 test.after.always(async () => {
@@ -96,6 +113,57 @@ test.serial('a session key carries the 7-day TTL', async t => {
 
   await s.delete('itest-ttl')
   r.disconnect()
+})
+
+// ── /health over the Redis path ──────────────────────────────────────────────
+// The rest of the /health coverage (src/tests/health.test.js) runs on the
+// in-memory store, because ava sets REDIS_URL=''. These are the rows that need a
+// real Redis: the one where the store is genuinely healthy, and the one where it
+// is configured but not connected.
+
+test.serial('probeStore reports redis before any session is stored', async t => {
+  if (!available) return t.pass('skipped — no Redis')
+  // No get/set has happened — the store is lazy, and /health establishing the
+  // answer itself is the whole point on a fresh instance.
+  const { probeStore } = await storeModule()
+  t.deepEqual(await probeStore(), { store: 'redis', redis_ok: true })
+})
+
+test.serial('/health is ok in production when Redis answers', async t => {
+  if (!available) return t.pass('skipped — no Redis')
+  const app = await healthApp(await storeModule(), { isProduction: true })
+  const r = await request(app).get('/health')
+  t.is(r.status, 200)
+  t.is(r.body.status, 'ok')
+  t.is(r.body.store, 'redis')
+  t.is(r.body.redis_ok, true)
+})
+
+test.serial('/health is degraded when Redis is configured but unreachable', async t => {
+  // Deliberately NOT gated on `available` — this row needs the absence of a
+  // Redis, so it runs everywhere. Port 1 is nothing, and `new Redis(url)` does
+  // not throw on an unreachable host: reporting the store as healthy because
+  // REDIS_URL was set is exactly the lie the PING exists to catch.
+  const mod = await storeModule({ REDIS_URL: 'redis://127.0.0.1:1' })
+  const app = await healthApp(mod, { isProduction: true })
+
+  const started = Date.now()
+  const r = await request(app).get('/health')
+  const elapsed = Date.now() - started
+
+  t.is(r.status, 200, 'must stay 200 — a non-200 gets the instance killed')
+  t.is(r.body.status, 'degraded')
+  t.is(r.body.store, 'redis')
+  t.is(r.body.redis_ok, false)
+  // Bounded: without the PING timeout a black-holed host never answers at all.
+  // Tied to the constant, not a literal — a bound that outlives the timeout it
+  // is meant to police proves nothing.
+  const { REDIS_PING_TIMEOUT_MS } = await import('../constants.js')
+  t.true(elapsed < REDIS_PING_TIMEOUT_MS + 2000, `probe took ${elapsed}ms`)
+
+  // Close now rather than leaving it to test.after.always — the client retries
+  // a refused connection, and each attempt logs an unhandled-error line.
+  await mod.closeKvStore()
 })
 
 test.serial('the usage-event log is capped', async t => {

@@ -47,6 +47,7 @@ import {
   bindMcpToLincxSession
 } from './services/sessionManager.js'
 import { buildRouter, onRouterError } from './http/router.js'
+import { buildHealthHandler } from './http/health.js'
 import { json, noContent } from './http/respond.js'
 import { header, readBody } from './http/request.js'
 
@@ -274,11 +275,7 @@ function buildDevHandlers () {
  */
 export function start ({ port = SERVER_PORT } = {}) {
   const router = buildRouter({
-    health: (_req, res) => json(res, 200, {
-      status: 'ok',
-      uptime_s: Math.round(process.uptime()),
-      active_sessions: transports.size
-    }),
+    health: buildHealthHandler({ getActiveSessions: () => transports.size }),
     mcp: { post: mcpPost, get: mcpGet, del: mcpDelete },
     dev: buildDevHandlers()
   })

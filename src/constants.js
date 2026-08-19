@@ -31,6 +31,8 @@ export const WORK_API_BASE_URL =
 // Redis connection string — leave empty to use in-memory store (dev only)
 export const REDIS_URL = process.env.REDIS_URL ?? ''
 
+export const REDIS_PING_TIMEOUT_MS = 5_000
+
 // Port for the Express HTTP server (login UI + MCP HTTP transport)
 export const SERVER_PORT = parseInt(process.env.PORT ?? '5001', 10)
 

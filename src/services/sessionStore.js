@@ -12,7 +12,7 @@
  * The store is a generic string KV with TTL — the caller owns key naming.
  */
 
-import { REDIS_URL, SESSION_TTL_SECONDS, MEMORY_SWEEP_INTERVAL_MS } from '../constants.js'
+import { REDIS_URL, SESSION_TTL_SECONDS, MEMORY_SWEEP_INTERVAL_MS, REDIS_PING_TIMEOUT_MS } from '../constants.js'
 
 let _kv = null
 let _redis = null
@@ -63,6 +63,27 @@ export async function getKvStore () {
   }
 
   return _kv
+}
+
+export async function probeStore () {
+  await getKvStore()
+  if (!_redis) return { store: 'memory', redis_ok: false }
+  return { store: 'redis', redis_ok: await pingRedis(_redis) }
+}
+
+async function pingRedis (redis) {
+  let timer
+  try {
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), REDIS_PING_TIMEOUT_MS)
+      timer.unref?.()
+    })
+    return await Promise.race([redis.ping(), timeout]) === 'PONG'
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /**

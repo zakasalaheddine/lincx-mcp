@@ -15,15 +15,11 @@
 
 import http from 'node:http'
 import { buildRouter, onRouterError } from '../../http/router.js'
-import { json } from '../../http/respond.js'
+import { buildHealthHandler } from '../../http/health.js'
 
 export function buildContractApp () {
   const router = buildRouter({
-    health: (_req, res) => json(res, 200, {
-      status: 'ok',
-      uptime_s: Math.round(process.uptime()),
-      active_sessions: 0
-    })
+    health: buildHealthHandler({ getActiveSessions: () => 0 })
   })
 
   return http.createServer((req, res) => {

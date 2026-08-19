@@ -41,6 +41,8 @@ test.serial('contract: /health > 200 with status ok', async t => {
   t.is(r.status, 200)
   t.is(r.body.status, 'ok')
   t.is(typeof r.body.uptime_s, 'number')
+  t.is(r.body.store, 'memory')
+  t.is(r.body.redis_ok, false)
 })
 
 // ── OAuth discovery ──────────────────────────────────────────────────────────
