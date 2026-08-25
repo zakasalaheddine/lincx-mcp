@@ -18,7 +18,7 @@ export function registerPublisherTools (server) {
     inputSchema: z.object({ ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit, offset, fields }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -42,7 +42,7 @@ export function registerPublisherTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)

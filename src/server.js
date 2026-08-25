@@ -8,17 +8,20 @@
  *
  * Two surfaces on one bare Node HTTP server:
  *  1. HTTP login UI (GET /login, POST /api/login, GET /login/success)
- *  2. MCP Streamable HTTP transport (POST|GET|DELETE /mcp)
+ *  2. MCP Streamable HTTP transport (POST /mcp)
  *
  * The server is HTTP-only — MCP clients connect over /mcp. There is no stdio
  * transport; everything (Claude Code, Desktop, claude.ai) connects by URL.
+ *
+ * The transport is STATELESS: no `sessionIdGenerator`, no in-process session
+ * map, nothing to lose on restart. Identity comes from the OAuth bearer on each
+ * request, which resolves to a Lincx session in Redis. That is what lets the
+ * service run more than one instance and deploy without dropping clients.
  */
 
 import http from 'node:http'
-import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
 
 import { registerAuthTools } from './tools/authTools.js'
 import { registerNetworkTools } from './tools/networkTools.js'
@@ -40,15 +43,12 @@ import { registerZoneEligibilityTools } from './tools/zoneEligibilityTools.js'
 import { registerAnalysisTools } from './tools/analysisTools.js'
 import { registerResources } from './tools/resources.js'
 import { installToolGuards } from './middleware/toolGuard.js'
-import { mcpLimiter } from './middleware/rateLimit.js'
-import { SERVER_PORT, IS_PRODUCTION, PUBLIC_BASE_URL } from './constants.js'
-import {
-  resolveLincxSessionFromBearer,
-  bindMcpToLincxSession
-} from './services/sessionManager.js'
+import { mcpIpLimiter, mcpUserLimiter, userKey } from './middleware/rateLimit.js'
+import { SERVER_PORT, IS_PRODUCTION, PUBLIC_BASE_URL, MCP_MAX_BATCH } from './constants.js'
+import { resolveLincxSessionFromBearer, resolveUserBucket } from './services/sessionManager.js'
 import { buildRouter, onRouterError } from './http/router.js'
 import { buildHealthHandler } from './http/health.js'
-import { json, noContent } from './http/respond.js'
+import { json } from './http/respond.js'
 import { header, readBody } from './http/request.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -89,24 +89,20 @@ function createMcpServer () {
   return server
 }
 
-// ── MCP HTTP transport — per-session ────────────────────────────────────────
-const transports = new Map()
+// ── MCP HTTP transport — stateless, one per request ─────────────────────────
 
+/**
+ * A fresh transport + server for a single request, then discarded.
+ *
+ * `sessionIdGenerator: undefined` is what makes the transport stateless. The SDK
+ * then refuses to handle a second request on the same transport (message-id
+ * collisions between clients), so this must NOT be hoisted or cached.
+ */
 async function createTransport () {
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
-    enableJsonResponse: true,
-    onsessioninitialized: (id) => {
-      transports.set(id, transport)
-      console.error(`[MCP]    session initialized: ${id}`)
-    }
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true
   })
-  transport.onclose = () => {
-    if (transport.sessionId) {
-      transports.delete(transport.sessionId)
-      console.error(`[MCP]    session closed: ${transport.sessionId}`)
-    }
-  }
   // A dedicated server instance per transport — see createMcpServer().
   const mcpServer = createMcpServer()
   try {
@@ -115,29 +111,37 @@ async function createTransport () {
     await transport.close().catch(() => {})
     throw err
   }
-  return transport
+  return { transport, mcpServer }
 }
 
 function bearerChallengeHeader () {
   return `Bearer resource_metadata="${PUBLIC_BASE_URL}/.well-known/oauth-protected-resource"`
 }
 
-/** 401 + the RFC-9728 challenge. `withBody` matches what each method used to send. */
-function unauthorized (res, withBody) {
+/**
+ * 401 + the RFC-9728 challenge that starts the OAuth discovery dance.
+ *
+ * The body-less variant went with GET/DELETE — POST is the only method left on
+ * /mcp, and it always answered with a body.
+ */
+function unauthorized (res) {
   res.setHeader('WWW-Authenticate', bearerChallengeHeader())
-  if (withBody) {
-    json(res, 401, { error: 'unauthorized', error_description: 'Bearer token required.' })
-  } else {
-    noContent(res, 401)
-  }
+  json(res, 401, { error: 'unauthorized', error_description: 'Bearer token required.' })
 }
 
 async function mcpPost (req, res, _opts, cb) {
-  if (!mcpLimiter(req, res)) return
-
-  // TEMPORARY probe (remove after the Phase 0 GAE decision — see #64).
-  // Gives GET /mcp below a denominator to be measured against.
-  console.error(JSON.stringify({ probe: 'POST /mcp', ua: header(req, 'user-agent') ?? '' }))
+  // Tier 1, pre-auth: bounds the work an unauthenticated caller can force
+  // (readBody below, then a Redis lookup). Keyed by address — see clientIp() in
+  // http/request.js for why that is only sound behind a trusted proxy, and
+  // middleware/rateLimit.js for why one tier is not enough.
+  //
+  // The challenge header goes on FIRST, so a 429 here still points a new client at
+  // OAuth discovery. CLAUDE.md § Deployment makes that a hard rule — it is why a
+  // query-param access gate was rejected — and a bare 429 on the one endpoint that
+  // advertises `resource_metadata` is the same failure: a fresh connector behind a
+  // busy shared egress could never learn where to authenticate.
+  res.setHeader('WWW-Authenticate', bearerChallengeHeader())
+  if (!mcpIpLimiter(req, res)) return
 
   let body
   try {
@@ -151,37 +155,60 @@ async function mcpPost (req, res, _opts, cb) {
   }
 
   try {
+    // Identity is the bearer, and nothing else: no session id is minted, sent or
+    // read. A client's `mcp-session-id` header (if it still sends one from a
+    // previous stateful connection) is simply ignored — which is exactly why a
+    // restart no longer forces a re-initialize.
     const lincxSessionId = await resolveLincxSessionFromBearer(header(req, 'authorization'))
-    if (!lincxSessionId) return unauthorized(res, true)
+    if (!lincxSessionId) return unauthorized(res)
 
-    const existingId = header(req, 'mcp-session-id')
-    let transport
-
-    if (existingId && transports.has(existingId)) {
-      // Established session — reuse its transport (and its server).
-      transport = transports.get(existingId)
-    } else if (!existingId && isInitializeRequest(body)) {
-      // New session handshake — stand up a fresh transport + server.
-      transport = await createTransport()
-    } else {
-      // Unknown/stale session id, or a non-initialize request without a session.
-      // (Common after a server restart drops in-memory transports — tell the
-      // client to re-initialize instead of silently minting a new session.)
+    // One POST can carry a JSON-RPC ARRAY, and the transport runs every message
+    // in it. Cap the length and charge the budget per message, or 120 req/min is
+    // 120 000 tool calls/min.
+    const messages = Array.isArray(body) ? body.length : 1
+    if (messages > MCP_MAX_BATCH) {
       return json(res, 400, {
         jsonrpc: '2.0',
-        id: body?.id ?? null,
+        id: null,
         error: {
-          code: -32000,
-          message: 'Bad Request: unknown or missing MCP session ID. Re-initialize the session.'
+          code: -32600,
+          message: `Batch too large: ${messages} messages (max ${MCP_MAX_BATCH}). Split the batch.`
         }
       })
     }
 
-    // Refresh the transport→Lincx binding on every request so reconnects (new
-    // transport id) inherit the OAuth-resolved Lincx session immediately.
-    if (transport.sessionId) {
-      await bindMcpToLincxSession(transport.sessionId, lincxSessionId)
+    // Tier 2, post-auth: the real fairness control, keyed on the caller's IDENTITY
+    // rather than on anything they send. Not the raw header — `Bearer x` and
+    // `bearer  x` authenticate as the same user, so hashing the header would hand
+    // one user several buckets.
+    const bucket = userKey(await resolveUserBucket(lincxSessionId))
+    if (!mcpUserLimiter(req, res, bucket, messages)) {
+      // Hand back the tier-1 slot this request already spent. Otherwise a single
+      // user hitting their own cap burns the address budget everyone behind the
+      // same egress shares.
+      mcpIpLimiter.refund(req, undefined, 1)
+      return
     }
+
+    const { transport, mcpServer } = await createTransport()
+
+    // Nothing outlives the request — without this, every call leaks a transport
+    // and a fully-registered McpServer.
+    //
+    // 'close', not 'finish': an aborted request never finishes, and a cancelled
+    // long-running tool call is exactly when a leak matters most.
+    //
+    // The `res.destroyed` check closes the window this listener cannot cover.
+    // createTransport() is awaited, so a client that gives up DURING it has
+    // already fired 'close' by the time we get here — the listener would be
+    // attached to a dead response and never run. Measured: 4 transports built,
+    // 3 disposed.
+    const dispose = () => {
+      transport.close().catch(() => {})
+      mcpServer.close().catch(() => {})
+    }
+    if (res.destroyed) return dispose()
+    res.on('close', dispose)
 
     await transport.handleRequest(req, res, body)
   } catch (err) {
@@ -196,45 +223,17 @@ async function mcpPost (req, res, _opts, cb) {
   }
 }
 
-// GET and DELETE take NO body reader. GET /mcp is the long-lived SSE stream;
-// awaiting a body on it would hang the request forever, and the SDK reads
-// whatever it needs from the raw request itself.
-async function mcpGet (req, res) {
-  // TEMPORARY probe (remove after the Phase 0 GAE decision — see #64).
-  //
-  // enableJsonResponse:true above means POST /mcp answers with application/json,
-  // so THIS handler is the only SSE surface in the whole server. Whether any real
-  // client opens it decides whether App Engine's request-duration behaviour
-  // matters at all. Measure before designing a spike around it.
-  //
-  // No token, no session id, no header values beyond the user-agent — nothing here
-  // is a credential.
-  console.error(JSON.stringify({
-    probe: 'GET /mcp',
-    ua: header(req, 'user-agent') ?? '',
-    has_session: Boolean(header(req, 'mcp-session-id')),
-    has_auth: Boolean(header(req, 'authorization')),
-    accept: header(req, 'accept') ?? ''
-  }))
-
-  const lincxSessionId = await resolveLincxSessionFromBearer(header(req, 'authorization'))
-  if (!lincxSessionId) return unauthorized(res, false)
-
-  const existingId = header(req, 'mcp-session-id')
-  if (!existingId || !transports.has(existingId)) {
-    return json(res, 404, { error: 'Unknown MCP session.' })
-  }
-  await transports.get(existingId).handleRequest(req, res)
-}
-
-async function mcpDelete (req, res) {
-  const lincxSessionId = await resolveLincxSessionFromBearer(header(req, 'authorization'))
-  if (!lincxSessionId) return unauthorized(res, false)
-
-  const existingId = header(req, 'mcp-session-id')
-  if (!existingId || !transports.has(existingId)) return noContent(res, 404)
-  await transports.get(existingId).handleRequest(req, res)
-}
+// There is no GET or DELETE on /mcp, so the router answers 405 for both.
+//
+// GET only ever served the standalone SSE stream, which stateless mode cannot
+// hold open; `enableJsonResponse: true` means POST answers with JSON.
+//
+// DELETE is the client's "end this session" call, and 405 is the spec's answer
+// for a server that does not let clients terminate sessions — which is now
+// literally true, there is no session to end. An earlier version of this branch
+// answered 200, which is worse than either: a success status on a security
+// operation that revoked nothing, while the OAuth access token and the Lincx
+// session both stayed valid. Logging out is `auth_logout`.
 
 // ── Dev debug routes (non-production only) ───────────────────────────────────
 
@@ -252,7 +251,8 @@ function buildDevHandlers () {
       let body
       try { body = await readBody(req) } catch (err) { return cb(err) }
       try {
-        json(res, 200, await tool.handler(body ?? {}, { sessionId: 'stdio' }))
+        const extra = { requestInfo: { headers: { authorization: header(req, 'authorization') } } }
+        json(res, 200, await tool.handler(body ?? {}, extra))
       } catch (err) {
         json(res, 500, { error: err instanceof Error ? err.message : String(err) })
       }
@@ -275,8 +275,8 @@ function buildDevHandlers () {
  */
 export function start ({ port = SERVER_PORT } = {}) {
   const router = buildRouter({
-    health: buildHealthHandler({ getActiveSessions: () => transports.size }),
-    mcp: { post: mcpPost, get: mcpGet, del: mcpDelete },
+    health: buildHealthHandler(),
+    mcp: { post: mcpPost },
     dev: buildDevHandlers()
   })
 
@@ -284,17 +284,30 @@ export function start ({ port = SERVER_PORT } = {}) {
     router(req, res, {}, (err) => onRouterError(err, req, res))
   })
 
-  httpServer.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`[HTTP]   Port ${port} in use — aborting.`)
-    } else {
-      console.error('[HTTP]   Server error:', err.message)
-    }
-    process.exit(1)
-  })
+  // Bind failure REJECTS rather than calling process.exit: a test that binds an
+  // explicit port and loses the race to a concurrently-running test file would
+  // otherwise take the whole ava worker down with no assertion message.
+  // src/index.js turns that rejection back into the exit(1) production wants.
+  //
+  // AFTER listen resolves, a rejection would be a no-op on a settled promise — so
+  // a fatal server error would be logged and then silently ignored, leaving a
+  // broken instance the platform never restarts. Past that point the only correct
+  // response is still to exit.
+  return new Promise((resolve, reject) => {
+    let listening = false
 
-  return new Promise((resolve) => {
+    httpServer.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`[HTTP]   Port ${port} in use — aborting.`)
+      } else {
+        console.error('[HTTP]   Server error:', err.message)
+      }
+      if (listening) process.exit(1)
+      reject(err)
+    })
+
     httpServer.listen(port, () => {
+      listening = true
       const actual = httpServer.address().port
       console.error(`[HTTP]   Listening on :${actual}`)
       console.error('[HTTP]   /health, /login, /mcp')

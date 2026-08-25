@@ -178,15 +178,45 @@ gcloud app deploy app.yaml --quiet   # boot re-reads "latest"
 
 ---
 
-## Scaling: exactly one instance, and why
+## Scaling: still one instance, but no longer because it has to be
 
-`app.yaml` pins `manual_scaling: instances: 1`. This is a **correctness
-requirement, not a cost choice**: MCP transport state lives in an in-process `Map`
-in `src/server.js`, and Redis holds auth, not connections. Two instances give
-intermittent "session not found" as requests land on the wrong one.
+`app.yaml` pins `manual_scaling: instances: 1`. This **used to be a correctness
+requirement** — MCP transport state lived in an in-process `Map` and two instances
+gave intermittent "session not found".
 
-Making this horizontally scalable means moving that map into Redis — it is not a
-config flag.
+That is fixed: the transport is stateless (`sessionIdGenerator: undefined`, a
+fresh transport per request, identity from the OAuth bearer in Redis), so any
+number of instances can serve any request and a redeploy no longer drops
+connected clients.
+
+The pin stays until it is lifted **as its own deploy**: land stateless on one
+instance, watch it in production, then raise the count. Changing both at once
+makes a regression unattributable. Prove it with `npm run soak <url>` while
+redeploying mid-run — every poll should stay green across the restart.
+
+**Set `TRUSTED_PROXY_HOPS` to match reality.** It defaults to 1 — one trusted
+reverse proxy in front (GAE's load balancer, Coolify's Traefik), which is what
+both current deployments have. `clientIp()` keys the `/mcp` flood limiter and the
+10/min brute-force guard on `POST /api/login`, and `X-Forwarded-For` is
+client-supplied unless a proxy overwrites it, so:
+
+- exposing the process **directly** (no proxy) requires `TRUSTED_PROXY_HOPS=0`,
+  or a caller rotating the header bypasses every limit — measured at 700/700
+  served against a 600/min cap, and 0/40 blocked on the credential endpoint
+- putting **more than one** proxy in front without raising it collapses every
+  caller into a single bucket, which is a self-inflicted outage
+
+The hop count in front of App Engine is still unmeasured —
+`docs/superpowers/plans/phase0-findings.md` records the XFF split as never run.
+Do that during the Phase 0 spike and set this from the answer.
+
+**One blocker before the count goes above 1.** `src/middleware/rateLimit.js`
+counts in a process-local `Map`, so N instances silently means N × the configured
+limits — 2 instances turns the 120/min per-user tier into 240/min, a ceiling
+nobody chose and nothing reports. Move both tiers to Redis (the same instance
+that already holds sessions and OAuth tokens) *before* raising `instances`, not
+after. This is the one piece of in-process state the stateless refactor did not
+remove, and it is easy to miss because nothing fails loudly when it is wrong.
 
 Manual scaling also sends `/_ah/start` on instance startup; a non-200 there means
 the instance never becomes healthy and the deploy fails without a clear cause.
@@ -287,9 +317,18 @@ proven, and nothing is deleted until traffic has moved.
 4. Promote traffic on App Engine, map the domain, and run the smoke against the
    real domain.
 5. Verify all three clients by hand (Claude Code, Claude Desktop, claude.ai) —
-   login, a tool call, and one call after an hour's idle. Record it in
+   login, a tool call, one call after an hour's idle, and **one call immediately
+   after a redeploy**: it must go through with no re-initialize and no re-login.
+   That last one is the whole point of the stateless transport and it is the only
+   check no test can make. Record it in
    `docs/superpowers/plans/phase0-findings.md`.
-6. Run the 60-minute soak: `observed_restarts=0 failures=0`.
+
+   Note for anyone probing by hand: `/mcp` answers **405 to GET and DELETE**.
+   Only POST is registered — there is no SSE stream to open and no session to
+   terminate. A 401 or a 200 on either means an old build is still serving.
+6. Run the 60-minute soak: `failures=0`. Redeploy mid-run — `observed_restarts`
+   is now evidence, not failure: a restart the polls survive is exactly what the
+   stateless transport buys. (The pre-stateless soak failed on any restart.)
 7. Move the connector URL(s) that people actually use over to the App Engine
    domain. **Keep Coolify running through this step** — it is the rollback.
 8. Only now: stop the Coolify resource, watch for a week, then delete

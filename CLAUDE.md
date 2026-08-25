@@ -13,7 +13,7 @@ It handles authentication, multi-network context, and exposes business tools as 
 The server is **HTTP-only** — there is no stdio transport. Everything runs on one
 bare `http.createServer` on `PORT` (5001 dev default; App Engine sets it in
 production), routed by `http-hash-router`:
-- the MCP Streamable HTTP transport at `POST|GET|DELETE /mcp`
+- the MCP Streamable HTTP transport at `POST /mcp` (stateless — see below)
 - the browser login UI and OAuth endpoints
 - `/health`
 
@@ -81,7 +81,7 @@ instead of separate `get_*_parents` tools — keeps the per-request tool surface
 ### Claude never controls auth or network context
 - `auth_token` — stored in session server-side only, never returned to Claude
 - `networkId` — always injected from `session.active_network` inside `workApiRequest()`, never accepted as a tool parameter
-- `session_id` — stored in Redis (keyed by MCP session id), never exposed via any tool. In multi-tenant deploys, session identity comes from `extra.sessionId` (the MCP transport session id) — never from a module-global.
+- `session_id` — stored in Redis as `lincx:session:<id>`, never exposed via any tool, and never echoed by `/stats` either (it is hashed there — it is the key of the record holding the JWT). Session identity comes from the OAuth bearer on the request: `await resolveLincxSession(extra)`, which reads `extra.requestInfo.headers.authorization` — never from `extra.sessionId` (always `undefined` under the stateless transport) and never from a module-global.
 
 ### Business tools never accept networkId
 Every business tool must get network context from the session, not from Claude.
@@ -158,9 +158,11 @@ Token type: JWT (Lincx), ~30 day expiry. The OAuth access token is opaque
 (32-byte hex), 1 hour TTL. The Lincx JWT lives only in `Session.auth_token`
 server-side; clients only ever see the OAuth tokens.
 
-**Two-token architecture:** OAuth tokens identify the MCP session; the Lincx
-JWT authorizes Work API calls. They meet in Redis: `oauth:access:<token>` →
-`{ lincx_session_id }` → `lincx:session:<id>` → `{ auth_token, ... }`.
+**Two-token architecture:** OAuth tokens identify the caller; the Lincx JWT
+authorizes Work API calls. They meet in Redis: `oauth:access:<token>` →
+`{ lincx_session_id }` → `lincx:session:<id>` → `{ auth_token, ... }`. The bearer
+is the ONLY identity — there is no MCP session id and no `mcp:session:<id>`
+binding any more (see § Stateless transport).
 
 ---
 
@@ -185,7 +187,6 @@ In-memory sessions are lost on server restart — Redis is required in productio
 
 TTLs:
 - `lincx:session:<uuid>` — 7 days (Lincx session, holds the JWT)
-- `mcp:session:<id>` — 7 days (transport-id → lincx-session-id, refreshed on each authenticated request)
 - `oauth:client:<id>` — 90 days (DCR-registered MCP clients)
 - `oauth:pending:<request_id>` — 10 min (in-flight authorize requests)
 - `oauth:code:<code>` — 60 sec (single-use auth codes)
@@ -306,7 +307,7 @@ export function registerYourDomainTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -532,11 +533,66 @@ Docker survives for exactly one local purpose: `docker-compose.dev.yml`, standal
 `redis` only, host port 6380.
 
 Two facts that constrain code changes:
-- **Single instance only.** MCP transport state is an in-process `Map` in
-  `src/server.js`; Redis holds auth, not connections. Multiple instances =
-  intermittent "session not found" — which is why `app.yaml` pins
-  `manual_scaling: instances: 1`. Making it horizontally scalable means moving that
-  map into Redis, not a config flag.
+- **Stateless transport — nothing lives in the process.** `createTransport()` in
+  `src/server.js` sets `sessionIdGenerator: undefined` and builds a fresh
+  transport + `McpServer` **per request**, closed on `res.close`. The SDK refuses
+  to reuse a stateless transport (message-id collisions between clients), so it
+  must never be hoisted or cached. Consequences to keep in mind:
+  - No MCP session id is minted, read or sent. A client's stale `mcp-session-id`
+    header is ignored rather than answered with a 400 re-initialize — that is what
+    makes a redeploy invisible to connected clients.
+  - Identity comes from the OAuth bearer: `resolveLincxSession(extra)` reads
+    `extra.requestInfo.headers.authorization` and memoises the resolved id on
+    `extra` so `cachedLincxSession(extra)` can attribute a usage event with no
+    I/O. An authenticated tool call still costs **two** Redis GETs on the token —
+    `mcpPost`'s gate (which must resolve before any transport exists, to answer
+    the 401 challenge) and the handler's. The memo stops it becoming three.
+  - **Neither `GET` nor `DELETE` is registered on `/mcp`** — the router answers
+    405, the one status the SDK client tolerates for both. GET only ever served
+    the standalone SSE stream, which stateless mode cannot hold open
+    (`enableJsonResponse: true` means POST answers with JSON). 405 on DELETE is
+    the spec's "server does not allow clients to terminate sessions", now
+    literally true. Do not make DELETE a 200: that is a success status on a
+    security operation that revokes nothing. Logging out is `auth_logout`.
+  - `/stats` groups usage sequences by the Lincx session, which is a **7-day
+    login**, not one conversation — `recent[].tools` spans every chat that week
+    and `transitions` bridges them. The id is **hashed at record time**
+    (`sessionKey()`), so no raw session id reaches Redis or the response: it is
+    the key of the record holding the Lincx JWT, and `usage:events` has no TTL on
+    the same instance. That is a *capability* control, not anonymity —
+    `user_id`/`email` sit in the same response.
+  - **`/mcp` is rate limited in two tiers, and it must stay two.** A pre-auth
+    tier keyed by client address (600/min) runs first and bounds what an
+    unauthenticated caller can force; a per-account tier keyed by the resolved
+    **`user_id`** (120/min) runs after the bearer resolves. One tier is not enough
+    in either direction: keyed only by address, claude.ai's shared egress puts
+    every user in one bucket; keyed only by the bearer, an attacker mints a fresh
+    bucket per request *before* auth and the key Map grows without bound. Never
+    key on the raw `Authorization` header — `Bearer x` and `bearer  x` are the
+    same user to the parser and different buckets to a hash. Never key on the
+    **session id** either: a fresh UUID per login means N logins buy N × the
+    limit. Four things hold this together, each with a test:
+    - a tier-2 rejection **refunds** its tier-1 slot, or one user hitting their
+      own cap burns the address budget everyone behind that egress shares
+    - the 429 still carries `WWW-Authenticate`, or a rate-limited newcomer can
+      never reach OAuth discovery — the same failure that got a query-param
+      access gate rejected (see the next bullet)
+    - budget is charged **per JSON-RPC message**, not per HTTP request, and
+      batches are capped at `MCP_MAX_BATCH`: the transport executes every message
+      in an array, so one POST once ran 500 tool calls against a budget of 1
+    - the key ceiling **rejects new keys** rather than clearing the map; clearing
+      wiped the flooder's own exhausted bucket and doubled what got served
+  - **`clientIp()` is a trust boundary, not a logging convenience.** It keys the
+    limiter above and the brute-force guard on `POST /api/login`, and
+    `X-Forwarded-For` is client-supplied unless a proxy overwrites it. Both
+    deployments front the app and do overwrite it, which is why
+    `TRUSTED_PROXY_HOPS` defaults to 1 — but a deployment that exposes the
+    process directly MUST set it to 0 or every rate limit becomes decorative
+    (measured: 700/700 served against a 600 cap by rotating the header). The
+    opposite error is unmeasured: more proxies in front than configured collapses
+    every caller into one bucket.
+  - `app.yaml` still pins `manual_scaling: instances: 1` — that pin is now a
+    deliberate follow-up to lift, not a correctness requirement.
 - **No auth gate in front of `/mcp`.** OAuth 2.1 (DCR + PKCE) is the sole identity
   layer — `/mcp` must be able to answer `401 WWW-Authenticate: Bearer
   resource_metadata=...` to unauthenticated callers. A query-param "access key" gate

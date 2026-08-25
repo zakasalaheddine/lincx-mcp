@@ -27,7 +27,7 @@ Pass publisherId to enumerate one publisher's templates exhaustively; without it
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit, offset, fields, publisherId }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -56,7 +56,7 @@ Returns the template object with id, name, html, css, creativeAssetGroupId, and 
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, include }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -82,7 +82,7 @@ Use 'get_template_version' to fetch the HTML + CSS of a specific version.`,
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -108,7 +108,7 @@ Use 'get_template_versions' first to see available version numbers.`,
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, version }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)

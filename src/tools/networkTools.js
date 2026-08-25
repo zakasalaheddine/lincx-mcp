@@ -78,7 +78,7 @@ Returns:
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     },
     async ({ includeArchived, limit, offset, verbose }, extra) => {
-      const sessionId = await resolveLincxSession(extra?.sessionId)
+      const sessionId = await resolveLincxSession(extra)
       if (!sessionId) {
         return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
       }
@@ -118,7 +118,7 @@ Returns: { success, active_network, previous_network_id, message }`,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     },
     async ({ network_id }, extra) => {
-      const sessionId = await resolveLincxSession(extra?.sessionId)
+      const sessionId = await resolveLincxSession(extra)
       if (!sessionId) {
         return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
       }
@@ -158,7 +158,7 @@ Preserves the active network if it still exists.`,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
     async (_args, extra) => {
-      const sessionId = await resolveLincxSession(extra?.sessionId)
+      const sessionId = await resolveLincxSession(extra)
       if (!sessionId) {
         return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
       }

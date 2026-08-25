@@ -4,10 +4,11 @@
  * Key-value store backed by Redis (when REDIS_URL is set) or an in-memory
  * Map with TTL (dev only — lost on process restart).
  *
- * Stores three kinds of keys:
+ * Stores the Lincx session itself:
  *   lincx:session:<uuid>      → Session JSON (7d)
- *   mcp:session:<id>          → lincx session uuid (7d)
- *   ticket:<id>               → mcp session id (10min)
+ *
+ * (OAuth keys — oauth:client / pending / code / access / refresh — live behind
+ * the same store; see services/oauth/.)
  *
  * The store is a generic string KV with TTL — the caller owns key naming.
  */

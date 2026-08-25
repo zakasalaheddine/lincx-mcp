@@ -14,6 +14,17 @@ export const CHARACTER_LIMIT = Math.max(1_000, RESPONSE_SIZE_LIMIT - 5_000)
 // 7-day session TTL in Redis / in-memory store
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7
 
+// Max JSON-RPC messages in one POST /mcp body.
+//
+// The Streamable HTTP transport executes every message in a batch array, while
+// the rate limiters count HTTP REQUESTS — measured at 500 tool executions from a
+// single request the limiter counted as 1, with the 100kb body cap allowing
+// ~1100. Each message costs Redis GETs and a Work API call, and the zone
+// composites scan a whole network per message, so an unbounded batch is an
+// amplification attack on Redis and the Work API, not just on this process.
+// Batches also spend budget proportional to their length (see mcpPost).
+export const MCP_MAX_BATCH = Math.max(1, Number(process.env.MCP_MAX_BATCH) || 50)
+
 // How often the in-memory store sweeps expired entries (dev only; Redis expires
 // keys itself). Each key already carries an absolute TTL — the sweep evicts past
 // expiry proactively instead of only lazily on the next access.

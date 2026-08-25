@@ -45,7 +45,6 @@ test('/health > reports the live store without a prior session', async t => {
   t.is(r.body.status, 'ok')
   t.is(r.body.store, 'memory')
   t.is(r.body.redis_ok, false)
-  t.is(r.body.active_sessions, 0)
   t.is(typeof r.body.uptime_s, 'number')
 })
 
@@ -55,6 +54,6 @@ test('/health > never leaks the connection string', async t => {
   t.false(body.includes('redis://'))
   t.deepEqual(
     Object.keys(r.body).sort(),
-    ['active_sessions', 'redis_ok', 'status', 'store', 'uptime_s']
+    ['redis_ok', 'status', 'store', 'uptime_s']
   )
 })

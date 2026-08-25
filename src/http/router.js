@@ -56,7 +56,7 @@ export function buildRouter ({ health, mcp, dev }) {
   router.set('/stats', { GET: getStats })
 
   if (mcp) {
-    router.set('/mcp', { POST: mcp.post, GET: mcp.get, DELETE: mcp.del })
+    router.set('/mcp', { POST: mcp.post })
   }
 
   if (dev) {

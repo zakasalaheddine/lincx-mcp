@@ -9,19 +9,19 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 // would have gone unnoticed by 281 green tests.
 
 /** A real server on an OS-assigned port, with only the auth seam stubbed. */
-async function startServer () {
+async function startServer (port = 0) {
   const { start } = await esmock('../server.js', {}, {
     '../services/sessionManager.js': {
       resolveLincxSessionFromBearer: async (h) => (h ? 'lincx-test-session' : null),
-      bindMcpToLincxSession: async () => {},
       resolveLincxSession: async () => 'lincx-test-session',
+      cachedLincxSession: () => 'lincx-test-session',
       validateSession: async () => ({
         valid: true,
         session: { session_id: 'lincx-test-session', email: 'a@b.c', active_network: 'svce6t', networks: [] }
       })
     }
   })
-  return start({ port: 0 })
+  return start({ port })
 }
 
 const close = (server) => new Promise((resolve) => server.close(resolve))
@@ -48,7 +48,8 @@ test.serial('MCP > initialize, tools/list, tools/call, DELETE', async t => {
   })
 
   await client.connect(transport)
-  t.truthy(transport.sessionId, 'the server must mint an mcp-session-id')
+  t.is(transport.sessionId, undefined,
+    'stateless: the server must NOT mint an mcp-session-id — nothing to lose on restart')
 
   const { tools } = await client.listTools()
   t.true(tools.length > 30, `expected the full tool surface, got ${tools.length}`)
@@ -89,37 +90,75 @@ test.serial('MCP > POST without a bearer token is 401 with the RFC-9728 challeng
   await close(server)
 })
 
-test.serial('MCP > a stale session id gets -32000, not a silent new session', async t => {
+test.serial('MCP > a stale session id is ignored, not rejected', async t => {
+  // The whole point of going stateless: a client still holding an id from a
+  // previous (stateful) connection, or from before a restart, is served normally
+  // instead of being told to re-initialize.
   const { server, port } = await startServer()
   const r = await fetch(`http://127.0.0.1:${port}/mcp`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
       authorization: 'Bearer test-token',
       'mcp-session-id': 'does-not-exist'
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
   })
-  t.is(r.status, 400)
+  t.is(r.status, 200)
   const body = await r.json()
-  t.is(body.error.code, -32000)
+  t.falsy(body.error)
+  t.true(body.result.tools.length > 30)
+  t.is(r.headers.get('mcp-session-id'), null, 'no session id is ever handed out')
   await close(server)
 })
 
-test.serial('MCP > GET and DELETE do not hang waiting for a body', async t => {
-  // Regression guard: blanket-wrapping every route in a body reader would make
-  // these two never resolve — GET /mcp is the SSE stream and neither carries a
-  // body. The bodyless methods must answer immediately.
+test.serial('MCP > GET and DELETE are both 405, and neither hangs', async t => {
+  // Neither method is registered, so the router answers 405 — the one status the
+  // SDK client explicitly tolerates on both (client/streamableHttp.js).
+  //
+  // 405 on DELETE is also the honest answer: the spec's "server does not allow
+  // clients to terminate sessions", which is now literally true. An earlier cut
+  // of this branch answered 200, which was worse than either — a success status
+  // on a security operation that revoked nothing while the OAuth token and Lincx
+  // session both stayed valid. Logging out is auth_logout.
+  //
+  // The Promise.race is the original regression guard: blanket-wrapping every
+  // route in a body reader would make these two never resolve.
   const { server, port } = await startServer()
-  for (const method of ['GET', 'DELETE']) {
-    const r = await Promise.race([
-      fetch(`http://127.0.0.1:${port}/mcp`, {
-        method,
-        headers: { authorization: 'Bearer test-token', 'mcp-session-id': 'nope' }
-      }),
-      new Promise((_resolve, reject) => setTimeout(() => reject(new Error(`${method} hung`)), 3000))
-    ])
-    t.is(r.status, 404, `${method} with an unknown session should 404`)
-  }
+  const call = (method) => Promise.race([
+    fetch(`http://127.0.0.1:${port}/mcp`, {
+      method,
+      headers: { authorization: 'Bearer test-token', 'mcp-session-id': 'nope' }
+    }),
+    new Promise((_resolve, reject) => setTimeout(() => reject(new Error(`${method} hung`)), 3000))
+  ])
+
+  t.is((await call('DELETE')).status, 405)
+  t.is((await call('GET')).status, 405)
   await close(server)
+})
+
+test.serial('MCP > a client survives a full server restart mid-session', async t => {
+  // The whole reason the transport went stateless, asserted end to end: the same
+  // connected client keeps working after the process serving it is replaced.
+  // Under the old stateful transport the second listTools() below failed with
+  // -32000 "unknown or missing MCP session ID".
+  const first = await startServer()
+  const url = new URL(`http://127.0.0.1:${first.port}/mcp`)
+
+  const client = new Client({ name: 'restart-client', version: '1.0.0' })
+  await client.connect(new StreamableHTTPClientTransport(url, {
+    requestInit: { headers: { authorization: 'Bearer test-token' } }
+  }))
+  t.true((await client.listTools()).tools.length > 30)
+
+  // Redeploy: tear the server down and stand a fresh one up on the same port.
+  await close(first.server)
+  const second = await startServer(first.port)
+
+  t.true((await client.listTools()).tools.length > 30, 'restart must be invisible to the client')
+
+  await client.close()
+  await close(second.server)
 })

@@ -66,6 +66,31 @@ test('clientIp > falls back to the socket address with no XFF', async t => {
   t.true(r.text.length > 0)
 })
 
+test('clientIp > TRUSTED_PROXY_HOPS=0 ignores X-Forwarded-For entirely', async t => {
+  // clientIp is a rate-limit bucket key — for the /mcp flood tier and for the
+  // 10/min brute-force guard on POST /api/login. XFF is client-supplied unless a
+  // proxy overwrites it, so a deployment with nothing trusted in front must be
+  // able to opt out: measured against a directly-reachable server, a caller
+  // rotating the header took 700/700 where the cap was 600, and 0/40 blocked on
+  // the credential endpoint.
+  //
+  // Fresh module instance so the env var is read at import time.
+  process.env.TRUSTED_PROXY_HOPS = '0'
+  const { clientIp: strictClientIp } = await import(`../../http/request.js?hops=0&t=${process.pid}`)
+  delete process.env.TRUSTED_PROXY_HOPS
+
+  const app = serve((req, res) => res.writeHead(200).end(strictClientIp(req)))
+
+  const forged = await request(app).get('/').set('X-Forwarded-For', '1.2.3.4')
+  t.not(forged.text, '1.2.3.4', 'a forged XFF was believed with hops=0')
+
+  // Two callers forging different values must land on the SAME key, or the
+  // limiter is splittable per request.
+  const a = await request(app).get('/').set('X-Forwarded-For', '9.9.9.9')
+  const b = await request(app).get('/').set('X-Forwarded-For', '8.8.8.8')
+  t.is(a.text, b.text, 'forged XFF values produced distinct rate-limit keys')
+})
+
 test('readBody > parses application/json', async t => {
   const r = await request(bodyEcho()).post('/').send({ a: 1, b: 'x' })
   t.deepEqual(r.body, { a: 1, b: 'x' })

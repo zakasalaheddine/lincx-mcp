@@ -24,7 +24,20 @@ import test from 'ava'
 import request from 'supertest'
 import { buildContractApp } from './buildApp.js'
 
-const app = buildContractApp()
+// ONE listener for the whole file, not one per request.
+//
+// `request(server)` on a NON-listening server makes supertest call
+// `server.listen(0)` for every single call — 37 of them here. ava runs test
+// files as concurrent processes, and other files stand up real servers of their
+// own, so that many ephemeral binds under load produced a ~10% flake rate with
+// three different signatures, all of them transport-level rather than anything
+// to do with the assertion:
+//   - GET /health returning a body with no uptime_s (a route that cannot fail)
+//   - GET /oauth/authorize returning 404 (a route that is unconditionally set)
+//   - POST /oauth/token returning the wrong error for a known client
+// Binding once removes the pressure. See issue #21.
+const app = buildContractApp().listen(0)
+test.after.always(() => new Promise((resolve) => app.close(resolve)))
 
 async function registerClient (redirectUri = 'http://localhost:9999/callback') {
   const r = await request(app)

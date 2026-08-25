@@ -20,12 +20,12 @@
 
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js'
 
-import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
+import { validateSession, resolveLincxSession, cachedLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
 import { recordEvent, classifyResult } from '../services/usageAnalytics.js'
 
 async function requireSession (extra) {
-  const sessionId = await resolveLincxSession(extra?.sessionId)
+  const sessionId = await resolveLincxSession(extra)
   if (!sessionId) return { error: "Error: Not authenticated. Use 'auth_login' first." }
   const v = await validateSession(sessionId)
   if (!v.valid || !v.session) return { error: `Error: ${v.error}` }
@@ -59,7 +59,7 @@ async function recorded (
       duration_ms: Date.now() - start,
       response_chars: 0,
       params_keys: variables ? Object.keys(variables) : [],
-      mcp_session_id: extra?.sessionId
+      lincx_session_id: cachedLincxSession(extra)
     })
     throw err
   }
@@ -74,7 +74,7 @@ async function recorded (
     duration_ms: Date.now() - start,
     response_chars: JSON.stringify(result).length,
     params_keys: variables ? Object.keys(variables) : [],
-    mcp_session_id: extra?.sessionId
+    lincx_session_id: cachedLincxSession(extra)
   })
   return result
 }

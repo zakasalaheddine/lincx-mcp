@@ -10,14 +10,31 @@
  *   - never store auth_token / OAuth tokens
  *   - never store parameter VALUES — only Object.keys(params)
  *   - never store raw error messages — only the classified error_kind
+ *   - never store a raw session id — `lincx:session:<id>` is the Redis key of the
+ *     record holding the Lincx JWT, and this list has NO TTL (LPUSH + LTRIM) on
+ *     the SAME Redis instance, so a raw id here outlives the 7-day session it
+ *     points at. recordEventAsync resolves the user from it and then stores only
+ *     `session_key`, a hash. computeStats never needs to look one up, only to
+ *     tell rows apart.
  *   - user_id / email are stored deliberately (adoption analysis), never sent to the model
  *
  * All logging here uses console.error (stderr), never console.log (project rule).
  */
 
+import { createHash } from 'node:crypto'
+
 import { REDIS_URL, USAGE_EVENT_CAP } from '../constants.js'
-import { resolveLincxSession } from './sessionManager.js'
 import { getSessionStore } from './sessionStore.js'
+
+/**
+ * Stable, non-reversible stand-in for a Lincx session id.
+ *
+ * Applied at RECORD time, so no raw session id ever reaches Redis or /stats. A
+ * previous cut hashed only the /stats response and left the stored form raw,
+ * enforcing the invariant on the read surface and breaking it on the write one.
+ */
+export const sessionKey = (lincxSessionId) =>
+  's:' + createHash('sha256').update(lincxSessionId).digest('hex').slice(0, 12)
 
 /** Classify an error message string into a small fixed enum (never stored raw). */
 export function classifyErrorKind (text) {
@@ -102,17 +119,22 @@ export async function closeEventSink () {
 /** Awaitable core — used by tests and by the fire-and-forget recordEvent. */
 export async function recordEventAsync (input) {
   try {
+    // The raw id is used HERE and never stored — see the privacy invariants above.
+    const { lincx_session_id: rawSessionId, ...rest } = input
     let user_id
     let email
-    if (input.mcp_session_id) {
-      const lincxId = await resolveLincxSession(input.mcp_session_id)
-      if (lincxId) {
-        const session = await (await getSessionStore()).get(lincxId)
-        user_id = session?.user_id
-        email = session?.email
-      }
+    if (rawSessionId) {
+      const session = await (await getSessionStore()).get(rawSessionId)
+      user_id = session?.user_id
+      email = session?.email
     }
-    const event = { ts: Date.now(), ...input, user_id, email }
+    const event = {
+      ts: Date.now(),
+      ...rest,
+      session_key: rawSessionId ? sessionKey(rawSessionId) : undefined,
+      user_id,
+      email
+    }
     const sink = await getEventSink()
     await sink.append(event)
   } catch (err) {
@@ -183,11 +205,25 @@ export function computeStats (events) {
     .sort((a, b) => b.count - a.count)
 
   // ── sequences (group by session, chronological) ──
+  //
+  // `mcp_session_id` is the pre-stateless key — kept as a fallback so events
+  // recorded before the transport went stateless still group until they age out
+  // of the capped log.
+  //
+  // NOTE the grain changed with the key. `mcp_session_id` was one MCP connection
+  // ≈ one conversation; `lincx_session_id` is a 7-day login, so a row now spans
+  // every conversation that user had in the window and `transitions` bridges the
+  // gaps between them. Read `recent[].tools` as "what this user did this week",
+  // not "what happened in one chat".
   const bySession = new Map()
   for (const e of events) {
-    if (!e.mcp_session_id) continue
-    const arr = bySession.get(e.mcp_session_id) ?? []
-    arr.push(e); bySession.set(e.mcp_session_id, arr)
+    // `session_key` is already hashed at record time. `mcp_session_id` is the
+    // pre-stateless field and was stored RAW, so it gets hashed here — otherwise
+    // the response would keep echoing resolvable ids until those events age out.
+    const key = e.session_key ?? (e.mcp_session_id ? sessionKey(e.mcp_session_id) : null)
+    if (!key) continue
+    const arr = bySession.get(key) ?? []
+    arr.push(e); bySession.set(key, arr)
   }
   const transitions = {}
   const recent = []
@@ -198,9 +234,29 @@ export function computeStats (events) {
       const key = `${toolNames[i - 1]}>${toolNames[i]}`
       transitions[key] = (transitions[key] ?? 0) + 1
     }
-    recent.push({ session, user_id: arr[0].user_id, tools: toolNames })
+    // `session` is already a hash — recordEventAsync never stored the raw id.
+    //
+    // To be precise about what that buys: this is a CAPABILITY control, not an
+    // anonymity one. `users[]` below carries user_id AND email, and every row here
+    // carries user_id, so nothing about a reader's ability to attribute activity
+    // changes. What it prevents is /stats — and the event log behind it — handing
+    // anyone a directly usable Redis key.
+    //
+    // tools is capped because the key change made it unbounded: a heavy user's
+    // whole week used to be many short rows and is now one long one.
+    recent.push({
+      // Emitted, not just sorted on: the response carries no resolvable session
+      // id, so this is the only way a reader can tell how recent a row is.
+      last_ts: arr.at(-1).ts,
+      session,
+      user_id: arr[0].user_id,
+      tools: toolNames.slice(-200),
+      tools_total: toolNames.length
+    })
   }
-  recent.sort((a, b) => (bySession.get(b.session).at(-1).ts) - (bySession.get(a.session).at(-1).ts))
+  // Sort on the events themselves — `recent[].session` is hashed now, so it can
+  // no longer be used to look the group back up.
+  recent.sort((a, b) => b.last_ts - a.last_ts)
 
   let oldest = Infinity
   let newest = -Infinity

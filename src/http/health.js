@@ -2,7 +2,7 @@ import { json } from './respond.js'
 import { probeStore } from '../services/sessionStore.js'
 import { IS_PRODUCTION } from '../constants.js'
 
-export function buildHealthHandler ({ getActiveSessions }) {
+export function buildHealthHandler () {
   return async (_req, res) => {
     let store = 'unknown'
     let redisOk = false
@@ -15,7 +15,6 @@ export function buildHealthHandler ({ getActiveSessions }) {
     json(res, 200, {
       status: judgeStatus({ store, redisOk, isProduction: IS_PRODUCTION }),
       uptime_s: Math.round(process.uptime()),
-      active_sessions: getActiveSessions(),
       store,
       redis_ok: redisOk
     })

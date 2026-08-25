@@ -2,17 +2,19 @@
 /**
  * tools/authTools.js
  *
- * auth_login  — returns a per-MCP-session browser login URL (with ticket).
+ * auth_login  — points the caller at their client's OAuth flow.
  * auth_status — reports current session state.
- * auth_logout — unbinds this MCP session and destroys its Lincx session.
+ * auth_logout — destroys the Lincx session behind the caller's OAuth token.
+ *   It does NOT revoke the OAuth grant: the access token stays valid for its hour
+ *   and the refresh token keeps minting new ones for 30 days, all bound to a
+ *   session id that no longer resolves. Every tool therefore fails closed at
+ *   validateSession, so no data is reachable — but a user logging out BECAUSE a
+ *   token leaked gets no revocation. The deploy-wide kill switch is still
+ *   flushing Redis (CLAUDE.md § Deployment).
  */
 
 import { z } from 'zod'
-import {
-  destroySession,
-  resolveLincxSession,
-  unbindMcpSession
-} from '../services/sessionManager.js'
+import { destroySession, resolveLincxSession } from '../services/sessionManager.js'
 import { getSessionStore } from '../services/sessionStore.js'
 import { selectNetworks } from './networkTools.js'
 
@@ -77,7 +79,7 @@ Use after 'auth_login' to confirm the session is ready.`,
       }
     },
     async ({ includeArchived, limit, offset, verbose }, extra) => {
-      const sessionId = await resolveLincxSession(extra?.sessionId)
+      const sessionId = await resolveLincxSession(extra)
 
       if (!sessionId) {
         return {
@@ -138,12 +140,11 @@ The user will need to log in again via the browser to continue.`,
       }
     },
     async (_args, extra) => {
-      const sessionId = await resolveLincxSession(extra?.sessionId)
+      const sessionId = await resolveLincxSession(extra)
       if (!sessionId) {
         return { content: [{ type: 'text', text: 'No active session to log out from.' }] }
       }
       await destroySession(sessionId)
-      await unbindMcpSession(extra?.sessionId)
       return { content: [{ type: 'text', text: 'Logged out. Session cleared.' }] }
     }
   )

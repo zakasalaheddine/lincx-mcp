@@ -20,6 +20,7 @@
 
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
 import { recordEvent, classifyResult, classifyErrorKind } from '../services/usageAnalytics.js'
+import { cachedLincxSession } from '../services/sessionManager.js'
 
 function oversizedResult (size) {
   return {
@@ -54,6 +55,11 @@ export function installToolGuards (server) {
     const original = tool.handler
     if (typeof original !== 'function') continue // skip task-style handlers
 
+    // `cachedLincxSession(extra)` below is always read AFTER the handler has run:
+    // the handler's own resolveLincxSession(extra) memoises the id on `extra`, so
+    // attribution does no I/O. A handler that threw before resolving records null.
+    // Pinned by bearerIdentity.test.js — severing this chain anywhere is otherwise
+    // invisible, and /stats silently loses every user attribution.
     tool.handler = async (...handlerArgs) => {
       // The SDK calls handler(args, extra) for tools with an input schema (all of
       // ours use z.object). The first arg is the validated params object.
@@ -63,7 +69,6 @@ export function installToolGuards (server) {
         : {}
       const paramsKeys = Object.keys(params)
       const extra = handlerArgs[1]
-      const mcpSessionId = extra?.sessionId
       const start = Date.now()
 
       let result
@@ -72,7 +77,7 @@ export function installToolGuards (server) {
       } catch (err) {
         const duration = Date.now() - start
         logMetrics({ tool: name, duration_ms: duration, response_chars: 0, params_keys: paramsKeys, status: 'error' })
-        recordEvent({ type: 'tool', name, status: 'error', error_kind: classifyErrorKind(err instanceof Error ? err.message : String(err)), duration_ms: duration, response_chars: 0, params_keys: paramsKeys, mcp_session_id: mcpSessionId })
+        recordEvent({ type: 'tool', name, status: 'error', error_kind: classifyErrorKind(err instanceof Error ? err.message : String(err)), duration_ms: duration, response_chars: 0, params_keys: paramsKeys, lincx_session_id: cachedLincxSession(extra) })
         throw err
       }
 
@@ -88,13 +93,13 @@ export function installToolGuards (server) {
       if (bytes > RESPONSE_SIZE_LIMIT) {
         console.error(`[ToolGuard] ${name} response too large: ${bytes} chars (limit ${RESPONSE_SIZE_LIMIT}); params=[${paramsKeys.join(',')}]`)
         logMetrics({ tool: name, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, status: 'error' })
-        recordEvent({ type: 'tool', name, status: 'error', error_kind: 'response_too_large', duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, mcp_session_id: mcpSessionId })
+        recordEvent({ type: 'tool', name, status: 'error', error_kind: 'response_too_large', duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, lincx_session_id: cachedLincxSession(extra) })
         return oversizedResult(bytes)
       }
 
       const { status, error_kind } = classifyResult(result)
       logMetrics({ tool: name, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, status })
-      recordEvent({ type: 'tool', name, status, error_kind, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, mcp_session_id: mcpSessionId })
+      recordEvent({ type: 'tool', name, status, error_kind, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, lincx_session_id: cachedLincxSession(extra) })
       return result
     }
   }

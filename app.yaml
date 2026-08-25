@@ -1,8 +1,15 @@
 # GAE Standard service config for lincx-mcp-server.
 #
-# SINGLE INSTANCE IS A CORRECTNESS REQUIREMENT, not a cost choice: MCP transport
-# state lives in an in-process Map (src/server.js). More than one instance gives
-# intermittent "session not found". See CLAUDE.md § Deployment.
+# SINGLE INSTANCE IS NO LONGER A CORRECTNESS REQUIREMENT. It used to be: MCP
+# transport state lived in an in-process Map in src/server.js and a second
+# instance gave intermittent "session not found". The transport is stateless now
+# (sessionIdGenerator: undefined, identity from the OAuth bearer), so any number
+# of instances can serve any request.
+#
+# The pin below stays until it is lifted as ITS OWN deploy — and lifting it has
+# one open blocker: src/middleware/rateLimit.js counts in-process, so N instances
+# silently means N x 120 req/min. Move that to Redis first.
+# See CLAUDE.md § Deployment and DEPLOYMENT.md § Scaling.
 #
 # Before the first deploy, replace every <PLACEHOLDER> below. `gcloud app deploy`
 # fails loudly on the vpc_access_connector one, so it cannot ship unnoticed.
@@ -10,16 +17,19 @@
 runtime: nodejs22
 service: default
 
-# MANUAL SCALING, pending the Phase 0 spike (#64 Task 3, not yet run).
+# MANUAL SCALING — now a deliberate hold, not a constraint.
 #
-# Two reasons this is the safe default rather than a guess:
-#   1. It pins the instance count at exactly one, which is the correctness
-#      requirement above. `automatic_scaling` with min=max=1 also holds it at one
-#      but still reschedules instances on its own schedule.
-#   2. Automatic scaling caps a request at 10 minutes. GET /mcp is the only SSE
-#      surface here (POST answers JSON — enableJsonResponse: true), so if the
-#      spike shows real clients holding that stream open, a request-duration cap
-#      is a hard blocker. Manual scaling has no such cap.
+# The original two reasons are both spent:
+#   1. It pinned the instance count at one, which WAS the correctness
+#      requirement. The stateless transport removed that requirement.
+#   2. Automatic scaling caps a request at 10 minutes, and GET /mcp was the only
+#      SSE surface that could outlive it. GET /mcp no longer exists — POST
+#      answers JSON (enableJsonResponse: true) and returns promptly — so the
+#      request-duration cap is no longer a blocker either.
+#
+# What remains is the staged rollout: land stateless on one instance, watch it,
+# then raise the count (after the rate-limiter move above). Changing both at once
+# makes a regression unattributable.
 #
 # Manual scaling sends /_ah/start; a non-200 there means the instance never
 # becomes healthy. src/http/router.js answers it (plus /_ah/stop, /_ah/warmup).

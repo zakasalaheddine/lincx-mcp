@@ -44,10 +44,11 @@ await check('POST /mcp challenges with RFC-9728', async () => {
   assert(wa.includes(base), `challenge points elsewhere: ${wa}`)
 })
 
-await check('GET /mcp challenges with RFC-9728', async () => {
-  const r = await fetch(`${base}/mcp`)
-  assert(r.status === 401, `status ${r.status}`)
-  assert((r.headers.get('www-authenticate') ?? '').startsWith('Bearer '), 'missing challenge')
+await check('GET and DELETE on /mcp are both 405 (stateless: no SSE, no session to end)', async () => {
+  for (const method of ['GET', 'DELETE']) {
+    const r = await fetch(`${base}/mcp`, { method })
+    assert(r.status === 405, `${method} status ${r.status} — expected 405; a 401 or 200 means an old build is still serving`)
+  }
 })
 
 await check('authorization-server metadata matches the public base URL', async () => {

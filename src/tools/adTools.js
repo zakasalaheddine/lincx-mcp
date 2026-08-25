@@ -24,7 +24,7 @@ export function registerAdTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit, offset, fields, adGroupId, campaignId, advertiserId }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -53,7 +53,7 @@ export function registerAdTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, include }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -84,7 +84,7 @@ export function registerAdTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false }
   }, async ({ zoneId, debug, adFeedCount, geoState, geoCity, geoIP, geoPostal, geoCountry, scoreKey }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)

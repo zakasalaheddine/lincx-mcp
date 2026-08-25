@@ -21,7 +21,7 @@ export function registerChannelTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit, offset, fields, publisherId }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -48,7 +48,7 @@ export function registerChannelTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, include }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)

@@ -192,7 +192,7 @@ export function registerAnalysisTools (server) {
       }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
     }, async ({ zoneId, dateStart, dateEnd, analysisType, timezone, noLLM, name }, extra) => {
-      const sessionId = await resolveLincxSession(extra?.sessionId)
+      const sessionId = await resolveLincxSession(extra)
       if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
       const v = await validateSession(sessionId)
@@ -234,7 +234,7 @@ Tier assignments are PRECOMPUTED. Do not re-cluster or re-rank them from the raw
     }).strict(),
     annotations: READONLY_ANNOTATIONS
   }, async ({ id }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)
@@ -261,7 +261,7 @@ Pages by cursor, not offset: pass the '_id' of the last row you received as 'cur
     }).strict(),
     annotations: READONLY_ANNOTATIONS
   }, async ({ status, limit, cursor }, extra) => {
-    const sessionId = await resolveLincxSession(extra?.sessionId)
+    const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(sessionId)

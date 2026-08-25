@@ -19,7 +19,7 @@ import { buildHealthHandler } from '../../http/health.js'
 
 export function buildContractApp () {
   const router = buildRouter({
-    health: buildHealthHandler({ getActiveSessions: () => 0 })
+    health: buildHealthHandler()
   })
 
   return http.createServer((req, res) => {

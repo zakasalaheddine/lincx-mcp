@@ -9,4 +9,7 @@ import { loadSecrets } from './config/secrets.js'
 
 await loadSecrets()
 const { start } = await import('./server.js')
-await start()
+
+// start() rejects rather than exiting (so a test can catch a bind failure);
+// production still wants a non-zero exit so the platform restarts us.
+await start().catch(() => process.exit(1))

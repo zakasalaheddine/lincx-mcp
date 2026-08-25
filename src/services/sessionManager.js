@@ -11,8 +11,7 @@
 
 import { v4 as uuidv4 } from 'uuid'
 
-import { getSessionStore, getKvStore } from './sessionStore.js'
-import { SESSION_TTL_SECONDS } from '../constants.js'
+import { getSessionStore } from './sessionStore.js'
 import { revokeToken, isJwtExpired } from './auth.js'
 import { fetchUserNetworks } from './networkService.js'
 import { lookupAccessToken } from './oauth/tokens.js'
@@ -35,7 +34,11 @@ export async function createSession (params
   }
 
   await store.set(session.session_id, session)
-  console.error(`[Session] Created for ${params.email} — id: ${session.session_id}`)
+  // Truncated: the full id is the Redis key of the record holding the Lincx JWT,
+  // and this line puts it next to the email in container logs for the session's
+  // whole 7-day life. Hashing it in the event log while logging it raw here would
+  // have removed the weaker copy and kept the stronger one.
+  console.error(`[Session] Created for ${params.email} — id: ${session.session_id.slice(0, 8)}…`)
   return session
 }
 
@@ -104,7 +107,7 @@ export async function switchNetwork (
   const previousNetwork = session.active_network
   session.active_network = networkId
   await store.set(sessionId, session)
-  console.error(`[Session] ${sessionId}: network ${previousNetwork} → ${networkId}`)
+  console.error(`[Session] ${sessionId.slice(0, 8)}…: network ${previousNetwork} → ${networkId}`)
   return { success: true, previousNetwork }
 }
 
@@ -135,47 +138,76 @@ export async function destroySession (sessionId) {
   if (session) {
     await revokeToken(session.auth_token) // no-op for authentic-server
     await store.delete(sessionId)
-    console.error(`[Session] Destroyed ${sessionId}`)
+    console.error(`[Session] Destroyed ${sessionId.slice(0, 8)}…`)
   }
 }
 
-// ── MCP-session ↔ Lincx-session binding ──────────────────────────────────────
+// ── Request → Lincx-session resolution ───────────────────────────────────────
 
-const MCP_PREFIX = 'mcp:session:'
-
-/** Resolve an MCP session id to its bound Lincx session id. */
-export async function resolveLincxSession (
-  mcpSessionId
-) {
-  const id = mcpSessionId ?? 'stdio'
-  const kv = await getKvStore()
-  return await kv.get(MCP_PREFIX + id)
+/**
+ * Resolve the Lincx session for a tool/resource call, from the OAuth bearer on
+ * the request itself.
+ *
+ * The transport is stateless (no `sessionIdGenerator`), so there is no MCP
+ * session id and no `mcp:session:<id>` binding any more — the bearer token IS
+ * the identity, and it already resolves to a Lincx session via Redis.
+ *
+ * The result is memoised on `extra` — one plain object per JSON-RPC request
+ * (`shared/protocol.js` builds it fresh, never shared or frozen), so
+ * `cachedLincxSession` can attribute a usage event with no I/O of its own.
+ *
+ * It is NOT a saving over the whole request: mcpPost runs its own
+ * resolveLincxSessionFromBearer to answer the RFC-9728 401 before any transport
+ * exists, and it has no `extra` to seed. So an authenticated tool call costs two
+ * Redis GETs on the same token — the gate's and the handler's. ~1ms, and the
+ * alternative is a gate that cannot challenge. The memo's job is to stop that
+ * becoming three.
+ */
+export async function resolveLincxSession (extra) {
+  if (!extra) return null
+  if (extra._lincxSessionId !== undefined) return extra._lincxSessionId
+  const id = await resolveLincxSessionFromBearer(extra.requestInfo?.headers?.authorization)
+  extra._lincxSessionId = id
+  return id
 }
 
-/** Bind an MCP session id to a Lincx session id. */
-export async function bindMcpToLincxSession (
-  mcpSessionId,
-  lincxSessionId
-) {
-  const id = mcpSessionId ?? 'stdio'
-  const kv = await getKvStore()
-  await kv.set(MCP_PREFIX + id, lincxSessionId, SESSION_TTL_SECONDS)
+/**
+ * The ACCOUNT behind a session, for rate-limit bucketing.
+ *
+ * Not the session id, which is what this used to key on: `createSession` mints a
+ * fresh UUID on every login and each lives 7 days, so one account accumulates
+ * buckets — N logins is N × the per-user limit, with only the 10/min login
+ * limiter as a brake. ~100 logins over ten minutes bought 12 000 req/min for one
+ * account.
+ *
+ * Costs one Redis GET on the request path, which is real: an authenticated tool
+ * call already pays two (the 401 gate, then the handler's memoised resolve). If
+ * that shows up in latency, the fix is to carry `user_id` on the OAuth access
+ * record so it arrives with the token — not to go back to keying on the session.
+ *
+ * Falls back to the session id when the session is gone; that request is about to
+ * fail closed inside every tool anyway.
+ */
+export async function resolveUserBucket (lincxSessionId) {
+  const store = await getSessionStore()
+  const session = await store.get(lincxSessionId)
+  return session?.user_id ?? lincxSessionId
 }
 
-/** Unbind (logout) an MCP session. */
-export async function unbindMcpSession (
-  mcpSessionId
-) {
-  const id = mcpSessionId ?? 'stdio'
-  const kv = await getKvStore()
-  await kv.delete(MCP_PREFIX + id)
-}
+/** The memo left by `resolveLincxSession`, or null. Never does I/O. */
+export const cachedLincxSession = (extra) => extra?._lincxSessionId ?? null
 
 // ── OAuth bearer → Lincx session ─────────────────────────────────────────────
 
 /**
  * Resolve a bearer token from `Authorization: Bearer <token>` to a Lincx session id.
- * Returns null if the token is missing, expired, or the underlying Lincx session is gone.
+ *
+ * Returns null if the token is missing, malformed, or expired. It does NOT check
+ * that the Lincx session still exists — an earlier version of this comment
+ * claimed it did. A bearer whose session was destroyed by `auth_logout` still
+ * passes this gate and then fails at `validateSession` / `store.get` inside every
+ * tool, so no data is reachable; the difference is a 401 vs a tool-level
+ * "Not authenticated". Nothing revokes the OAuth grant itself — see auth_logout.
  */
 export async function resolveLincxSessionFromBearer (
   authorizationHeader

@@ -66,7 +66,7 @@ async function healthApp (storeMod, { isProduction }) {
     '../services/sessionStore.js': storeMod,
     '../constants.js': { IS_PRODUCTION: isProduction }
   })
-  const handler = buildHealthHandler({ getActiveSessions: () => 0 })
+  const handler = buildHealthHandler()
   return http.createServer((req, res) => { handler(req, res) })
 }
 
