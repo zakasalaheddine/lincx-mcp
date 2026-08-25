@@ -137,7 +137,8 @@ test.serial('the per-account tier caps a single session at its limit', async t =
 test.serial('/oauth/register is rate limited', async t => {
   // Dynamic Client Registration is unauthenticated and every accepted call writes
   // a 90-day `oauth:client:<id>` key. It had no limiter at all, and neither did
-  // /oauth/token — the endpoint where a stolen code or refresh token gets used.
+  // /oauth/token or /oauth/authorize. Each has its own bucket now — see the
+  // sharing test below.
   const app = buildContractApp().listen(0)
   t.teardown(() => new Promise((resolve) => app.close(resolve)))
 
@@ -158,6 +159,57 @@ test.serial('/oauth/register is rate limited', async t => {
   const other = await from('203.0.113.99')
   t.not(other.status, 429,
     'a second address was locked out by the first — the OAuth limiter is one global bucket')
+})
+
+test.serial('the OAuth endpoints do not share one budget', async t => {
+  // They used to: one 30/min per-address bucket covered /oauth/register and
+  // /oauth/token together. That is the cross-endpoint starvation the two-tier
+  // reasoning in rateLimit.js exists to avoid, one level up — a DCR flood, or ~30
+  // claude.ai users refreshing in the same minute behind one shared egress, 429s
+  // token refresh and the login page for everybody at that address.
+  const app = buildContractApp().listen(0)
+  t.teardown(() => new Promise((resolve) => app.close(resolve)))
+
+  const ip = '203.0.113.42'
+  const xff = `10.0.0.1, ${ip}`
+
+  // Burn the registration budget from one address.
+  let registerLimited = 0
+  for (let i = 0; i < 15; i++) {
+    const r = await request(app)
+      .post('/oauth/register')
+      .set('X-Forwarded-For', xff)
+      .send({ redirect_uris: ['http://localhost:9999/cb'], client_name: 'flood' })
+    if (r.status === 429) registerLimited++
+  }
+  t.true(registerLimited > 0, 'baseline: /oauth/register is exhausted for this address')
+
+  // The other two must still answer the SAME address on their own merits.
+  const tok = await request(app)
+    .post('/oauth/token').set('X-Forwarded-For', xff)
+    .type('form').send({ grant_type: 'refresh_token', refresh_token: 'nope', client_id: 'x' })
+  t.not(tok.status, 429, 'a DCR flood locked this address out of token refresh')
+
+  const auth = await request(app)
+    .get('/oauth/authorize').set('X-Forwarded-For', xff).query({ response_type: 'code' })
+  t.not(auth.status, 429, 'a DCR flood locked this address out of the login page')
+})
+
+test.serial('GET /oauth/authorize is rate limited', async t => {
+  // Unauthenticated, and every request writes a 10-min `oauth:pending:<id>`. It
+  // was the one Redis-writing endpoint with no limiter.
+  const app = buildContractApp().listen(0)
+  t.teardown(() => new Promise((resolve) => app.close(resolve)))
+
+  let limited = 0
+  for (let i = 0; i < 130; i++) {
+    const r = await request(app)
+      .get('/oauth/authorize')
+      .set('X-Forwarded-For', '10.0.0.1, 203.0.113.77')
+      .query({ response_type: 'code' })
+    if (r.status === 429) limited++
+  }
+  t.true(limited > 0, 'GET /oauth/authorize accepted 130 unauthenticated requests in a minute')
 })
 
 test.serial('POST /api/login is rate limited', async t => {

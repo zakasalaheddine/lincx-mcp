@@ -591,6 +591,22 @@ Two facts that constrain code changes:
     (measured: 700/700 served against a 600 cap by rotating the header). The
     opposite error is unmeasured: more proxies in front than configured collapses
     every caller into one bucket.
+  - **`/oauth/*` is deliberately single-tier**, one per-address bucket per
+    endpoint (`register` 10/min, `token` 600/min, `authorize` 120/min). No second
+    tier is possible *at the gate*: `client_id`, the auth code and the refresh
+    token are all caller-supplied and unvalidated when the limiter runs, so keying
+    on them is the same bypass as keying on the bearer. Separate buckets are what
+    stops a DCR flood from 429ing token refresh and the login page for everyone
+    behind one shared egress, and `token` matches `mcpIpLimiter`'s order of
+    magnitude because it sits on that same claude.ai egress. **One exception, not
+    yet built:** the `/oauth/token` refresh branch resolves a server-minted
+    `record.lincx_session_id` mid-handler (`refreshTokens()`), which is exactly
+    where `mcpUserLimiter` sits on `/mcp` — a post-validation tier IS possible
+    there. Until it exists, 600/min is also the per-caller ceiling on refresh
+    rotation, and rotation does not revoke the access tokens it supersedes
+    (measured: 26 rotations, 26 distinct access tokens, all live; at 600/min and a
+    3600s access TTL that is ~36k live tokens per caller, against ~1.8k under the
+    old shared 30/min).
   - `app.yaml` still pins `manual_scaling: instances: 1` — that pin is now a
     deliberate follow-up to lift, not a correctness requirement.
 - **No auth gate in front of `/mcp`.** OAuth 2.1 (DCR + PKCE) is the sole identity

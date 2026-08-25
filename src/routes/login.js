@@ -9,13 +9,19 @@ import {
   issueAuthCode
 } from '../services/oauth/codes.js'
 import { getClient } from '../services/oauth/clients.js'
-import { loginLimiter } from '../middleware/rateLimit.js'
+import { loginLimiter, oauthAuthorizeLimiter } from '../middleware/rateLimit.js'
 import { buildLoginPage, buildSuccessPage, buildErrorPage } from '../views/login.js'
 import { json, html, redirect } from '../http/respond.js'
 import { query, readBody } from '../http/request.js'
 
 // ── GET /oauth/authorize ─────────────────────────────────────────────────────
 export async function getAuthorize (req, res) {
+  // Every request writes an unauthenticated 10-min `oauth:pending:<id>` to Redis.
+  // The 429 body is JSON while every other failure here renders buildErrorPage —
+  // a browser sees raw JSON. Left as-is: Retry-After is what a client acts on, and
+  // the limiter owning its own response is what keeps it uniform across routes.
+  if (!oauthAuthorizeLimiter(req, res)) return
+
   const q = query(req)
   const response_type = q.get('response_type')
   const client_id = q.get('client_id')

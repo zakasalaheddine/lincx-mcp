@@ -5,10 +5,10 @@ import { verifyPkce } from '../services/oauth/pkce.js'
 import { getClient } from '../services/oauth/clients.js'
 import { json } from '../http/respond.js'
 import { readBody } from '../http/request.js'
-import { oauthLimiter } from '../middleware/rateLimit.js'
+import { oauthTokenLimiter } from '../middleware/rateLimit.js'
 
 export async function postToken (req, res, _opts, cb) {
-  if (!oauthLimiter(req, res)) return
+  if (!oauthTokenLimiter(req, res)) return
 
   let body
   try {

@@ -8,10 +8,13 @@
  * one. Moving this to Redis is a prerequisite for raising the instance count,
  * not a follow-up to it.
  *
- * Three configs:
- *   loginLimiter   — POST /api/login — 10 req/min per client IP
- *   mcpIpLimiter   — POST /mcp       — 600 req/min per client IP, BEFORE auth
- *   mcpUserLimiter — POST /mcp       — 120 req/min per Lincx session, AFTER auth
+ * Configs:
+ *   loginLimiter           — POST /api/login      — 10 req/min per client IP
+ *   mcpIpLimiter           — POST /mcp            — 600 req/min per client IP, BEFORE auth
+ *   mcpUserLimiter         — POST /mcp            — 120 req/min per Lincx session, AFTER auth
+ *   oauthRegisterLimiter   — POST /oauth/register — 10 req/min per client IP
+ *   oauthTokenLimiter      — POST /oauth/token    — 600 req/min per client IP
+ *   oauthAuthorizeLimiter  — GET  /oauth/authorize— 120 req/min per client IP
  *
  * WHY /mcp NEEDS TWO TIERS — this has been wrong twice, so the reasoning lives
  * here rather than in a commit message:
@@ -179,16 +182,58 @@ export const userKey = (lincxSessionId) =>
   'u:' + createHash('sha256').update(lincxSessionId).digest('hex').slice(0, 32)
 
 /**
- * OAuth endpoints. `/oauth/register` is unauthenticated Dynamic Client
- * Registration and every call writes a 90-day `oauth:client:<id>` key; `/oauth/token`
- * is where a stolen code or refresh token would be exercised. Neither had any
- * limiter.
+ * OAuth endpoints — three SEPARATE per-address buckets, not one shared 30/min.
+ *
+ * WHY NO SECOND TIER AT THE GATE. /mcp gets a per-account tier because the bearer
+ * resolves to a Lincx session the server minted. Nothing reaching /oauth/* has that
+ * yet: `client_id`, the auth code and the refresh token are all caller-supplied and
+ * unvalidated at limiter time — keying on any of them is the same bypass the
+ * bearer paragraph above documents (rotate the value, mint a fresh bucket, and
+ * grow this Map while you do it). Validating first is not an option: the limiter
+ * is what protects readBody and the Redis lookup. So per-address is the only key,
+ * and the budgets have to absorb shared egress instead of a second tier doing it.
+ *
+ * One exception: the /oauth/token refresh branch DOES resolve a server-minted
+ * `lincx_session_id` mid-handler, so a post-validation tier is possible there —
+ * deliberately not built. Until it is, 600/min is also the per-caller ceiling on
+ * refresh rotation, and rotation does not revoke the access tokens already issued
+ * (measured: 26 rotations, 26 live tokens).
+ *
+ * WHY THREE BUCKETS. One shared bucket means a DCR flood 429s token refresh and
+ * the login page for everyone behind that address — the cross-endpoint starvation
+ * the two-tier reasoning exists to avoid, one level up.
+ *
+ *   register  —  10/min. Unauthenticated DCR; every accepted call writes a 90-day
+ *                `oauth:client:<id>`. A client registers once per install, so a
+ *                real caller never approaches this.
+ *   token     — 600/min. Same shared claude.ai egress as `mcpIpLimiter`, and every
+ *               connector behind it refreshes hourly, so it gets the same order of
+ *               magnitude. 30/min was ~30 users refreshing in one minute away from
+ *               429ing all of them.
+ *   authorize — 120/min. Writes an unauthenticated 10-min `oauth:pending:<id>` per
+ *               request. Browser-driven and one per login, so it sits far below
+ *               token, but well above the number of humans plausibly logging in
+ *               from one egress in a minute.
  */
-export const oauthLimiter = createLimiter({
+export const oauthRegisterLimiter = createLimiter({
   windowMs: 60 * 1000,
-  limit: 30,
+  limit: 10,
   keyOf: ipKey,
-  message: { error: 'Too many OAuth requests — try again in a minute.' }
+  message: { error: 'Too many client registrations — try again in a minute.' }
+})
+
+export const oauthTokenLimiter = createLimiter({
+  windowMs: 60 * 1000,
+  limit: 600,
+  keyOf: ipKey,
+  message: { error: 'Too many token requests — try again in a minute.' }
+})
+
+export const oauthAuthorizeLimiter = createLimiter({
+  windowMs: 60 * 1000,
+  limit: 120,
+  keyOf: ipKey,
+  message: { error: 'Too many authorization requests — try again in a minute.' }
 })
 
 /** Pre-auth flood guard. Runs before readBody and before the bearer is resolved. */
