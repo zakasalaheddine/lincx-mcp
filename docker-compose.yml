@@ -43,8 +43,6 @@ services:
       - WORK_API_BASE_URL=${WORK_API_BASE_URL:?WORK_API_BASE_URL is required}
       - IDENTITY_SERVER=${IDENTITY_SERVER:-https://ix-id.lincx.la}
       - REDIS_URL=redis://default:${REDIS_PASSWORD:-${SERVICE_PASSWORD_REDIS:?set REDIS_PASSWORD (or let Coolify provide SERVICE_PASSWORD_REDIS)}}@redis:6379
-      - STATS_TOKEN=${STATS_TOKEN:-}
-      - USAGE_EVENT_CAP=${USAGE_EVENT_CAP:-50000}
       - RESPONSE_SIZE_LIMIT=${RESPONSE_SIZE_LIMIT:-30000}
     depends_on:
       redis:

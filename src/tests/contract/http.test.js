@@ -329,16 +329,6 @@ test.serial('contract: login UI > 400 JSON for POST /api/login with an expired r
   t.regex(r.body.error, /expired/i)
 })
 
-// ── /stats gating ────────────────────────────────────────────────────────────
-
-// contract: /stats gating
-test.serial('contract: /stats gating > 404s when STATS_TOKEN is unset, so it is never accidentally public', async t => {
-  // The ava config pins STATS_TOKEN="" so this does not depend on the
-  // developer's .env. constants.js reads it at module scope.
-  const r = await request(app).get('/stats')
-  t.is(r.status, 404)
-})
-
 // ── Method dispatch ──────────────────────────────────────────────────────────
 
 { // contract: method dispatch
@@ -383,8 +373,7 @@ test.serial('contract: /stats gating > 404s when STATS_TOKEN is unset, so it is 
     ['/.well-known/oauth-protected-resource/mcp/', 200],
     ['/login/success/', 200],
     ['/login/', 400],
-    ['/oauth/authorize/', 400],
-    ['/stats/', 404]
+    ['/oauth/authorize/', 400]
   ]
 
   for (const [path, status] of cases) {

@@ -153,8 +153,8 @@ export async function destroySession (sessionId) {
  * the identity, and it already resolves to a Lincx session via Redis.
  *
  * The result is memoised on `extra` — one plain object per JSON-RPC request
- * (`shared/protocol.js` builds it fresh, never shared or frozen), so
- * `cachedLincxSession` can attribute a usage event with no I/O of its own.
+ * (`shared/protocol.js` builds it fresh, never shared or frozen), so a second
+ * resolve within the same request costs nothing.
  *
  * It is NOT a saving over the whole request: mcpPost runs its own
  * resolveLincxSessionFromBearer to answer the RFC-9728 401 before any transport
@@ -193,9 +193,6 @@ export async function resolveUserBucket (lincxSessionId) {
   const session = await store.get(lincxSessionId)
   return session?.user_id ?? lincxSessionId
 }
-
-/** The memo left by `resolveLincxSession`, or null. Never does I/O. */
-export const cachedLincxSession = (extra) => extra?._lincxSessionId ?? null
 
 // ── OAuth bearer → Lincx session ─────────────────────────────────────────────
 

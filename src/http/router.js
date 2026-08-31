@@ -10,11 +10,9 @@
 import HttpHashRouter from 'http-hash-router'
 import { json, noContent } from './respond.js'
 import { closeKvStore } from '../services/sessionStore.js'
-import { closeEventSink } from '../services/usageAnalytics.js'
 import { authServerMetadata, resourceMetadata } from '../routes/wellKnown.js'
 import { postRegister } from '../routes/oauthRegister.js'
 import { postToken } from '../routes/oauthToken.js'
-import { getStats } from '../routes/stats.js'
 import { getAuthorize, getLogin, postApiLogin, getLoginSuccess } from '../routes/login.js'
 
 export function buildRouter ({ health, mcp, dev }) {
@@ -33,7 +31,7 @@ export function buildRouter ({ health, mcp, dev }) {
   router.set('/_ah/stop', {
     GET: async (_req, res) => {
       try {
-        await Promise.all([closeKvStore(), closeEventSink()])
+        await closeKvStore()
       } catch (err) {
         console.error('[HTTP]   /_ah/stop close failed:', err instanceof Error ? err.message : String(err))
       }
@@ -52,8 +50,6 @@ export function buildRouter ({ health, mcp, dev }) {
   router.set('/login', { GET: getLogin })
   router.set('/login/success', { GET: getLoginSuccess })
   router.set('/api/login', { POST: postApiLogin })
-
-  router.set('/stats', { GET: getStats })
 
   if (mcp) {
     router.set('/mcp', { POST: mcp.post })

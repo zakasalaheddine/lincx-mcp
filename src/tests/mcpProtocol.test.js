@@ -14,7 +14,6 @@ async function startServer (port = 0) {
     '../services/sessionManager.js': {
       resolveLincxSessionFromBearer: async (h) => (h ? 'lincx-test-session' : null),
       resolveLincxSession: async () => 'lincx-test-session',
-      cachedLincxSession: () => 'lincx-test-session',
       validateSession: async () => ({
         valid: true,
         session: { session_id: 'lincx-test-session', email: 'a@b.c', active_network: 'svce6t', networks: [] }

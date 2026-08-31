@@ -4,12 +4,11 @@ import request from 'supertest'
 import esmock from 'esmock'
 import { json } from '../http/respond.js'
 
-/** The router with both store-close functions replaced by counters. */
+/** The router with the store-close function replaced by a counter. */
 async function appWithSpies () {
   const calls = []
   const { buildRouter, onRouterError } = await esmock('../http/router.js', {
-    '../services/sessionStore.js': { closeKvStore: async () => calls.push('kv') },
-    '../services/usageAnalytics.js': { closeEventSink: async () => calls.push('sink') }
+    '../services/sessionStore.js': { closeKvStore: async () => calls.push('kv') }
   })
   const router = buildRouter({ health: (_req, res) => json(res, 200, { status: 'ok' }) })
   const server = http.createServer((req, res) => {
@@ -18,19 +17,18 @@ async function appWithSpies () {
   return { server, calls }
 }
 
-test('GET /_ah/stop closes the Redis connections and still answers 200', async t => {
+test('GET /_ah/stop closes the Redis connection and still answers 200', async t => {
   const { server, calls } = await appWithSpies()
   const r = await request(server).get('/_ah/stop')
   t.is(r.status, 200)
-  t.deepEqual(calls.sort(), ['kv', 'sink'])
+  t.deepEqual(calls, ['kv'])
 })
 
 test('GET /_ah/stop answers 200 even when a close fails', async t => {
   // The instance is already going away; a failed close must not make it look
   // unhealthy on the way out.
   const { buildRouter, onRouterError } = await esmock('../http/router.js', {
-    '../services/sessionStore.js': { closeKvStore: async () => { throw new Error('redis gone') } },
-    '../services/usageAnalytics.js': { closeEventSink: async () => {} }
+    '../services/sessionStore.js': { closeKvStore: async () => { throw new Error('redis gone') } }
   })
   const router = buildRouter({ health: (_req, res) => json(res, 200, { status: 'ok' }) })
   const server = http.createServer((req, res) => {

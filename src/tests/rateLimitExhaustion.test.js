@@ -105,7 +105,6 @@ test.serial('the per-account tier caps a single session at its limit', async t =
       resolveLincxSessionFromBearer: async (h) => (h ? 'lincx-test-session' : null),
       resolveUserBucket: async () => 'ratelimit@test.com',
       resolveLincxSession: async () => 'lincx-test-session',
-      cachedLincxSession: () => 'lincx-test-session',
       validateSession: async () => ({
         valid: true,
         session: { session_id: 'lincx-test-session', email: 'a@b.c', active_network: 'svce6t', networks: [] }
@@ -242,7 +241,6 @@ test.serial('one account burning its own cap does not starve others behind the s
       resolveLincxSessionFromBearer: async (h) => (h ? `lincx-${h.split(' ')[1]}` : null),
       resolveUserBucket: async (id) => `${id}@test.com`,
       resolveLincxSession: async () => 'lincx-test-session',
-      cachedLincxSession: () => 'lincx-test-session',
       validateSession: async () => ({
         valid: true,
         session: { session_id: 'lincx-test-session', email: 'a@b.c', active_network: 'svce6t', networks: [] }

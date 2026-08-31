@@ -50,15 +50,14 @@ env_variables:
   PUBLIC_BASE_URL: "https://mcp.lincx.com"
   IDENTITY_SERVER: "https://ix-id.lincx.la"
   RESPONSE_SIZE_LIMIT: "30000"
-  USAGE_EVENT_CAP: "50000"
 
 # PUBLIC_BASE_URL must match the URL clients actually hit, with NO trailing
 # slash: it is echoed as the OAuth `issuer` and in the WWW-Authenticate
 # resource_metadata challenge. A mismatch breaks the OAuth redirect with no
 # useful client-side error.
 
-# REDIS_URL and STATS_TOKEN are deliberately absent — this file is committed to
-# git. src/config/secrets.js reads them from Secret Manager at boot.
+# REDIS_URL is deliberately absent — this file is committed to git.
+# src/config/secrets.js reads it from Secret Manager at boot.
 
 # Memorystore is reachable only from inside the VPC, so the connector is
 # required, not optional: without it REDIS_URL times out and the server falls

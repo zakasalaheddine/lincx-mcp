@@ -4,7 +4,6 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 import { start } from '../server.js'
 import { getKvStore, getSessionStore } from '../services/sessionStore.js'
-import { getEventSink, sessionKey } from '../services/usageAnalytics.js'
 import { resolveUserBucket } from '../services/sessionManager.js'
 
 // The one path every other test stubs out.
@@ -51,10 +50,8 @@ async function connect (t, port, token) {
 /**
  * Poll until `read()` returns something truthy, or fail at the deadline.
  *
- * recordEvent is deliberately fire-and-forget, so the alternative is a fixed
- * sleep — which flaked under full-suite CPU load on the one test guarding the
- * whole attribution chain. Polling is faster in the normal case and honest about
- * the deadline.
+ * The alternative is a fixed sleep, which flaked under full-suite CPU load.
+ * Polling is faster in the normal case and honest about the deadline.
  */
 async function until (read, { deadlineMs = 3000, everyMs = 20 } = {}) {
   const stopAt = Date.now() + deadlineMs
@@ -109,54 +106,6 @@ test.serial('a bogus bearer is challenged, not silently served', async t => {
   })
   t.is(r.status, 401)
   t.regex(r.headers.get('www-authenticate') ?? '', /^Bearer resource_metadata="/)
-})
-
-test.serial('a tool call attributes its usage event to the real session', async t => {
-  // The producer half of analytics, which nothing else covers: usageAnalytics's
-  // own tests hand `lincx_session_id` straight to recordEventAsync, and
-  // mcpProtocol stubs cachedLincxSession outright — so the chain
-  //   bearer → resolveLincxSession memo → cachedLincxSession → recordEvent
-  // could be severed anywhere along its length with the suite fully green.
-  const token = 'test-access-token-attribution'
-  const lincxSessionId = 'lincx-attribution-test'
-  await seed(token, lincxSessionId)
-
-  const client = await connect(t, await serve(t), token)
-  await client.callTool({ name: 'auth_status', arguments: {} })
-
-  const sink = await getEventSink()
-  const event = await until(async () => {
-    const [e] = await sink.readRecent(1)
-    return e?.name === 'auth_status' ? e : null
-  })
-
-  t.truthy(event, 'no usage event was recorded for the tool call')
-  t.is(event.session_key, sessionKey(lincxSessionId),
-    'identity never reached the usage event — check the extra memo / cachedLincxSession')
-  t.is(event.email, 'bearer@test.com', 'recordEventAsync failed to resolve the user')
-  t.is(event.lincx_session_id, undefined, 'raw session id persisted into the event log')
-})
-
-test.serial('a resource read is attributed too, not just a tool call', async t => {
-  // Resources record through a separate path (resources.js `recorded()`) with its
-  // own cachedLincxSession call sites. Both could be zeroed with the tool path
-  // still green.
-  const token = 'test-access-token-resource-attr'
-  const lincxSessionId = 'lincx-resource-attr-test'
-  await seed(token, lincxSessionId)
-
-  const client = await connect(t, await serve(t), token)
-  await client.readResource({ uri: 'lincx://networks' })
-
-  const sink = await getEventSink()
-  const event = await until(async () => {
-    const [e] = await sink.readRecent(1)
-    return e?.type === 'resource' ? e : null
-  })
-
-  t.truthy(event, 'no usage event was recorded for the resource read')
-  t.is(event.session_key, sessionKey(lincxSessionId))
-  t.is(event.email, 'bearer@test.com')
 })
 
 test.serial('every transport the server builds is disposed, aborts included', async t => {

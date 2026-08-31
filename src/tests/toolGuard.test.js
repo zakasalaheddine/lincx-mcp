@@ -3,7 +3,6 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { installToolGuards } from '../middleware/toolGuard.js'
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
-import { getEventSink } from '../services/usageAnalytics.js'
 
 // The guard logs one JSON metrics line per call to stderr — silence it in tests.
 // ava runs tests within a file concurrently, so console.error is shared state:
@@ -56,20 +55,26 @@ test.serial('installToolGuards (T2-4 response-size guard) > propagates handler e
   await t.throwsAsync(tool.handler({}, { sessionId: 's' }), { message: 'kaboom' })
 })
 
-// installToolGuards records usage events
-test.serial('installToolGuards records usage events > records a returned Error: result as a usage error', async t => {
+// A handler can fail without throwing and without isError — it returns a plain
+// "Error: ..." text body (every tool in this repo does). The metrics line must
+// still say 'error', or the stderr log reports those calls as successes.
+test.serial('installToolGuards status > logs a returned Error: result as status error', async t => {
+  const lines = []
+  console.error = (line) => lines.push(line)
+
   const server = new McpServer({ name: 't', version: '0.0.0' })
   server.registerTool('err_tool', { description: 't', inputSchema: z.object({}).strict() },
     async () => ({ content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }))
+  server.registerTool('ok_tool', { description: 't', inputSchema: z.object({}).strict() },
+    async () => ({ content: [{ type: 'text', text: 'fine' }] }))
   installToolGuards(server)
-  const tool = (server)._registeredTools.err_tool
 
-  await tool.handler({}, { sessionId: 's-guard' })
-  // recordEvent is fire-and-forget — let the microtask/append settle.
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  await (server)._registeredTools.err_tool.handler({}, {})
+  await (server)._registeredTools.ok_tool.handler({}, {})
 
-  const recent = await (await getEventSink()).readRecent(5)
-  const rec = recent.find((e) => e.name === 'err_tool')
-  t.is(rec?.status, 'error')
-  t.is(rec?.error_kind, 'not_authenticated')
+  const byTool = Object.fromEntries(
+    lines.map((l) => JSON.parse(l)).map((r) => [r.tool, r.status])
+  )
+  t.is(byTool.err_tool, 'error')
+  t.is(byTool.ok_tool, 'ok')
 })

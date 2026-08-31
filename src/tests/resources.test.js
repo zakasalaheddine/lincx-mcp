@@ -58,21 +58,6 @@ test.serial('resources (T1-3 / T4-6) > a resource read surfaces a clean error (n
   t.regex(out.contents[0].text, /^Error:/)
 })
 
-test.serial('resources (T1-3 / T4-6) > records a usage event when a resource is read', async t => {
-  const { getEventSink } = await import('../services/usageAnalytics.js')
-  const server = await build([
-    ['GET', /^\/api\/campaigns\/c9$/, () => ({ id: 'c9', name: 'C' })]
-  ])
-  const tmpl = server._registeredResourceTemplates['campaign-by-id']
-
-  await tmpl.readCallback(new URL('lincx://campaign/c9'), { id: 'c9' }, extra)
-  await new Promise((resolve) => setTimeout(resolve, 20))
-
-  const recent = await (await getEventSink()).readRecent(5)
-  const rec = recent.find((e) => e.type === 'resource' && e.name === 'campaign-by-id')
-  t.is(rec?.status, 'ok')
-})
-
 test.serial('resources (T1-3 / T4-6) > e2e: a real client sees lincx://networks in resources/list and can read it', async t => {
   const server = await build()
   const [clientT, serverT] = InMemoryTransport.createLinkedPair()

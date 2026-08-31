@@ -14,9 +14,8 @@ const REDIS_URL = process.env.TEST_REDIS_URL ?? 'redis://default:localdev@localh
 // before anything imports it — i.e. here, above the dynamic imports below, not
 // inside a test.
 process.env.REDIS_URL = REDIS_URL
-process.env.USAGE_EVENT_CAP = '10'
 
-// The store and the event sink each open their own ioredis client. Every one of
+// The store opens its own ioredis client. Every one of
 // them is closed in test.after.always — an open handle keeps the ava worker alive
 // until the file times out, which reads as a failure with no failing assertion.
 const clients = []
@@ -164,20 +163,4 @@ test.serial('/health is degraded when Redis is configured but unreachable', asyn
   // Close now rather than leaving it to test.after.always — the client retries
   // a refused connection, and each attempt logs an unhandled-error line.
   await mod.closeKvStore()
-})
-
-test.serial('the usage-event log is capped', async t => {
-  if (!available) return t.pass('skipped — no Redis')
-  const { getEventSink, closeEventSink } = await esmock('../services/usageAnalytics.js', {})
-  closers.push(closeEventSink)
-  const sink = await getEventSink()
-
-  for (let i = 0; i < 25; i++) {
-    await sink.append({ ts: Date.now(), type: 'tool', name: `t${i}`, status: 'ok', duration_ms: 1, response_chars: 1, params_keys: [] })
-  }
-
-  const events = await sink.readRecent(100)
-  t.true(events.length <= 10, `cap not enforced: ${events.length} events retained`)
-  // Newest first — the cap must drop the OLD end, not the new one.
-  t.is(events[0].name, 't24')
 })

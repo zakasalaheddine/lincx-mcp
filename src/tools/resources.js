@@ -20,9 +20,8 @@
 
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js'
 
-import { validateSession, resolveLincxSession, cachedLincxSession } from '../services/sessionManager.js'
+import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
-import { recordEvent, classifyResult } from '../services/usageAnalytics.js'
 
 async function requireSession (extra) {
   const sessionId = await resolveLincxSession(extra)
@@ -38,46 +37,6 @@ const json = (uri, value) => ({
 const plain = (uri, text) => ({
   contents: [{ uri: uri.href, mimeType: 'text/plain', text }]
 })
-
-// Wrap a resource read so it emits one usage event (fire-and-forget).
-async function recorded (
-  name,
-  extra,
-  variables,
-  read
-) {
-  const start = Date.now()
-  let result
-  try {
-    result = await read()
-  } catch (err) {
-    recordEvent({
-      type: 'resource',
-      name,
-      status: 'error',
-      error_kind: 'other',
-      duration_ms: Date.now() - start,
-      response_chars: 0,
-      params_keys: variables ? Object.keys(variables) : [],
-      lincx_session_id: cachedLincxSession(extra)
-    })
-    throw err
-  }
-  // Resource errors are returned as a text/plain "Error: ..." body — reuse the
-  // tool classifier by adapting the contents text into the shape it expects.
-  const { status, error_kind } = classifyResult({ content: [{ text: result.contents[0]?.text ?? '' }] })
-  recordEvent({
-    type: 'resource',
-    name,
-    status,
-    error_kind,
-    duration_ms: Date.now() - start,
-    response_chars: JSON.stringify(result).length,
-    params_keys: variables ? Object.keys(variables) : [],
-    lincx_session_id: cachedLincxSession(extra)
-  })
-  return result
-}
 
 // entity URI segment → Work API base path (mirrors the get_<entity> tools).
 const ENTITY_PATHS = {
@@ -106,11 +65,11 @@ export function registerResources (server) {
       description: 'Networks the current session can access, plus which one is active. Use the network_switch tool to change the active network.',
       mimeType: 'application/json'
     },
-    async (uri, extra) => recorded('networks', extra, undefined, async () => {
+    async (uri, extra) => {
       const r = await requireSession(extra)
       if ('error' in r) return plain(uri, r.error)
       return json(uri, { active_network: r.session.active_network, networks: r.session.networks ?? [] })
-    })
+    }
   )
 
   // ── lincx://{entity}/{id} ─────────────────────────────────────────────────────
@@ -123,7 +82,7 @@ export function registerResources (server) {
         description: `A single ${seg} by id — equivalent to GET ${basePath}/{id}.`,
         mimeType: 'application/json'
       },
-      async (uri, variables, extra) => recorded(`${seg}-by-id`, extra, variables, async () => {
+      async (uri, variables, extra) => {
         const r = await requireSession(extra)
         if ('error' in r) return plain(uri, r.error)
         const id = String(variables.id)
@@ -133,7 +92,7 @@ export function registerResources (server) {
         } catch (err) {
           return plain(uri, handleWorkApiError(err))
         }
-      })
+      }
     )
   }
 }

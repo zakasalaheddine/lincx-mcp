@@ -52,7 +52,7 @@ Nothing about the deploy changed in the migration. What changed inside the image
   GAE.
 
 Set in the Coolify UI (Environment Variables): `WORK_API_BASE_URL`, optionally
-`IDENTITY_SERVER`, `STATS_TOKEN`, `USAGE_EVENT_CAP`, `RESPONSE_SIZE_LIMIT`.
+`IDENTITY_SERVER`, `RESPONSE_SIZE_LIMIT`.
 `PUBLIC_BASE_URL`, `PORT` and `REDIS_URL` are derived in the compose file from
 Coolify's magic vars — do not set them by hand.
 
@@ -62,13 +62,13 @@ After any deploy, verify from outside:
 node scripts/smoke-prod.mjs https://<your-coolify-domain>
 ```
 
-8/8 or it is not serving correctly. The check that matters most is the metadata
+7/7 or it is not serving correctly. The check that matters most is the metadata
 one: `PUBLIC_BASE_URL` must equal the domain clients actually hit, or dynamic
 client registration fails with nothing useful on the server side.
 
 Verified locally against the post-migration code: image builds, container serves
 `/health`, `POST /oauth/register` returns 201, keys land in Redis
-(`[SessionStore] Using Redis`), and `smoke-prod.mjs` is 8/8.
+(`[SessionStore] Using Redis`), and `smoke-prod.mjs` is 7/7.
 
 ---
 
@@ -101,17 +101,13 @@ gcloud redis instances describe lincx-mcp-redis --region=<REGION> --format='valu
 gcloud compute networks vpc-access connectors create <CONNECTOR_NAME> \
   --region=<REGION> --network=default --range=10.8.0.0/28
 
-# 3. The two secrets (never in app.yaml — it is committed to git)
+# 3. The secret (never in app.yaml — it is committed to git)
 printf '%s' "redis://:<AUTH_STRING>@<REDIS_HOST>:6379" \
   | gcloud secrets create lincx-mcp-redis-url --data-file=-
-printf '%s' "$(openssl rand -hex 32)" \
-  | gcloud secrets create lincx-mcp-stats-token --data-file=-
 
-for S in lincx-mcp-redis-url lincx-mcp-stats-token; do
-  gcloud secrets add-iam-policy-binding "$S" \
-    --member="serviceAccount:<PROJECT_ID>@appspot.gserviceaccount.com" \
-    --role="roles/secretmanager.secretAccessor"
-done
+gcloud secrets add-iam-policy-binding lincx-mcp-redis-url \
+  --member="serviceAccount:<PROJECT_ID>@appspot.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
 
 # 4. Fill in app.yaml's vpc_access_connector name and PUBLIC_BASE_URL, then check
 #    what will actually be uploaded — src/index.js MUST be in this list
@@ -122,7 +118,6 @@ gcloud app deploy app.yaml --no-promote --version=migration-1
 V=https://migration-1-dot-<PROJECT_ID>.<REGION>.r.appspot.com
 curl -s $V/health
 curl -s -i -X POST $V/mcp | grep -i www-authenticate     # 401 + challenge
-curl -s -o /dev/null -w '%{http_code}\n' $V/stats        # 401, NOT 404 (see below)
 gcloud app logs tail -s default | grep SessionStore       # must say "Using Redis"
 
 # 6. Take traffic
@@ -137,21 +132,19 @@ curl -s https://mcp.lincx.com/.well-known/oauth-authorization-server | grep issu
 
 ---
 
-## The two checks that catch the failures that actually happen
+## The check that catches the failure that actually happens
 
-**1. `/stats` must return 401, not 404.** A 404 means `STATS_TOKEN` did not resolve
-from Secret Manager. `src/config/secrets.js` fails open on purpose — an
-unreadable secret must not stop the instance becoming healthy — so the only
-signal is this status code and one log line:
+**`[SessionStore] Using Redis` must appear in the logs.** If it says
+`No REDIS_URL — using in-memory store`, either the VPC connector or the secret is
+wrong. `src/config/secrets.js` fails open on purpose — an unreadable secret must
+not stop the instance becoming healthy — so this log line is the only signal:
 
 ```bash
 gcloud app logs tail -s default | grep '\[Secrets\]'
 ```
 
-**2. `[SessionStore] Using Redis` must appear in the logs.** If it says
-`No REDIS_URL — using in-memory store`, either the VPC connector or the secret is
-wrong. **Do not promote traffic in that state** — in-memory sessions log every
-user out on every redeploy, and OAuth tokens vanish with them.
+**Do not promote traffic in that state** — in-memory sessions log every user out
+on every redeploy, and OAuth tokens vanish with them.
 
 **And one config value worth double-checking:** `PUBLIC_BASE_URL` in `app.yaml`
 must equal the URL clients actually hit, with **no trailing slash**. It is echoed
@@ -165,14 +158,14 @@ common deployment failure for this server.
 
 | Where | What |
 |---|---|
-| `app.yaml` (committed) | `NODE_ENV`, `WORK_API_BASE_URL`, `PUBLIC_BASE_URL`, `IDENTITY_SERVER`, `RESPONSE_SIZE_LIMIT`, `USAGE_EVENT_CAP`, scaling, VPC connector |
-| Secret Manager | `REDIS_URL` (`lincx-mcp-redis-url`), `STATS_TOKEN` (`lincx-mcp-stats-token`) |
+| `app.yaml` (committed) | `NODE_ENV`, `WORK_API_BASE_URL`, `PUBLIC_BASE_URL`, `IDENTITY_SERVER`, `RESPONSE_SIZE_LIMIT`, scaling, VPC connector |
+| Secret Manager | `REDIS_URL` (`lincx-mcp-redis-url`) |
 | `.env` | local development only — never read in production |
 
 Rotating a secret:
 
 ```bash
-printf '%s' "<NEW_VALUE>" | gcloud secrets versions add lincx-mcp-stats-token --data-file=-
+printf '%s' "<NEW_VALUE>" | gcloud secrets versions add lincx-mcp-redis-url --data-file=-
 gcloud app deploy app.yaml --quiet   # boot re-reads "latest"
 ```
 
@@ -309,11 +302,10 @@ Do these in order. The point is that Coolify keeps serving until App Engine is
 proven, and nothing is deleted until traffic has moved.
 
 1. **Leave Coolify running.** Do not touch it, and do not delete the Docker files.
-2. Deploy to App Engine with `--no-promote`, then run the two checks that catch the
-   real failures: `/stats` answers 401 (not 404), and the logs say
-   `[SessionStore] Using Redis`.
+2. Deploy to App Engine with `--no-promote`, then run the check that catches the
+   real failure: the logs say `[SessionStore] Using Redis`.
 3. `node scripts/smoke-prod.mjs https://<version>-dot-<project>.<region>.r.appspot.com`
-   — 8/8.
+   — 7/7.
 4. Promote traffic on App Engine, map the domain, and run the smoke against the
    real domain.
 5. Verify all three clients by hand (Claude Code, Claude Desktop, claude.ai) —

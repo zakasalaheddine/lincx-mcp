@@ -19,16 +19,11 @@ test.serial('populates env from Secret Manager on GAE', async t => {
   process.env.GAE_ENV = 'standard'
   process.env.GOOGLE_CLOUD_PROJECT = 'proj'
   delete process.env.REDIS_URL
-  delete process.env.STATS_TOKEN
 
   await loadSecrets({
-    createClient: fakeClient((name) => {
-      const value = name.includes('redis') ? 'redis://from-sm' : 'token-from-sm'
-      return [{ payload: { data: Buffer.from(value) } }]
-    })
+    createClient: fakeClient(() => [{ payload: { data: Buffer.from('redis://from-sm') } }])
   })
   t.is(process.env.REDIS_URL, 'redis://from-sm')
-  t.is(process.env.STATS_TOKEN, 'token-from-sm')
   delete process.env.GAE_ENV
 })
 
@@ -43,7 +38,7 @@ test.serial('an empty secret leaves the env var alone', async t => {
 
 test.serial('an unreadable secret does not crash the boot', async t => {
   // Fail open: dying here means /_ah/start never answers and the deploy fails
-  // with no useful signal, which is worse than /stats 404ing.
+  // with no useful signal.
   process.env.GAE_ENV = 'standard'
   process.env.GOOGLE_CLOUD_PROJECT = 'proj'
   await t.notThrowsAsync(loadSecrets({

@@ -44,7 +44,6 @@
     ],
     "environmentVariables": {
       "NODE_ENV": "test",
-      "STATS_TOKEN": "",
       "REDIS_URL": ""
     },
     "workerThreads": false,

@@ -81,7 +81,7 @@ instead of separate `get_*_parents` tools — keeps the per-request tool surface
 ### Claude never controls auth or network context
 - `auth_token` — stored in session server-side only, never returned to Claude
 - `networkId` — always injected from `session.active_network` inside `workApiRequest()`, never accepted as a tool parameter
-- `session_id` — stored in Redis as `lincx:session:<id>`, never exposed via any tool, and never echoed by `/stats` either (it is hashed there — it is the key of the record holding the JWT). Session identity comes from the OAuth bearer on the request: `await resolveLincxSession(extra)`, which reads `extra.requestInfo.headers.authorization` — never from `extra.sessionId` (always `undefined` under the stateless transport) and never from a module-global.
+- `session_id` — stored in Redis as `lincx:session:<id>`, never exposed via any tool. Session identity comes from the OAuth bearer on the request: `await resolveLincxSession(extra)`, which reads `extra.requestInfo.headers.authorization` — never from `extra.sessionId` (always `undefined` under the stateless transport) and never from a module-global.
 
 ### Business tools never accept networkId
 Every business tool must get network context from the session, not from Claude.
@@ -488,26 +488,15 @@ Two gotchas worth knowing before you touch these:
 
 ---
 
-## Usage analytics
+## No usage analytics
 
-Every tool call and resource read is recorded as one `UsageEvent` in a capped
-log (`services/usageAnalytics.ts`) — Redis list `usage:events` (cap
-`USAGE_EVENT_CAP`, default 50k) or an in-memory ring buffer when `REDIS_URL` is
-unset. Recording happens in `toolGuard` (tools) and `resources.js` (reads),
-fire-and-forget and failure-isolated — analytics can never delay or break a call.
-
-`GET /stats` (gated by the `STATS_TOKEN` env — in production it comes from Secret
-Manager (`lincx-mcp-stats-token`), and an unresolved secret shows up as /stats
-returning **404** rather than 401 — accepted as `Authorization: Bearer
-<token>` or a `?token=<token>` query param for browser access; 404 when unset)
-returns tool health, per-user adoption, error friction, and usage sequences,
-computed on read by `computeStats`. The `?token=` form leaks the secret into
-history/logs/Referer — prefer the header and rotate the token if a URL leaks.
-
-Privacy invariants: never store `auth_token`/OAuth tokens, never parameter VALUES
-(keys only), never raw error messages (classified `error_kind` only). `user_id`/
-`email` are stored for adoption analysis and only ever appear in the authenticated
-`/stats` response — never in tool output.
+There is deliberately **no** `/stats` route, no `usage:events` log and no
+`UsageEvent` recording. It was removed (#32): the only consumer was adoption
+tracking, it stored `user_id`/`email` in an untrimmed Redis list with no TTL, and
+without Redis it is wiped on every deploy anyway. Do not add per-call telemetry
+back here — `toolGuard` already logs one JSON line per call to **stderr** (tool
+name, duration, response chars, param KEYS, status), which is what the platform's
+log sink is for.
 
 ---
 
@@ -526,7 +515,7 @@ files are transitional and get deleted after cutover, per DEPLOYMENT.md's
 Target platform: Google App Engine Standard (`nodejs22`) + Memorystore Redis + Secret Manager.
 No build step and no container: App Engine uploads `src/` and runs `npm start`.
 Config splits three ways — `app.yaml` (committed, non-secret), Secret Manager
-(`REDIS_URL`, `STATS_TOKEN`), `.env` (local dev only). `cloudbuild.yaml` deploys on
+(`REDIS_URL`), `.env` (local dev only). `cloudbuild.yaml` deploys on
 a master push, gated by lint + tests. Users get one URL — `https://<your-domain>/mcp`.
 
 Docker survives for exactly one local purpose: `docker-compose.dev.yml`, standalone,
@@ -543,10 +532,10 @@ Two facts that constrain code changes:
     makes a redeploy invisible to connected clients.
   - Identity comes from the OAuth bearer: `resolveLincxSession(extra)` reads
     `extra.requestInfo.headers.authorization` and memoises the resolved id on
-    `extra` so `cachedLincxSession(extra)` can attribute a usage event with no
-    I/O. An authenticated tool call still costs **two** Redis GETs on the token —
-    `mcpPost`'s gate (which must resolve before any transport exists, to answer
-    the 401 challenge) and the handler's. The memo stops it becoming three.
+    `extra`, so a second resolve in the same request is free. An authenticated
+    tool call still costs **two** Redis GETs on the token — `mcpPost`'s gate
+    (which must resolve before any transport exists, to answer the 401 challenge)
+    and the handler's. The memo stops it becoming three.
   - **Neither `GET` nor `DELETE` is registered on `/mcp`** — the router answers
     405, the one status the SDK client tolerates for both. GET only ever served
     the standalone SSE stream, which stateless mode cannot hold open
@@ -554,13 +543,6 @@ Two facts that constrain code changes:
     the spec's "server does not allow clients to terminate sessions", now
     literally true. Do not make DELETE a 200: that is a success status on a
     security operation that revokes nothing. Logging out is `auth_logout`.
-  - `/stats` groups usage sequences by the Lincx session, which is a **7-day
-    login**, not one conversation — `recent[].tools` spans every chat that week
-    and `transitions` bridges them. The id is **hashed at record time**
-    (`sessionKey()`), so no raw session id reaches Redis or the response: it is
-    the key of the record holding the Lincx JWT, and `usage:events` has no TTL on
-    the same instance. That is a *capability* control, not anonymity —
-    `user_id`/`email` sit in the same response.
   - **`/mcp` is rate limited in two tiers, and it must stay two.** A pre-auth
     tier keyed by client address (600/min) runs first and bounds what an
     unauthenticated caller can force; a per-account tier keyed by the resolved
