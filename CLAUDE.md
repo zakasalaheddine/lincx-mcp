@@ -507,8 +507,9 @@ log sink is for.
 **Two platforms are live at once during the migration.** Production runs on
 **Coolify** today (`Dockerfile` + `docker-compose.coolify.yml`); the target is
 **App Engine** (`app.yaml` + `cloudbuild.yaml`). The same code serves both —
-`src/config/secrets.js` keys off `GAE_ENV`, which only App Engine sets, so on
-Coolify it no-ops and config comes from the environment as before. The Docker
+`src/config/secrets.js` runs only when `NODE_ENV=production` **and**
+`GOOGLE_CLOUD_PROJECT` is set — Coolify sets the first and not the second, so it
+returns before constructing a client and config comes from the environment as before. The Docker
 files are transitional and get deleted after cutover, per DEPLOYMENT.md's
 § Cutover order. Do not delete them earlier: they are the rollback.
 

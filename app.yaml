@@ -57,7 +57,8 @@ env_variables:
 # useful client-side error.
 
 # REDIS_URL is deliberately absent — this file is committed to git.
-# src/config/secrets.js reads it from Secret Manager at boot.
+# src/config/secrets.js reads it from Secret Manager at boot, gated on the
+# NODE_ENV above plus GOOGLE_CLOUD_PROJECT, which the runtime sets for us.
 
 # Memorystore is reachable only from inside the VPC, so the connector is
 # required, not optional: without it REDIS_URL times out and the server falls

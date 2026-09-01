@@ -10,8 +10,9 @@
 | Secrets | Coolify's Environment Variables tab | Secret Manager, read at boot |
 | Guide | [§ Coolify](#coolify-what-production-runs-today) | [§ App Engine](#app-engine-the-target) |
 
-The application code is identical on both. `src/config/secrets.js` keys off
-`GAE_ENV`, which only App Engine sets, so on Coolify it no-ops and every value
+The application code is identical on both. `src/config/secrets.js` runs only when
+`NODE_ENV=production` **and** `GOOGLE_CLOUD_PROJECT` is set; Coolify sets the first
+and not the second, so it returns before ever constructing a client and every value
 still comes from the environment as before. There is no build step on either —
 `npm start` runs `src/index.js` straight from source.
 

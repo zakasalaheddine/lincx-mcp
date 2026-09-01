@@ -3,8 +3,12 @@
  * constants.js is imported.
  *
  * app.yaml is committed to git, so REDIS_URL (carries the Redis password)
- * cannot live there. On GAE the runtime service account reads it from Secret
- * Manager at boot. Off GAE this is a no-op and .env still wins.
+ * cannot live there. In production the runtime service account reads it from
+ * Secret Manager at boot. Everywhere else this is a no-op and .env still wins.
+ *
+ * The gate reads process.env.NODE_ENV rather than IS_PRODUCTION from
+ * constants.js: this module runs BEFORE constants.js is evaluated (see
+ * index.js), so importing it here would defeat the whole point.
  *
  * NEVER log a secret value — only its name and whether it resolved.
  *
@@ -24,7 +28,7 @@ async function defaultCreateClient () {
 }
 
 export async function loadSecrets ({ createClient = defaultCreateClient } = {}) {
-  if (!process.env.GAE_ENV) return // local / test — .env is authoritative
+  if (process.env.NODE_ENV !== 'production') return // .env is authoritative
 
   const project = process.env.GOOGLE_CLOUD_PROJECT
   if (!project) {
