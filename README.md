@@ -471,15 +471,15 @@ registerYourDomainTools(server, getSessionId);
 
 Full step-by-step guide: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
-Production is Google App Engine Standard (`nodejs22`) with Memorystore Redis and
-Secret Manager — no build step, no container. See [DEPLOYMENT.md](DEPLOYMENT.md).
+Production is Google App Engine Standard (`nodejs22`) with Memorystore Redis —
+no build step, no container. See [DEPLOYMENT.md](DEPLOYMENT.md).
 The requirement that bites is **exactly one running instance** (MCP transport state
 is in process memory; Redis holds auth, not connections), which is why `app.yaml`
 pins `manual_scaling: instances: 1`.
 
 | File | Use |
 |------|-----|
-| `app.yaml` | App Engine service config: runtime, scaling, non-secret env vars, VPC connector. Committed — secrets live in Secret Manager. |
+| `app.yaml` | App Engine service config: runtime, scaling, non-secret env vars, VPC connector. Committed — secrets are injected by the platform, never here. |
 | `.gcloudignore` | What not to upload. `src/` is uploaded; `src/tests/` is not. |
 | `cloudbuild.yaml` | Deploy on master push, gated by `npm run lint` + `npm test`. |
 | `docker-compose.dev.yml` | Local-dev Redis only, standalone, host port 6380. The npm scripts pass it explicitly. |

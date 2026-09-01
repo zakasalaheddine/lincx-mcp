@@ -1,10 +1,9 @@
 /**
  * server.js — the Lincx MCP server itself.
  *
- * src/index.js is the bootstrap: it awaits loadSecrets() and only THEN imports
- * this module, because constants.js reads process.env at module scope and almost
- * everything here imports it transitively. Importing this file has no side
- * effects — start() does all the work.
+ * src/index.js is the bootstrap; it calls start(). Importing this file has no
+ * side effects — start() does all the work. constants.js reads process.env at
+ * module scope, so the environment must be populated before this is imported.
  *
  * Two surfaces on one bare Node HTTP server:
  *  1. HTTP login UI (GET /login, POST /api/login, GET /login/success)

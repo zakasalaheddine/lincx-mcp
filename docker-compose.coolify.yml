@@ -2,9 +2,8 @@
 #
 # TRANSITIONAL — see the header of Dockerfile. This is what production runs TODAY.
 # It keeps working against the post-migration code (plain JS, no build step, the
-# src/index.js bootstrap): GOOGLE_CLOUD_PROJECT is unset here, so src/config/secrets.js
-# returns before it builds a client and every value below still comes from this file /
-# the Coolify UI.
+# src/index.js bootstrap): every value below comes from this file / the Coolify UI,
+# read straight from the process environment.
 #
 # Deploy this on Coolify as a "Docker Compose" resource pointed at this repo.
 # Coolify builds the app from the local Dockerfile, provisions Redis, wires the

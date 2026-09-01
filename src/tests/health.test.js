@@ -1,9 +1,9 @@
 /**
  * tests/health.test.js
  *
- * /health is what makes the deliberate fail-open in src/config/secrets.js
- * visible: a production instance that fell back to the in-memory session store
- * still boots and still serves, but logs every user out on each redeploy.
+ * /health is what makes the deliberate session-store fallback visible: a
+ * production instance that fell back to the in-memory store still boots and
+ * still serves, but logs every user out on each redeploy.
  *
  * The judgement lives in a pure function so all four environment/store
  * combinations are testable without a live Redis, and the HTTP test below runs

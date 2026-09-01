@@ -10,3 +10,4 @@ node_modules/
 .sessions/
 .worktrees/
 !CLAUDE.md
+env.deploy.yaml

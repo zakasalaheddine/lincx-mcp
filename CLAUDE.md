@@ -36,12 +36,9 @@ dumping thousands of raw rows into context (it exposes `raw: true` to opt out).
 
 ```
 src/
-├── index.js                  # Bootstrap — awaits loadSecrets(), then imports server.js
+├── index.js                  # Bootstrap — starts server.js
 ├── server.js                 # The server itself — MCP tool registration + start({ port })
 ├── constants.js              # Env vars with defaults — edit here first before touching logic
-│
-├── config/
-│   └── secrets.js            # Secret Manager fetch at boot (no-op off GAE)
 │
 ├── http/
 │   ├── respond.js            # json / send / html / redirect / noContent
@@ -202,7 +199,7 @@ TTLs:
 | `WORK_API_BASE_URL` | Yes | `http://localhost:3050` | Work API — all requests go here |
 | `IDENTITY_SERVER` | No | `https://ix-id.lincx.la` | Lincx auth server |
 | `PORT` | No | `5001` | Express HTTP port (login UI + MCP over HTTP) |
-| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production, where it comes from **Secret Manager** (`lincx-mcp-redis-url`), never `app.yaml`. `npm run dev` points this at a Dockerized Redis it starts automatically |
+| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production, where it comes from the platform's own environment/secret store, never `app.yaml`. `npm run dev` points this at a Dockerized Redis it starts automatically |
 | `NODE_ENV` | No | `development` | Set to `production` to disable the `/dev/*` debug routes |
 | `PUBLIC_BASE_URL` | No | `http://localhost:<PORT>` | Used when building browser login URLs returned to Claude |
 | `RESPONSE_SIZE_LIMIT` | No | `30000` | Hard per-response character ceiling enforced by `toolGuard`. Raise if your client tolerates larger tool results; floored at 5k. The soft serializer budget (`CHARACTER_LIMIT`) derives from it (−5k) |
@@ -506,17 +503,15 @@ log sink is for.
 
 **Two platforms are live at once during the migration.** Production runs on
 **Coolify** today (`Dockerfile` + `docker-compose.coolify.yml`); the target is
-**App Engine** (`app.yaml` + `cloudbuild.yaml`). The same code serves both —
-`src/config/secrets.js` runs only when `NODE_ENV=production` **and**
-`GOOGLE_CLOUD_PROJECT` is set — Coolify sets the first and not the second, so it
-returns before constructing a client and config comes from the environment as before. The Docker
+**App Engine** (`app.yaml` + `cloudbuild.yaml`). The same code serves both — config is read
+from the process environment on either, with no platform branch. The Docker
 files are transitional and get deleted after cutover, per DEPLOYMENT.md's
 § Cutover order. Do not delete them earlier: they are the rollback.
 
-Target platform: Google App Engine Standard (`nodejs22`) + Memorystore Redis + Secret Manager.
+Target platform: Google App Engine Standard (`nodejs22`) + Memorystore Redis.
 No build step and no container: App Engine uploads `src/` and runs `npm start`.
-Config splits three ways — `app.yaml` (committed, non-secret), Secret Manager
-(`REDIS_URL`), `.env` (local dev only). `cloudbuild.yaml` deploys on
+Config splits two ways — `app.yaml` (committed, non-secret) and the platform's
+own environment (`REDIS_URL`); `.env` is local dev only. `cloudbuild.yaml` deploys on
 a master push, gated by lint + tests. Users get one URL — `https://<your-domain>/mcp`.
 
 Docker survives for exactly one local purpose: `docker-compose.dev.yml`, standalone,

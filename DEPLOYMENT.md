@@ -7,13 +7,11 @@
 | Platform | **Coolify** (Docker Compose) | **Google App Engine Standard** (`nodejs22`) |
 | Files | `Dockerfile`, `docker-compose.coolify.yml` | `app.yaml`, `cloudbuild.yaml` |
 | Redis | the `redis` service in the same stack | Memorystore, over a VPC connector |
-| Secrets | Coolify's Environment Variables tab | Secret Manager, read at boot |
+| Secrets | Coolify's Environment Variables tab | the platform's environment |
 | Guide | [§ Coolify](#coolify-what-production-runs-today) | [§ App Engine](#app-engine-the-target) |
 
-The application code is identical on both. `src/config/secrets.js` runs only when
-`NODE_ENV=production` **and** `GOOGLE_CLOUD_PROJECT` is set; Coolify sets the first
-and not the second, so it returns before ever constructing a client and every value
-still comes from the environment as before. There is no build step on either —
+The application code is identical on both, and reads every value from the process
+environment — there is no platform branch in the config path at all. There is no build step on either —
 `npm start` runs `src/index.js` straight from source.
 
 **The Docker files are transitional.** Delete `Dockerfile`, `.dockerignore`,
@@ -49,8 +47,6 @@ Nothing about the deploy changed in the migration. What changed inside the image
 - No `dist/`, no `tsc`. The Dockerfile is a single stage that copies `src/` and
   runs `node src/index.js`.
 - `src/tests` is deleted from the image (its ava/esmock deps are dev-only).
-- One new runtime dependency, `@google-cloud/secret-manager`, which is inert off
-  GAE.
 
 Set in the Coolify UI (Environment Variables): `WORK_API_BASE_URL`, optionally
 `IDENTITY_SERVER`, `RESPONSE_SIZE_LIMIT`.
@@ -75,8 +71,8 @@ Verified locally against the post-migration code: image builds, container serves
 
 ## App Engine — the target
 
-Production **will be** App Engine Standard (`nodejs22`) with Memorystore for Redis
-and Secret Manager. No build step and no container: App Engine uploads `src/` and
+Production **will be** App Engine Standard (`nodejs22`) with Memorystore for Redis.
+No build step and no container: App Engine uploads `src/` and
 runs `npm start`.
 
 Users get one URL: `https://mcp.lincx.com/mcp`.
@@ -102,20 +98,20 @@ gcloud redis instances describe lincx-mcp-redis --region=<REGION> --format='valu
 gcloud compute networks vpc-access connectors create <CONNECTOR_NAME> \
   --region=<REGION> --network=default --range=10.8.0.0/28
 
-# 3. The secret (never in app.yaml — it is committed to git)
-printf '%s' "redis://:<AUTH_STRING>@<REDIS_HOST>:6379" \
-  | gcloud secrets create lincx-mcp-redis-url --data-file=-
-
-gcloud secrets add-iam-policy-binding lincx-mcp-redis-url \
-  --member="serviceAccount:<PROJECT_ID>@appspot.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor"
+# 3. REDIS_URL, in a gitignored overlay (it carries the Redis password, and
+#    app.yaml is committed). `env_variables` merges over app.yaml's.
+cat > env.deploy.yaml <<'YAML'
+env_variables:
+  REDIS_URL: "redis://:<AUTH_STRING>@<REDIS_HOST>:6379"
+YAML
 
 # 4. Fill in app.yaml's vpc_access_connector name and PUBLIC_BASE_URL, then check
-#    what will actually be uploaded — src/index.js MUST be in this list
+#    what will actually be uploaded — src/index.js MUST be in this list, and
+#    env.deploy.yaml MUST NOT be
 gcloud meta list-files-for-upload . | sort | head -30
 
 # 5. Deploy WITHOUT taking traffic, and smoke it
-gcloud app deploy app.yaml --no-promote --version=migration-1
+gcloud app deploy app.yaml env.deploy.yaml --no-promote --version=migration-1
 V=https://migration-1-dot-<PROJECT_ID>.<REGION>.r.appspot.com
 curl -s $V/health
 curl -s -i -X POST $V/mcp | grep -i www-authenticate     # 401 + challenge
@@ -136,12 +132,13 @@ curl -s https://mcp.lincx.com/.well-known/oauth-authorization-server | grep issu
 ## The check that catches the failure that actually happens
 
 **`[SessionStore] Using Redis` must appear in the logs.** If it says
-`No REDIS_URL — using in-memory store`, either the VPC connector or the secret is
-wrong. `src/config/secrets.js` fails open on purpose — an unreadable secret must
-not stop the instance becoming healthy — so this log line is the only signal:
+`No REDIS_URL — using in-memory store`, either the VPC connector or the injected
+`REDIS_URL` is wrong. The store falls back rather than refusing to boot — an
+unreachable Redis must not stop the instance becoming healthy — so this log line
+is the only signal:
 
 ```bash
-gcloud app logs tail -s default | grep '\[Secrets\]'
+gcloud app logs tail -s default | grep '\[SessionStore\]'
 ```
 
 **Do not promote traffic in that state** — in-memory sessions log every user out
@@ -160,15 +157,20 @@ common deployment failure for this server.
 | Where | What |
 |---|---|
 | `app.yaml` (committed) | `NODE_ENV`, `WORK_API_BASE_URL`, `PUBLIC_BASE_URL`, `IDENTITY_SERVER`, `RESPONSE_SIZE_LIMIT`, scaling, VPC connector |
-| Secret Manager | `REDIS_URL` (`lincx-mcp-redis-url`) |
+| the runtime environment | `REDIS_URL` — injected at deploy, never committed |
 | `.env` | local development only — never read in production |
 
-Rotating a secret:
+Rotating `REDIS_URL`:
 
 ```bash
-printf '%s' "<NEW_VALUE>" | gcloud secrets versions add lincx-mcp-redis-url --data-file=-
-gcloud app deploy app.yaml --quiet   # boot re-reads "latest"
+# edit env.deploy.yaml, then redeploy — the value is read from the environment at boot
+gcloud app deploy app.yaml env.deploy.yaml --quiet
 ```
+
+`env.deploy.yaml` is gitignored and lives with whoever deploys. That is the cost of
+dropping the Secret Manager read: the value is no longer fetched by the app, so it
+has to be injected. On a platform with its own secret store (Render, Coolify) there
+is no overlay file at all — the value is set in the dashboard.
 
 ---
 

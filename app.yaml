@@ -56,9 +56,9 @@ env_variables:
 # resource_metadata challenge. A mismatch breaks the OAuth redirect with no
 # useful client-side error.
 
-# REDIS_URL is deliberately absent — this file is committed to git.
-# src/config/secrets.js reads it from Secret Manager at boot, gated on the
-# NODE_ENV above plus GOOGLE_CLOUD_PROJECT, which the runtime sets for us.
+# REDIS_URL is deliberately absent — this file is committed to git and it carries
+# the Redis password. Inject it into the runtime environment out of band
+# (`gcloud app deploy` with a generated overlay, or the platform's secret store).
 
 # Memorystore is reachable only from inside the VPC, so the connector is
 # required, not optional: without it REDIS_URL times out and the server falls
