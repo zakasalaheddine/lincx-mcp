@@ -191,8 +191,9 @@ makes a regression unattributable. Prove it with `npm run soak <url>` while
 redeploying mid-run — every poll should stay green across the restart.
 
 **Set `TRUSTED_PROXY_HOPS` to match reality.** It defaults to 1 — one trusted
-reverse proxy in front (GAE's load balancer, Coolify's Traefik), which is what
-both current deployments have. `clientIp()` keys the `/mcp` flood limiter and the
+reverse proxy in front (GAE's load balancer, Coolify's Traefik). Render is the
+case the default gets wrong: Cloudflare *and* Render's own load balancer sit in
+front, so the chain is longer than one. `clientIp()` keys the `/mcp` flood limiter and the
 10/min brute-force guard on `POST /api/login`, and `X-Forwarded-For` is
 client-supplied unless a proxy overwrites it, so:
 
@@ -202,9 +203,32 @@ client-supplied unless a proxy overwrites it, so:
 - putting **more than one** proxy in front without raising it collapses every
   caller into a single bucket, which is a self-inflicted outage
 
-The hop count in front of App Engine is still unmeasured —
-`docs/superpowers/plans/phase0-findings.md` records the XFF split as never run.
-Do that during the Phase 0 spike and set this from the answer.
+**Measuring it on Render takes two steps, and the second one is the trap.**
+
+1. **Count the chain.** The chain a real request carries is `[client, proxy1, ...]`
+   — one entry per proxy in front — so its **length is the value**. Send a request
+   to the public domain and read the warning `clientIp()` logs once per process
+   when the observed length disagrees with the configured one:
+
+   ```bash
+   curl -s https://mcp.lincx.com/health > /dev/null
+   # then, in the Render logs:
+   # [HTTP]   X-Forwarded-For carried 2 hop(s) but TRUSTED_PROXY_HOPS=1. ...
+   ```
+
+   No line means the two already agree. Set `TRUSTED_PROXY_HOPS` to the count it
+   names, redeploy, and confirm the line is gone.
+
+2. **Confirm the Render origin is not reachable.** `*.onrender.com` bypasses
+   Cloudflare. With `TRUSTED_PROXY_HOPS=2`, a caller hitting the origin directly
+   sends `X-Forwarded-For: a, b`, Render's load balancer appends their real IP →
+   `a, b, <caller>`, and `clientIp()` reads index `3 - 2 = 1` → `b`, which the
+   caller chose. So `2` is only safe if the origin is unreachable or restricted to
+   Cloudflare egress; otherwise every limit is bypassable there and `1` is the
+   safer floor.
+
+Setting the number from step 1 without doing step 2 ships the bypass the setting
+exists to close.
 
 **One blocker before the count goes above 1.** `src/middleware/rateLimit.js`
 counts in a process-local `Map`, so N instances silently means N × the configured

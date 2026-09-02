@@ -53,6 +53,9 @@ export function header (req, name) {
  *
  * With TRUSTED_PROXY_HOPS=0 the header is ignored entirely and the socket address
  * is used, which a client cannot choose.
+ *
+ * Warns once per process when the observed chain disagrees with TRUSTED_HOPS —
+ * see warnHopMismatch below.
  */
 export function clientIp (req) {
   const socketAddress = req.socket?.remoteAddress ?? 'unknown'
@@ -66,10 +69,35 @@ export function clientIp (req) {
   const xff = req.headers['x-forwarded-for']
   if (typeof xff === 'string' && xff.length > 0) {
     const hops = xff.split(',').map((s) => s.trim()).filter(Boolean)
+    warnHopMismatch(hops.length)
     const idx = hops.length - TRUSTED_HOPS
     if (idx >= 0 && hops[idx]) return hops[idx]
   }
   return socketAddress
+}
+
+/**
+ * The chain a real client's request carries is [client, proxy1, ...] — one entry
+ * per proxy in front of the process — so its LENGTH is what TRUSTED_HOPS should
+ * hold. Both ways of being wrong are silent otherwise: too low believes the
+ * caller's own header, too high collapses every caller into one bucket. This
+ * turns the misconfiguration into the measurement.
+ *
+ * Once per process, not per request: the chain length is caller-controlled, so
+ * warning on every mismatch is an attacker-triggerable unbounded log write. It
+ * also fires on a padded header from a legitimate chain, which is why the line
+ * names both readings rather than asserting a misconfiguration.
+ */
+let hopMismatchWarned = false
+
+function warnHopMismatch (observed) {
+  if (hopMismatchWarned || observed === TRUSTED_HOPS) return
+  hopMismatchWarned = true
+  console.error(
+    `[HTTP]   X-Forwarded-For carried ${observed} hop(s) but TRUSTED_PROXY_HOPS=${TRUSTED_HOPS}. ` +
+    `Either ${observed} proxies front this deployment (set TRUSTED_PROXY_HOPS=${observed}) ` +
+    'or a caller padded the header. Rate limits key off the wrong entry until they agree.'
+  )
 }
 
 export async function readBody (req) {

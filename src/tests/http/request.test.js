@@ -91,6 +91,41 @@ test('clientIp > TRUSTED_PROXY_HOPS=0 ignores X-Forwarded-For entirely', async t
   t.is(a.text, b.text, 'forged XFF values produced distinct rate-limit keys')
 })
 
+test.serial('clientIp > warns ONCE naming the observed hop count on a mismatch', async t => {
+  // The hop count is what has to be measured on a new deployment (Render fronts
+  // the service with Cloudflare AND its own load balancer, so the default 1 is
+  // probably wrong), and both ways of being wrong are silent: too low believes
+  // the caller's own header, too high collapses every caller into one bucket.
+  // The warning is the measurement — it has to name the observed count.
+  //
+  // Fresh module instance so the env var is read at import time.
+  process.env.TRUSTED_PROXY_HOPS = '2'
+  const { clientIp: twoHopClientIp } = await import(`../../http/request.js?hops=2&t=${process.pid}`)
+  delete process.env.TRUSTED_PROXY_HOPS
+
+  const lines = []
+  const realError = console.error
+  console.error = (line) => lines.push(String(line))
+  try {
+    const app = serve((req, res) => res.writeHead(200).end(twoHopClientIp(req)))
+
+    const matching = await request(app).get('/').set('X-Forwarded-For', '203.0.113.7, 10.0.0.1')
+    t.is(matching.text, '203.0.113.7', 'two hops must resolve to the first entry')
+    t.deepEqual(lines, [], 'a chain matching TRUSTED_PROXY_HOPS must stay silent')
+
+    await request(app).get('/').set('X-Forwarded-For', '1.1.1.1, 2.2.2.2, 3.3.3.3')
+    t.is(lines.length, 1, 'a mismatched chain must warn')
+    t.regex(lines[0], /TRUSTED_PROXY_HOPS=3/, 'the warning must name the observed count')
+
+    // Chain length is caller-controlled, so a per-request warn is an
+    // attacker-triggerable unbounded log write.
+    await request(app).get('/').set('X-Forwarded-For', '4.4.4.4, 5.5.5.5, 6.6.6.6, 7.7.7.7')
+    t.is(lines.length, 1, 'the warning must not repeat')
+  } finally {
+    console.error = realError
+  }
+})
+
 test('readBody > parses application/json', async t => {
   const r = await request(bodyEcho()).post('/').send({ a: 1, b: 'x' })
   t.deepEqual(r.body, { a: 1, b: 'x' })
