@@ -113,11 +113,21 @@ export async function switchNetwork (
 
 // ── Refresh network list ──────────────────────────────────────────────────────
 
+/**
+ * Re-fetch the network list onto the session.
+ *
+ * Returns `false` when the session is gone, otherwise the refreshed session plus
+ * what the refresh CHANGED — the caller has to be able to say "you were moved off
+ * the network you were on", which is the case this tool exists to handle.
+ * `fetchUserNetworks` swallows its own errors and returns `[]`, so an empty list
+ * is "the fetch failed or you really have none", not a success worth hiding.
+ */
 export async function refreshNetworks (sessionId) {
   const store = await getSessionStore()
   const session = await store.get(sessionId)
   if (!session) return false
 
+  const previousNetwork = session.active_network
   const networks = await fetchUserNetworks(session.auth_token)
   session.networks = networks
 
@@ -127,7 +137,11 @@ export async function refreshNetworks (sessionId) {
   }
 
   await store.set(sessionId, session)
-  return true
+  return {
+    session,
+    previous_network_id: previousNetwork ?? null,
+    active_network_changed: session.active_network !== previousNetwork
+  }
 }
 
 // ── Destroy (logout) ──────────────────────────────────────────────────────────

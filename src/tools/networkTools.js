@@ -4,7 +4,7 @@
  *
  * network_list    — list all accessible networks
  * network_switch  — change active network (Claude resolves name → id automatically)
- * network_refresh — re-fetch networks from Network Service
+ * network_refresh — re-fetch networks from the API (same slim/paged shape as network_list)
  */
 
 import { z } from 'zod'
@@ -150,35 +150,53 @@ Returns: { success, active_network, previous_network_id, message }`,
     'network_refresh',
     {
       title: 'Refresh Networks',
-      description: `Re-fetch the user's network list from the Network Service.
+      description: `Re-fetch the user's network list from the API and return it.
 
-Use when a network seems to be missing or the user was recently added to a new one.
-Preserves the active network if it still exists.`,
-      inputSchema: z.object({}),
+Use when a network seems to be missing, the user was recently added to a new one,
+or the list came back empty at login (the fetch is allowed to fail there).
+
+Takes the same filtering/paging args as 'network_list' and returns the same shape —
+the raw list is hundreds of full objects on large accounts and would overflow the
+response guard.
+
+Preserves the active network if it still exists; if it does not, the session is
+moved to the first network and 'active_network_changed' is true.
+
+Returns: network_list's shape plus { success, previous_network_id, active_network_changed }`,
+      inputSchema: z.object({
+        includeArchived: z.boolean().default(false).describe("Include archived networks (e.g. 'NN - Remove Network' test entries). Default: active only."),
+        limit: z.number().int().min(1).max(500).default(100).describe('Max networks to return'),
+        offset: z.number().int().min(0).default(0).describe('Skip this many (use next_offset from a previous call to page)'),
+        verbose: z.boolean().default(false).describe('Return full network objects instead of slim { id, name, is_active, archived }')
+      }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
-    async (_args, extra) => {
+    async ({ includeArchived, limit, offset, verbose }, extra) => {
       const sessionId = await resolveLincxSession(extra)
       if (!sessionId) {
         return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
       }
 
-      const ok = await refreshNetworks(sessionId)
-      if (!ok) {
+      const refreshed = await refreshNetworks(sessionId)
+      if (!refreshed) {
         return { content: [{ type: 'text', text: 'Error: Could not refresh networks. Session may be invalid.' }] }
       }
 
-      const store = await getSessionStore()
-      const session = await store.get(sessionId)
+      const { session, previous_network_id, active_network_changed } = refreshed
+      const result = {
+        success: true,
+        previous_network_id,
+        active_network_changed,
+        ...selectNetworks(session, { includeArchived, limit, offset, verbose }),
+        // fetchUserNetworks returns [] on failure as well as on a genuinely empty
+        // account — don't let `success: true` read as "you have no networks".
+        ...(session.networks.length === 0
+          ? { note: 'The API returned no networks. This can mean the fetch failed — check server logs and retry before concluding the account has none.' }
+          : {})
+      }
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            success: true,
-            networks: session?.networks ?? [],
-            active_network: session?.active_network ?? null
-          })
-        }]
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result
       }
     }
   )

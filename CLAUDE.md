@@ -341,7 +341,7 @@ registerYourDomainTools(server)
 ### Networks
 - `network_list` — list available networks (active only by default; `includeArchived`, `limit`/`offset` paging via `next_offset`)
 - `network_switch` — change active network
-- `network_refresh` — re-fetch networks from API
+- `network_refresh` — re-fetch networks from API, then return them in `network_list`'s slim/paged shape (same `includeArchived`/`limit`/`offset`/`verbose` args). It used to dump the raw list — 354 full objects, 82k chars — so the tool was unreachable behind the 30k guard with an empty input schema advertising pagination that did not exist. Adds `previous_network_id`/`active_network_changed` (the refresh silently moves the session to `networks[0]` when the active network disappears) and a `note` when the list comes back empty — `fetchUserNetworks` returns `[]` on failure as well as on a genuinely empty account, so bare `success: true` reads wrong.
 
 ### Resources (MCP Resources, `src/tools/resources.js`)
 Pull-based reference data — read by URI, not via a tool call. Not part of the

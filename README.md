@@ -71,7 +71,7 @@ src/
 │
 └── tools/
     ├── authTools.ts             # auth_login, auth_status, auth_logout
-    ├── networkTools.ts          # network_list, network_switch, network_refresh
+    ├── networkTools.js          # network_list, network_switch, network_refresh
     ├── templateTools.ts         # list_templates, get_template, get_template_versions, get_template_version, get_template_parents, render_template
     ├── creativeAssetGroupTools.ts # list_creative_asset_groups, get_creative_asset_group
     ├── zoneTools.ts             # list_zones, get_zone, get_zone_parents, get_zone_report, zone_load_trace
@@ -244,7 +244,7 @@ must equal the URL the client hits — left unset locally it defaults to
 |------|-----------|-------------|
 | `network_list` | — | Lists all networks accessible to your account. |
 | `network_switch` | `network_id` | Sets the active network. All subsequent API calls use this network. |
-| `network_refresh` | — | Re-fetches the network list from the API (use after network changes). |
+| `network_refresh` | `includeArchived`, `limit`, `offset`, `verbose` | Re-fetches the network list from the API and returns it in `network_list`'s slim/paged shape (use after network changes, or when login returned no networks). |
 
 ### Templates
 
