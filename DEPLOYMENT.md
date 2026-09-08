@@ -340,7 +340,7 @@ proven, and nothing is deleted until traffic has moved.
    after a redeploy**: it must go through with no re-initialize and no re-login.
    That last one is the whole point of the stateless transport and it is the only
    check no test can make. Record it in
-   `docs/superpowers/plans/phase0-findings.md`.
+   [deployment acceptance issue #55](https://github.com/Interlincx/lincx-mcp/issues/55).
 
    Note for anyone probing by hand: `/mcp` answers **405 to GET and DELETE**.
    Only POST is registered — there is no SSE stream to open and no session to

@@ -26,7 +26,7 @@ const MAX_BODY_BYTES = 100 * 1024
 //
 // The opposite error is just as real and still unmeasured: if MORE than this many
 // proxies sit in front, every caller collapses into one bucket.
-// docs/superpowers/plans/phase0-findings.md records the XFF split as never run.
+// Deployment acceptance evidence: https://github.com/Interlincx/lincx-mcp/issues/55.
 // Change this and the clientIp tests together, never one alone.
 const TRUSTED_HOPS = Math.max(0, Number(process.env.TRUSTED_PROXY_HOPS ?? 1))
 
