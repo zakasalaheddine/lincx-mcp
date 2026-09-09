@@ -16,8 +16,7 @@ const net = (id, archived) => ({
 
 // 2 active (one with archived:false, one with archived absent) + 3 archived.
 const session = {
-  networks: [net('a', false), net('b'), net('x1', true), net('x2', true), net('x3', true)],
-  active_network: 'b'
+  networks: [net('a', false), net('b'), net('x1', true), net('x2', true), net('x3', true)]
 }
 
 // selectNetworks
@@ -45,7 +44,8 @@ test('selectNetworks > pages with limit/offset and emits next_offset until exhau
   t.is(last.next_offset, null)
 })
 
-test('selectNetworks > marks the active network via is_active', t => {
+test('selectNetworks > no network is marked as the server-side active network', t => {
   const r = selectNetworks(session)
-  t.like(r.networks.find((n) => (n).is_active), { id: 'b' })
+  t.is(r.networks.find((n) => (n).is_active), undefined)
+  t.deepEqual(r.networks.map((n) => n.id), ['a', 'b'])
 })

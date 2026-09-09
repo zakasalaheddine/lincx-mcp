@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod'
+import { requiredNetworkIdShape } from './_shared.js'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
@@ -218,29 +219,30 @@ export function registerZoneInventoryTools (server) {
 
 The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[], scoped_via[] }. scoped_via lists HOW the group is scoped to the zone (annotate-only, the row set is unchanged). It uses ONE shared enum across every tool that emits the field — 'ad-group-whitelist' (the group's params.zoneId names the zone — always present on a targeted row), 'ad-group-blacklist' (the group's exceptParams.zoneId excludes the zone; such a group is reported under 'conflicting' here, so this value is rare on a targeted row and common on the eligibility tool's conflicting rows), 'ad-level-whitelist' (one of its ads also whitelists the zone), 'ad-level-blacklist' (one of its ads excludes the zone via ad.exceptParams.zoneId — that ad is hidden here, siblings still serve), 'zone-selection' (the group shares the zone's creativeAssetGroupId). Same five values, same meaning, in get_zone_eligible_ad_groups and explain_serve. For per-(ad group × ad) offer-grain scoping and free-radical counts, use get_zone_eligible_ad_groups. This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       zoneId: z.string().describe('Zone ID to audit targeting for'),
       mode: z.enum(['all', 'live', 'off']).default('all').describe('Filter the returned groups: all (default), only fully-live, or only not-fully-live. Summary counts always cover the full targeted set.')
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ zoneId, mode }, extra) => {
+  }, async ({ zoneId, mode, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     const session = v.session
-
     try {
       // Every list endpoint returns the full network set in one call; fetch in parallel.
       const [zoneRaw, adGroupsRaw, campaignsRaw, adsRaw, creativesRaw] = await Promise.all([
         workApiRequest(session, 'GET', `/api/zones/${zoneId}`),
-        workApiRequest(session, 'GET', '/api/ad-groups'),
-        workApiRequest(session, 'GET', '/api/campaigns'),
-        workApiRequest(session, 'GET', '/api/ads'),
-        workApiRequest(session, 'GET', '/api/creatives')
+        workApiRequest(session, 'GET', '/api/ad-groups', { networkId: network_id }),
+        workApiRequest(session, 'GET', '/api/campaigns', { networkId: network_id }),
+        workApiRequest(session, 'GET', '/api/ads', { networkId: network_id }),
+        workApiRequest(session, 'GET', '/api/creatives', { networkId: network_id })
       ])
 
       const zone = asEntity(zoneRaw)
       if (!zone.id) return { content: [{ type: 'text', text: 'Error: Resource not found. Double-check the zone ID.' }] }
+      if (zone.networkId && zone.networkId !== network_id) return { content: [{ type: 'text', text: `Error: Zone '${zoneId}' belongs to network '${zone.networkId}', not '${network_id}'.` }] }
 
       const adGroups = asRows(adGroupsRaw)
       const campaignRows = asRows(campaignsRaw)

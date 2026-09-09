@@ -3,12 +3,15 @@
  * tools/networkTools.js
  *
  * network_list    — list all accessible networks
- * network_switch  — change active network (Claude resolves name → id automatically)
  * network_refresh — re-fetch networks from the API (same slim/paged shape as network_list)
+ *
+ * Network selection is now part of the per-tool-call context. Callers pass
+ * `network_id` to business tools; `network_list` only lists the networks the
+ * user can access.
  */
 
 import { z } from 'zod'
-import { switchNetwork, refreshNetworks, resolveLincxSession } from '../services/sessionManager.js'
+import { refreshNetworks, resolveLincxSession } from '../services/sessionManager.js'
 import { getSessionStore } from '../services/sessionStore.js'
 
 /**
@@ -28,7 +31,6 @@ export function selectNetworks (
   const window = filtered.slice(offset, offset + limit)
   const end = offset + window.length
   return {
-    active_network_id: session.active_network,
     total: filtered.length,
     archived_hidden: includeArchived ? 0 : all.length - filtered.length,
     returned: window.length,
@@ -38,7 +40,6 @@ export function selectNetworks (
       : window.map((n) => ({
         id: n.id,
         name: n.name,
-        is_active: n.id === session.active_network,
         archived: n.archived === true
       }))
   }
@@ -52,8 +53,7 @@ export function registerNetworkTools (server) {
       title: 'List Networks',
       description: `List the networks the current user has access to.
 
-Use this before 'network_switch' to find the correct network_id.
-Also use it when the user asks which network they are on.
+Use this before any business tool to find the correct network_id.
 
 Defaults to ACTIVE networks only and pages at limit=100 — high-network
 accounts have hundreds of archived "Remove Network" test entries that would
@@ -62,18 +62,17 @@ limit/offset (next_offset in the reply) to page.
 
 Returns:
   {
-    active_network_id: string | null,
     total: number,            // networks matching the filter
     archived_hidden: number,  // archived entries omitted (0 when includeArchived)
     returned: number,
     next_offset: number | null,
-    networks: Array<{ id, name, is_active, archived }>
+    networks: Array<{ id, name, archived }>
   }`,
       inputSchema: z.object({
         includeArchived: z.boolean().default(false).describe("Include archived networks (e.g. 'NN - Remove Network' test entries). Default: active only."),
         limit: z.number().int().min(1).max(500).default(100).describe('Max networks to return'),
         offset: z.number().int().min(0).default(0).describe('Skip this many (use next_offset from a previous call to page)'),
-        verbose: z.boolean().default(false).describe('Return full network objects instead of slim { id, name, is_active, archived }')
+        verbose: z.boolean().default(false).describe('Return full network objects instead of slim { id, name, archived }')
       }),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     },
@@ -97,54 +96,6 @@ Returns:
     }
   )
 
-  // ── network_switch ────────────────────────────────────────────────────────
-  server.registerTool(
-    'network_switch',
-    {
-      title: 'Switch Network',
-      description: `Switch the active network for all subsequent API calls.
-
-ALWAYS call 'network_list' first to get the correct network_id.
-
-The session stays on the new network until switched again.
-
-Args:
-  - network_id (string): ID from 'network_list'
-
-Returns: { success, active_network, previous_network_id, message }`,
-      inputSchema: z.object({
-        network_id: z.string().min(1).describe("Network ID from 'network_list'")
-      }),
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-    },
-    async ({ network_id }, extra) => {
-      const sessionId = await resolveLincxSession(extra)
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
-      }
-
-      const result = await switchNetwork(sessionId, network_id)
-      if (!result.success) {
-        return { content: [{ type: 'text', text: `Error: ${result.error}` }] }
-      }
-
-      const store = await getSessionStore()
-      const session = await store.get(sessionId)
-      const network = session?.networks.find((n) => n.id === network_id)
-
-      const response = {
-        success: true,
-        active_network: { id: network_id, name: network?.name ?? network_id },
-        previous_network_id: result.previousNetwork ?? null,
-        message: `Switched to '${network?.name ?? network_id}'. All tool calls now use this network.`
-      }
-      return {
-        content: [{ type: 'text', text: JSON.stringify(response) }],
-        structuredContent: response
-      }
-    }
-  )
-
   // ── network_refresh ───────────────────────────────────────────────────────
   server.registerTool(
     'network_refresh',
@@ -159,15 +110,12 @@ Takes the same filtering/paging args as 'network_list' and returns the same shap
 the raw list is hundreds of full objects on large accounts and would overflow the
 response guard.
 
-Preserves the active network if it still exists; if it does not, the session is
-moved to the first network and 'active_network_changed' is true.
-
-Returns: network_list's shape plus { success, previous_network_id, active_network_changed }`,
+Returns: network_list's shape plus { success }`,
       inputSchema: z.object({
         includeArchived: z.boolean().default(false).describe("Include archived networks (e.g. 'NN - Remove Network' test entries). Default: active only."),
         limit: z.number().int().min(1).max(500).default(100).describe('Max networks to return'),
         offset: z.number().int().min(0).default(0).describe('Skip this many (use next_offset from a previous call to page)'),
-        verbose: z.boolean().default(false).describe('Return full network objects instead of slim { id, name, is_active, archived }')
+        verbose: z.boolean().default(false).describe('Return full network objects instead of slim { id, name, archived }')
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
@@ -182,11 +130,9 @@ Returns: network_list's shape plus { success, previous_network_id, active_networ
         return { content: [{ type: 'text', text: 'Error: Could not refresh networks. Session may be invalid.' }] }
       }
 
-      const { session, previous_network_id, active_network_changed } = refreshed
+      const { session } = refreshed
       const result = {
         success: true,
-        previous_network_id,
-        active_network_changed,
         ...selectNetworks(session, { includeArchived, limit, offset, verbose }),
         // fetchUserNetworks returns [] on failure as well as on a genuinely empty
         // account — don't let `success: true` read as "you have no networks".

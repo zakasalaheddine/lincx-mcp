@@ -83,14 +83,11 @@ test.serial('a real bearer resolves to a session through the SDK, unmocked', asy
   t.true(status.authenticated,
     'the bearer never reached the tool — check extra.requestInfo.headers in resolveLincxSession')
   t.is(status.email, 'bearer@test.com')
-  t.is(status.active_network, 'svce6t')
+  t.falsy(status.active_network, 'auth_status no longer returns a server-side active_network')
+  t.true(Array.isArray(status.networks), 'auth_status returns the accessible network list')
 
-  // Resources take a different SDK path to the same identity read
-  // (mcp.js readCallback, not executeToolHandler) and resources.test.js mocks
-  // sessionManager, so this is the only place that path runs for real.
   const res = await client.readResource({ uri: 'lincx://networks' })
-  t.false((res.contents[0].text ?? '').startsWith('Error:'),
-    `resource read lost the bearer: ${res.contents[0].text?.slice(0, 120)}`)
+  t.false((res.contents[0].text ?? '').startsWith('Error:'), 'resource read lost the bearer')
 })
 
 test.serial('a bogus bearer is challenged, not silently served', async t => {

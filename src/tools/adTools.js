@@ -1,3 +1,4 @@
+/* eslint-disable camelcase -- Tool input / output fields and OAuth params are snake_case on the wire: protocol, not style. */
 /**
  * tools/adTools.js
  *
@@ -9,33 +10,33 @@
 import { z } from 'zod'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError, fitEntityToText, buildListEnvelope, listEnvelopeToText } from '../services/workApi.js'
-import { paginationShape, includeShape, getEntityWithIncludes } from './_shared.js'
+import { paginationShape, includeShape, getEntityWithIncludes, requiredNetworkIdShape } from './_shared.js'
 
 export function registerAdTools (server) {
   // ── list_ads ─────────────────────────────────────────────────────────────────
   server.registerTool('list_ads', {
     title: 'List Ads',
-    description: 'List ads on the active network with limit/offset pagination. Pass a parent filter to enumerate one parent\'s ads exhaustively (upstream applies the first of adGroupId → campaignId → advertiserId; without a filter, the whole network is listed).',
+    description: 'List ads on the specified network with limit/offset pagination. Pass a parent filter to enumerate one parent\'s ads exhaustively (upstream applies the first of adGroupId → campaignId → advertiserId; without a filter, the whole network is listed).',
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       adGroupId: z.string().optional().describe('Only ads in this ad group'),
       campaignId: z.string().optional().describe('Only ads in this campaign'),
       advertiserId: z.string().optional().describe('Only ads for this advertiser'),
       ...paginationShape
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ limit, offset, fields, adGroupId, campaignId, advertiserId }, extra) => {
+  }, async ({ limit, offset, fields, adGroupId, campaignId, advertiserId, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
       const params = { limit, offset }
       if (adGroupId !== undefined) params.adGroupId = adGroupId
       if (campaignId !== undefined) params.campaignId = campaignId
       if (advertiserId !== undefined) params.advertiserId = advertiserId
-      const data = await workApiRequest(v.session, 'GET', '/api/ads', { params })
+      const data = await workApiRequest(v.session, 'GET', '/api/ads', { networkId: network_id, params })
       const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }))
       return { content: [{ type: 'text', text }] }
     } catch (err) {
@@ -48,17 +49,17 @@ export function registerAdTools (server) {
     title: 'Get Ad',
     description: 'Fetch full configuration of an ad by ID.',
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       id: z.string().describe('Ad ID'),
       ...includeShape
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ id, include }, extra) => {
+  }, async ({ id, include, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
       const data = await getEntityWithIncludes(v.session, '/api/ads', id, include)
       return { content: [{ type: 'text', text: fitEntityToText(data) }] }
@@ -72,6 +73,7 @@ export function registerAdTools (server) {
     title: 'Get Zone Ads',
     description: 'Calls the ad-serving endpoint for a zone. Returns the ads that would be shown and the template they render into ({ ads, template }). Set debug: true to hit the debug endpoint instead, which explains which ad-groups matched and which were rejected.',
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       zoneId: z.string().describe('Zone ID to fetch serving ads for'),
       debug: z.boolean().optional().default(false).describe('Hit /api/ads/ad/debug instead of /api/ads/ad — returns ad-group match/reject diagnostics'),
       adFeedCount: z.number().int().optional(),
@@ -83,13 +85,12 @@ export function registerAdTools (server) {
       scoreKey: z.string().optional()
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false }
-  }, async ({ zoneId, debug, adFeedCount, geoState, geoCity, geoIP, geoPostal, geoCountry, scoreKey }, extra) => {
+  }, async ({ zoneId, debug, adFeedCount, geoState, geoCity, geoIP, geoPostal, geoCountry, scoreKey, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
       const params = { zoneId }
       if (adFeedCount !== undefined) params.adFeedCount = adFeedCount

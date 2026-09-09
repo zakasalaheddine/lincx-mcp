@@ -3,45 +3,75 @@
  *
  * Authenticated HTTP client for the Work API.
  *
- * Multi-tenancy is handled via ?networkId=<id> on every request.
- * networkId is ALWAYS injected from session.active_network server-side —
- * Claude (the AI client) never passes it directly.
+ * Multi-tenancy is scoped by networkId:
+ *   - GET list endpoints require ?networkId=<id>.
+ *   - GET by-id, parents, reports, clones, and sub-resources do NOT receive
+ *     a networkId query parameter.
+ *
+ * The caller supplies the networkId in `options.networkId`. The session object
+ * is only used for the Bearer token.
  *
  * Security contract:
- *   - Authorization header  → from session.auth_token   (never from client)
- *   - networkId query param → from session.active_network (never from client)
+ *   - Authorization header  → from session.auth_token (never from client)
+ *   - networkId             → from the tool's network_id argument
  */
 
 import { WORK_API_BASE_URL, CHARACTER_LIMIT } from '../constants.js'
 
+// GET list endpoints that require a ?networkId= query parameter. Derived from
+// lincx-core route definitions.
+const NETWORK_LIST_PATHS = new Set([
+  '/api/ad-groups',
+  '/api/ads',
+  '/api/advertisers',
+  '/api/alerts',
+  '/api/analysis',
+  '/api/campaigns',
+  '/api/channels',
+  '/api/creative-asset-groups',
+  '/api/creatives',
+  '/api/dimension-sets',
+  '/api/event-stats',
+  '/api/experiences',
+  '/api/metazones',
+  '/api/params-indexer/rebuild',
+  '/api/publishers',
+  '/api/sites',
+  '/api/templates',
+  '/api/zones'
+])
+
+function needsNetworkIdInQuery (path) {
+  if (path.endsWith('/parents')) return false
+  return NETWORK_LIST_PATHS.has(path)
+}
+
 export async function workApiRequest (
   session,
-  method,
+  method = 'GET',
   path,
   options = {}
 ) {
+  const networkId = options.networkId ?? null
+
   const params = new URLSearchParams()
-  // networkId always injected here — client tools never pass it
-  params.set('networkId', session.active_network)
-  for (const [k, v] of Object.entries(options.params ?? {})) {
-    if (v === undefined || v === null) continue
-    if (Array.isArray(v)) {
-      // Repeat the key per element (?d=zone&d=template) — OpenAPI form/explode,
-      // which is what the Work API expects for array params like `d`.
-      for (const item of v) {
-        if (item !== undefined && item !== null) params.append(k, String(item))
-      }
-    } else {
-      params.set(k, String(v))
-    }
+  if (networkId && needsNetworkIdInQuery(path)) {
+    params.set('networkId', networkId)
   }
+  appendQueryParams(params, options.params)
+  if (NETWORK_LIST_PATHS.has(path) && !networkId) {
+    throw Object.assign(new Error("No network selected. Provide a network_id or call 'network_list' to find one."), { code: 'NO_NETWORK' })
+  }
+
+  const query = params.toString()
+  const url = `${WORK_API_BASE_URL}${path}${query ? `?${query}` : ''}`
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 10_000)
 
   let res
   try {
-    res = await fetch(`${WORK_API_BASE_URL}${path}?${params}`, {
+    res = await fetch(url, {
       method,
       headers: {
         Authorization: `Bearer ${session.auth_token}`,
@@ -104,7 +134,7 @@ export function handleWorkApiError (error) {
       switch (e.status) {
         case 400: return `Error: Bad request${body}`
         case 401: return "Error: Unauthorized. Use 'auth_logout' then 'auth_login' to re-authenticate."
-        case 403: return "Error: Forbidden — you don't have access to this resource on the active network."
+        case 403: return "Error: Forbidden — you don't have access to this resource on the network."
         case 404: return 'Error: Resource not found. Double-check the ID.'
         case 422: return `Error: Unprocessable request (422 — the API rejected the parameters)${body}`
         case 429: return 'Error: Rate limit hit. Wait a moment then retry.'
@@ -427,4 +457,22 @@ export function fitEntityToText (data) {
   // Array/primitive root — wrap so the note can ride along as valid JSON.
   const wrapped = JSON.stringify({ data: clone, _truncated: note })
   return wrapped.length <= CHARACTER_LIMIT ? wrapped : JSON.stringify({ _truncated: { ...note, partial: true } })
+}
+
+/**
+ * Append caller-supplied query params, repeating the key per array element
+ * (?d=zone&d=template) — OpenAPI form/explode, which is what the Work API
+ * expects for array params like `d`.
+ */
+function appendQueryParams (params, queryParams) {
+  for (const [k, v] of Object.entries(queryParams ?? {})) {
+    if (v === undefined || v === null) continue
+    if (Array.isArray(v)) {
+      for (const item of v) {
+        if (item !== undefined && item !== null) params.append(k, String(item))
+      }
+    } else {
+      params.set(k, String(v))
+    }
+  }
 }

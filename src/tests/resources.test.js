@@ -8,10 +8,21 @@ import { workApiMock, sessionMock } from './helpers/mockWorkApi.js'
 const extra = { sessionId: 'test-session' }
 
 /** Fresh module graph per test — routes are per-test state, not a shared registry. */
-async function build (routes = []) {
+async function build (routes = [], networks) {
+  const sessionOverrides = networks !== undefined
+    ? {
+        validateSession: async () => ({
+          valid: true,
+          session: {
+            auth_token: 't',
+            networks
+          }
+        })
+      }
+    : {}
   const { registerResources } = await esmock('../tools/resources.js', {
     '../services/workApi.js': workApiMock(routes),
-    '../services/sessionManager.js': sessionMock()
+    '../services/sessionManager.js': sessionMock(sessionOverrides)
   })
   const server = new McpServer({ name: 'test', version: '0.0.0' })
   registerResources(server)
@@ -29,6 +40,20 @@ test.serial('resources (T1-3 / T4-6) > registers lincx://networks as a static (l
   t.is(Array.isArray(body.networks), true)
   // (active_network is present on a real Session; the test stub omits it, so
   // JSON.stringify drops the undefined key — not asserted here.)
+})
+
+test.serial('resources (T1-3 / T4-6) > lincx://networks returns the session networks array', async t => {
+  const networks = [
+    { id: 'svce6t', name: 'Lincx Sandbox' },
+    { id: 'n2', name: 'Other Network' }
+  ]
+  const server = await build([], networks)
+  const res = server._registeredResources['lincx://networks']
+
+  const out = await res.readCallback(new URL('lincx://networks'), extra)
+  const body = JSON.parse(out.contents[0].text)
+  t.is(Array.isArray(body.networks), true)
+  t.deepEqual(body.networks, networks)
 })
 
 test.serial('resources (T1-3 / T4-6) > registers entity resource templates that fetch by id', async t => {

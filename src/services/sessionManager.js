@@ -29,8 +29,7 @@ export async function createSession (params
     user_id: params.user_id,
     email: params.email,
     auth_token: params.auth_token,
-    networks,
-    active_network: networks[0]?.id ?? null
+    networks
   }
 
   await store.set(session.session_id, session)
@@ -45,7 +44,8 @@ export async function createSession (params
 // ── Validate (runs on every tool call) ───────────────────────────────────────
 
 export async function validateSession (
-  sessionId
+  sessionId,
+  networkId
 ) {
   const store = await getSessionStore()
   const session = await store.get(sessionId)
@@ -66,49 +66,11 @@ export async function validateSession (
     }
   }
 
-  if (!session.active_network) {
-    return {
-      valid: false,
-      error:
-        "No active network selected. Use 'network_list' to see your networks, then 'network_switch' to select one."
-    }
-  }
-
-  if (!session.networks.some((n) => n.id === session.active_network)) {
-    return {
-      valid: false,
-      error: `Active network '${session.active_network}' is no longer available. Use 'network_switch' to select a valid one.`
-    }
+  if (networkId && !session.networks.some((n) => n.id === networkId)) {
+    return { valid: false, error: `Network '${networkId}' is not in your networks. Use 'network_list'.` }
   }
 
   return { valid: true, session }
-}
-
-// ── Switch network ────────────────────────────────────────────────────────────
-
-export async function switchNetwork (
-  sessionId,
-  networkId
-) {
-  const store = await getSessionStore()
-  const session = await store.get(sessionId)
-
-  if (!session) return { success: false, error: 'Session not found.' }
-
-  const target = session.networks.find((n) => n.id === networkId)
-  if (!target) {
-    const available = session.networks.map((n) => `${n.name} (${n.id})`).join(', ')
-    return {
-      success: false,
-      error: `Network '${networkId}' not found. Available: ${available || 'none'}`
-    }
-  }
-
-  const previousNetwork = session.active_network
-  session.active_network = networkId
-  await store.set(sessionId, session)
-  console.error(`[Session] ${sessionId.slice(0, 8)}…: network ${previousNetwork} → ${networkId}`)
-  return { success: true, previousNetwork }
 }
 
 // ── Refresh network list ──────────────────────────────────────────────────────
@@ -116,9 +78,7 @@ export async function switchNetwork (
 /**
  * Re-fetch the network list onto the session.
  *
- * Returns `false` when the session is gone, otherwise the refreshed session plus
- * what the refresh CHANGED — the caller has to be able to say "you were moved off
- * the network you were on", which is the case this tool exists to handle.
+ * Returns `false` when the session is gone, otherwise the refreshed session.
  * `fetchUserNetworks` swallows its own errors and returns `[]`, so an empty list
  * is "the fetch failed or you really have none", not a success worth hiding.
  */
@@ -127,21 +87,9 @@ export async function refreshNetworks (sessionId) {
   const session = await store.get(sessionId)
   if (!session) return false
 
-  const previousNetwork = session.active_network
-  const networks = await fetchUserNetworks(session.auth_token)
-  session.networks = networks
-
-  // Keep active_network if it still exists, otherwise reset to first
-  if (!networks.some((n) => n.id === session.active_network)) {
-    session.active_network = networks[0]?.id ?? null
-  }
-
+  session.networks = await fetchUserNetworks(session.auth_token)
   await store.set(sessionId, session)
-  return {
-    session,
-    previous_network_id: previousNetwork ?? null,
-    active_network_changed: session.active_network !== previousNetwork
-  }
+  return { session }
 }
 
 // ── Destroy (logout) ──────────────────────────────────────────────────────────

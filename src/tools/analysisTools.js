@@ -1,3 +1,4 @@
+/* eslint-disable camelcase -- Tool input / output fields and OAuth params are snake_case on the wire: protocol, not style. */
 /**
  * tools/analysisTools.js
  *
@@ -21,7 +22,7 @@ import { z } from 'zod'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
-import { READONLY_ANNOTATIONS } from './_shared.js'
+import { READONLY_ANNOTATIONS, requiredNetworkIdShape } from './_shared.js'
 
 const ANALYSIS_STATUSES = ['queued', 'running', 'succeeded', 'failed']
 
@@ -172,16 +173,16 @@ Returns a one-line header, a blank line, then compact JSON — parse everything 
 
 Tier assignments are PRECOMPUTED. Do not re-cluster or re-rank them from the raw metrics. Oversized documents shed input sections (listed in an 'omitted' array), never the output verdict.`,
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       id: z.string().describe('Analysis job ID')
     }).strict(),
     annotations: READONLY_ANNOTATIONS
-  }, async ({ id }, extra) => {
+  }, async ({ id, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
       const doc = await workApiRequest(v.session, 'GET', `/api/analysis/${id}`)
       return fitAnalysis(doc, RESPONSE_SIZE_LIMIT)
@@ -193,27 +194,27 @@ Tier assignments are PRECOMPUTED. Do not re-cluster or re-rank them from the raw
   // ── list_analyses ───────────────────────────────────────────────────────────
   server.registerTool('list_analyses', {
     title: 'List Zone Tier Analyses',
-    description: `List analysis jobs on the active network, newest first. Summary fields only (id, status, type, name, request, dates, error) — use get_analysis for results.
+    description: `List analysis jobs on the specified network, newest first. Summary fields only (id, status, type, name, request, dates, error) — use get_analysis for results.
 
 Pages by cursor, not offset: pass the '_id' of the last row you received as 'cursor' to get the next page. A 'next_cursor' is returned when a full page came back.`,
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       status: z.enum(ANALYSIS_STATUSES).optional().describe('Only jobs in this status'),
       limit: z.number().int().min(1).max(100).default(20),
       cursor: z.string().optional().describe('The _id of the last row of the previous page')
     }).strict(),
     annotations: READONLY_ANNOTATIONS
-  }, async ({ status, limit, cursor }, extra) => {
+  }, async ({ status, limit, cursor, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
       const params = { limit, fields: LIST_FIELDS }
       if (status !== undefined) params.status = status
       if (cursor !== undefined) params.cursor = cursor
-      const res = await workApiRequest(v.session, 'GET', '/api/analysis', { params })
+      const res = await workApiRequest(v.session, 'GET', '/api/analysis', { networkId: network_id, params })
 
       const data = Array.isArray(res?.data) ? res.data : []
 

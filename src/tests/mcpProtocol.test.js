@@ -58,13 +58,25 @@ test.serial('MCP > initialize, tools/list, tools/call, DELETE', async t => {
     t.true(names.includes(required), `missing tool ${required}`)
   }
 
-  // Every tool schema must reject networkId — the multi-tenancy invariant. Network
-  // context comes from session.active_network inside workApiRequest(), never from
-  // the model.
+  // Business tools require a network_id per call; they must never accept
+  // a camelCase networkId.
   for (const tool of tools) {
     t.false(
       Object.keys(tool.inputSchema?.properties ?? {}).includes('networkId'),
       `${tool.name} must not accept networkId`
+    )
+  }
+
+  // Every business tool must require network_id — auth_* and network_* are the
+  // only exceptions. A tool that forgets requiredNetworkIdShape would pass the
+  // camelCase check above but silently drop network scoping (the get_event_stats_keys
+  // regression was exactly this shape: schema declared network_id, handler ignored it).
+  const NON_BUSINESS = new Set(['auth_login', 'auth_status', 'auth_logout', 'network_list', 'network_refresh'])
+  for (const tool of tools) {
+    if (NON_BUSINESS.has(tool.name)) continue
+    t.true(
+      Object.keys(tool.inputSchema?.properties ?? {}).includes('network_id'),
+      `${tool.name} must require network_id (business tool)`
     )
   }
 

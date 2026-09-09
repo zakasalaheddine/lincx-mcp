@@ -48,13 +48,13 @@ src/
 ├── services/
 │   ├── auth.js               # loginWithCredentials() → POST ix-id.lincx.la/auth/login
 │   ├── sessionStore.js       # Redis (with in-memory fallback) — session persistence
-│   ├── sessionManager.js     # create / validate / switchNetwork / refreshNetworks / destroy
+│   ├── sessionManager.js     # create / validate / refreshNetworks / destroy
 │   ├── networkService.js     # fetchUserNetworks() → GET WORK_API_BASE_URL/api/networks
-│   └── workApi.js            # workApiRequest() — injects Bearer token + ?networkId on every call
+│   └── workApi.js            # workApiRequest() — injects Bearer token; adds ?networkId to list GETs and networkId to child-entity POST/PUT bodies (passed via options.networkId)
 │
 └── tools/
     ├── authTools.js          # auth_login, auth_status, auth_logout
-    ├── networkTools.js       # network_list, network_switch, network_refresh
+    ├── networkTools.js       # network_list, network_refresh
     ├── _shared.js            # paginationShape / includeShape / READONLY_ANNOTATIONS + getEntityWithIncludes — reuse these in new tools
     ├── resources.js          # MCP Resources: lincx://networks + lincx://{entity}/{id} templates
     └── (add new domain tool files here)
@@ -75,25 +75,29 @@ instead of separate `get_*_parents` tools — keeps the per-request tool surface
   would corrupt the stream. Keeping logging on stderr preserves clean stdout in
   case a stdio transport is ever reintroduced, and keeps container logs uniform.
 
-### Claude never controls auth or network context
+### Claude never controls auth context
 - `auth_token` — stored in session server-side only, never returned to Claude
-- `networkId` — always injected from `session.active_network` inside `workApiRequest()`, never accepted as a tool parameter
+- `network_id` — required per business tool call
 - `session_id` — stored in Redis as `lincx:session:<id>`, never exposed via any tool. Session identity comes from the OAuth bearer on the request: `await resolveLincxSession(extra)`, which reads `extra.requestInfo.headers.authorization` — never from `extra.sessionId` (always `undefined` under the stateless transport) and never from a module-global.
 
-### Business tools never accept networkId
-Every business tool must get network context from the session, not from Claude.
+### Business tools require network_id
+Every business tool that reads or writes Work API data requires a `network_id`.
 ```js
-// WRONG — never do this
-inputSchema: z.object({ networkId: z.string(), ... })
+// RIGHT — spread the shared network context shape and pass network_id to workApiRequest
+import { requiredNetworkIdShape } from './_shared.js'
 
-// RIGHT — network comes from session automatically
-const data = await workApiRequest(session, 'GET', '/api/your-endpoint', { params: { ... } })
-// GET /api/your-endpoint?networkId=svce6t&...
+inputSchema: z.object({
+  ...requiredNetworkIdShape,
+  limit: z.number().int().min(1).max(100).default(20)
+}).strict()
+
+// in the handler:
+const data = await workApiRequest(v.session, 'GET', '/api/your-endpoint', { networkId: network_id, params: { ... } })
 ```
 
 ### Always validate session before any API call
-Every business tool must call `validateSession(sessionId)` before touching the Work API.
-It checks: session exists → active_network is set → active_network is in session.networks.
+Every business tool must call `validateSession(sessionId, network_id)` before touching the Work API.
+It checks: session exists, has not expired, and `network_id` (when provided) is in the session's accessible networks. `network_id` is then passed directly to `workApiRequest` in `options.networkId`.
 
 ### Never log OAuth tokens
 Access tokens, refresh tokens, and auth codes are bearer credentials. Never log
@@ -104,14 +108,21 @@ Lincx JWT (`auth_token`).
 
 ## Multi-tenancy model
 
-All Work API requests are scoped by `?networkId=<id>` query param.
+Work API list endpoints require `?networkId=<id>` in the query string. POST/PUT child-entity requests carry `networkId` in the JSON body. Get-by-id, parents, reports, clones, deletes, and network endpoints do not attach `networkId` at all.
 There is no separate Network Service — networks are fetched from `WORK_API_BASE_URL/api/networks`.
+
+The caller passes `networkId` in the `options` object to `workApiRequest()`:
+
+```js
+workApiRequest(v.session, 'GET', '/api/creative-asset-groups', { networkId: 'svce6t', params: { limit: 20 } })
+```
 
 Example request shape:
 ```
 GET /api/creative-asset-groups?networkId=svce6t
 GET /api/projects?networkId=svce6t&limit=20&offset=0
-POST /api/campaigns?networkId=svce6t
+POST /api/campaigns          { ..., "networkId": "svce6t" }
+GET /api/campaigns/c1        // no networkId; resolved from entity id
 ```
 
 `workApiRequest()` in `services/workApi.js` handles this automatically — always use it, never call axios directly in tools.
@@ -174,8 +185,7 @@ contract, enforced by nothing but the code that reads it):
   user_id,         // decoded from the JWT's sub/user_id/email field
   email,
   auth_token,      // Lincx JWT — injected as Bearer on every API call
-  networks,        // Network[] fetched from /api/networks at login
-  active_network   // short id like "svce6t", or null — appended as ?networkId
+  networks         // Network[] fetched from /api/networks at login
 }
 ```
 
@@ -293,25 +303,26 @@ defaults to `http://localhost:<PORT>`).
 import { z } from 'zod'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
+import { requiredNetworkIdShape } from './_shared.js'
 
 export function registerYourDomainTools (server) {
   server.registerTool('your_tool_name', {
     title: 'Human Readable Name',
     description: 'Clear description of what this does and what it returns.',
     inputSchema: z.object({
-      // never include networkId here
+      ...requiredNetworkIdShape,
       limit: z.number().int().min(1).max(100).default(20)
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ limit }, extra) => {
+  }, async ({ limit, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
 
     try {
-      const data = await workApiRequest(v.session, 'GET', '/api/your-endpoint', { params: { limit } })
+      const data = await workApiRequest(v.session, 'GET', '/api/your-endpoint', { networkId: network_id, params: { limit } })
       return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
     } catch (err) {
       return { content: [{ type: 'text', text: handleWorkApiError(err) }] }
@@ -340,8 +351,7 @@ registerYourDomainTools(server)
 
 ### Networks
 - `network_list` — list available networks (active only by default; `includeArchived`, `limit`/`offset` paging via `next_offset`)
-- `network_switch` — change active network
-- `network_refresh` — re-fetch networks from API, then return them in `network_list`'s slim/paged shape (same `includeArchived`/`limit`/`offset`/`verbose` args). It used to dump the raw list — 354 full objects, 82k chars — so the tool was unreachable behind the 30k guard with an empty input schema advertising pagination that did not exist. Adds `previous_network_id`/`active_network_changed` (the refresh silently moves the session to `networks[0]` when the active network disappears) and a `note` when the list comes back empty — `fetchUserNetworks` returns `[]` on failure as well as on a genuinely empty account, so bare `success: true` reads wrong.
+- `network_refresh` — re-fetch networks from API, then return them in `network_list`'s slim/paged shape (same `includeArchived`/`limit`/`offset`/`verbose` args). It used to dump the raw list — 354 full objects, 82k chars — so the tool was unreachable behind the 30k guard with an empty input schema advertising pagination that did not exist. Returns `success` and a `note` when the list comes back empty — `fetchUserNetworks` returns `[]` on failure as well as on a genuinely empty account, so bare `success: true` reads wrong.
 
 ### Resources (MCP Resources, `src/tools/resources.js`)
 Pull-based reference data — read by URI, not via a tool call. Not part of the

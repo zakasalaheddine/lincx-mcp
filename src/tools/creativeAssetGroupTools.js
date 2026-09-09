@@ -1,3 +1,4 @@
+/* eslint-disable camelcase -- Tool input / output fields and OAuth params are snake_case on the wire: protocol, not style. */
 /**
  * tools/creativeAssetGroupTools.js
  *
@@ -11,29 +12,28 @@
 import { z } from 'zod'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError, fitEntityToText, buildListEnvelope, listEnvelopeToText } from '../services/workApi.js'
-import { paginationShape } from './_shared.js'
+import { paginationShape, requiredNetworkIdShape } from './_shared.js'
 
 export function registerCreativeAssetGroupTools (server) {
   // ── list_creative_asset_groups ──────────────────────────────────────────────
   server.registerTool('list_creative_asset_groups', {
     title: 'List Creative Asset Groups',
-    description: `List all creative asset groups on the active network.
+    description: `List all creative asset groups on the specified network.
 
 Creative asset groups define the ad data schema — the fields (title, image URL, click URL, etc.)
 that ads must provide when rendered in a template.
 
 Each template is linked to exactly one creative asset group.`,
-    inputSchema: z.object({ ...paginationShape }).strict(),
+    inputSchema: z.object({ ...requiredNetworkIdShape, ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ limit, offset, fields }, extra) => {
+  }, async ({ limit, offset, fields, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
-      const data = await workApiRequest(v.session, 'GET', '/api/creative-asset-groups', { params: { limit, offset } })
+      const data = await workApiRequest(v.session, 'GET', '/api/creative-asset-groups', { networkId: network_id, params: { limit, offset } })
       const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }))
       return { content: [{ type: 'text', text }] }
     } catch (err) {
@@ -51,16 +51,16 @@ linked to this group (e.g. title: string, imageUrl: string, clickUrl: string).
 
 Use this with 'get_template' to understand what mock ad data a template expects.`,
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       id: z.string().describe('Creative asset group ID')
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ id }, extra) => {
+  }, async ({ id, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
       const data = await workApiRequest(v.session, 'GET', `/api/creative-asset-groups/${id}`)
       return { content: [{ type: 'text', text: fitEntityToText(data) }] }

@@ -1,3 +1,4 @@
+/* eslint-disable camelcase -- Tool input / output fields and OAuth params are snake_case on the wire: protocol, not style. */
 /**
  * tools/reportingTools.js
  *
@@ -11,24 +12,23 @@ import { z } from 'zod'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError, truncateIfNeeded, buildListEnvelope, listEnvelopeToText } from '../services/workApi.js'
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
-import { paginationShape } from './_shared.js'
+import { paginationShape, requiredNetworkIdShape } from './_shared.js'
 
 export function registerReportingTools (server) {
   // ── list_dimension_sets ──────────────────────────────────────────────────────
   server.registerTool('list_dimension_sets', {
     title: 'List Dimension Sets',
-    description: 'List all dimension sets available in the active network.',
-    inputSchema: z.object({ ...paginationShape }).strict(),
+    description: 'List all dimension sets available on the specified network.',
+    inputSchema: z.object({ ...requiredNetworkIdShape, ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ limit, offset, fields }, extra) => {
+  }, async ({ limit, offset, fields, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
-      const data = await workApiRequest(v.session, 'GET', '/api/dimension-sets', { params: { limit, offset } })
+      const data = await workApiRequest(v.session, 'GET', '/api/dimension-sets', { networkId: network_id, params: { limit, offset } })
       const text = listEnvelopeToText(buildListEnvelope(data, { limit, offset, fields }))
       return { content: [{ type: 'text', text }] }
     } catch (err) {
@@ -41,16 +41,16 @@ export function registerReportingTools (server) {
     title: 'Get Dimension Set',
     description: 'Fetch a single dimension set by ID. Used to inspect the metrics and dimensions available for a report_query call.',
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       id: z.string().describe('Dimension set ID')
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ id }, extra) => {
+  }, async ({ id, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
       const data = await workApiRequest(v.session, 'GET', `/api/dimension-sets/${id}`)
       const text = JSON.stringify(data)
@@ -63,18 +63,17 @@ export function registerReportingTools (server) {
   // ── get_event_stats_keys ─────────────────────────────────────────────────────
   server.registerTool('get_event_stats_keys', {
     title: 'Get Event Stats Keys',
-    description: 'Fetch unique event key-value pairs collected by the active network over the last 31 days. Useful for understanding what filter keys are available when running report_query.',
-    inputSchema: z.object({}).strict(),
+    description: 'Fetch unique event key-value pairs collected on the specified network over the last 31 days. Useful for understanding what filter keys are available when running report_query.',
+    inputSchema: z.object({ ...requiredNetworkIdShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async (_args, extra) => {
+  }, async ({ network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     try {
-      const data = await workApiRequest(v.session, 'GET', '/api/event-stats')
+      const data = await workApiRequest(v.session, 'GET', '/api/event-stats', { networkId: network_id })
       const text = JSON.stringify(data)
       return { content: [{ type: 'text', text: truncateIfNeeded(text) }] }
     } catch (err) {
@@ -93,6 +92,7 @@ export function registerReportingTools (server) {
 - Pass filter to SCOPE the report to one entity, e.g. { advertiser: 'Acme' } or { zone: 'Primary' } — this is how you answer "how did offer X do" without pulling the whole network. The upstream report has no entity filter, so filtering is applied server-side over the fetched rows; match the value the dimension emits (usually its name). Each filter key must be a real dimension of this set.
 - Only pass raw:true if you genuinely need every hourly row (large; may be truncated).`,
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       dimensionSetId: z.string().describe('Dimension set ID to query'),
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').describe('Required. Start date, YYYY-MM-DD (e.g. 2026-05-18)'),
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').describe('Required. End date, YYYY-MM-DD (e.g. 2026-05-25)'),
@@ -120,13 +120,12 @@ export function registerReportingTools (server) {
       rawTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional()
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ dimensionSetId, startDate, endDate, groupBy, filter, timezone, raw, testMode }, extra) => {
+  }, async ({ dimensionSetId, startDate, endDate, groupBy, filter, timezone, raw, testMode, network_id }, extra) => {
     const sessionId = await resolveLincxSession(extra)
     if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId)
+    const v = await validateSession(sessionId, network_id)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
-
     if (timezone && !isValidTimeZone(timezone)) {
       return { content: [{ type: 'text', text: `Error: '${timezone}' is not a valid IANA timezone (e.g. 'America/Denver', 'UTC').` }] }
     }

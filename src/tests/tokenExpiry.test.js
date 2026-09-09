@@ -35,8 +35,7 @@ test.serial('getJwtExpiry / isJwtExpired > is expired only when exp has passed; 
     user_id: 'u@x.com',
     email: 'u@x.com',
     auth_token: token,
-    networks: [{ id: 'net1', name: 'Net One' }],
-    active_network: 'net1'
+    networks: [{ id: 'net1', name: 'Net One' }]
   })
 
   test.serial('validateSession token-expiry gate > rejects an expired token with a clear re-login prompt before any network check', async t => {
@@ -58,7 +57,22 @@ test.serial('getJwtExpiry / isJwtExpired > is expired only when exp has passed; 
 
     const r = await validateSession('s-expiry-test')
     t.is(r.valid, true)
-    t.is(r.session?.active_network, 'net1')
+    t.is(r.session?.networks.length, 1)
+    await store.delete('s-expiry-test')
+  })
+
+  test.serial('validateSession networkId check > validates network membership when networkId is provided', async t => {
+    const store = await getSessionStore()
+    const fresh = jwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
+    await store.set('s-expiry-test', baseSession(fresh))
+
+    const validNet = await validateSession('s-expiry-test', 'net1')
+    t.is(validNet.valid, true)
+
+    const invalidNet = await validateSession('s-expiry-test', 'other_net')
+    t.is(invalidNet.valid, false)
+    t.is(invalidNet.error, "Network 'other_net' is not in your networks. Use 'network_list'.")
+
     await store.delete('s-expiry-test')
   })
 }

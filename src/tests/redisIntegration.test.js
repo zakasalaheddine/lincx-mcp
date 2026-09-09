@@ -82,13 +82,11 @@ test.serial('round-trips a session through Redis', async t => {
     user_id: 'u@example.com',
     email: 'u@example.com',
     auth_token: 'jwt-value',
-    networks: [{ id: 'svce6t', name: 'Net' }],
-    active_network: 'svce6t'
+    networks: [{ id: 'svce6t', name: 'Net' }]
   })
 
   const back = await s.get('itest-1')
   t.is(back.email, 'u@example.com')
-  t.is(back.active_network, 'svce6t')
   t.is(back.auth_token, 'jwt-value')
 
   await s.delete('itest-1')
@@ -103,7 +101,7 @@ test.serial('a session key carries the 7-day TTL', async t => {
   clients.push(r)
 
   await s.set('itest-ttl', {
-    session_id: 'itest-ttl', user_id: 'x', email: 'x', auth_token: 't', networks: [], active_network: null
+    session_id: 'itest-ttl', user_id: 'x', email: 'x', auth_token: 't', networks: []
   })
   const ttl = await r.ttl('lincx:session:itest-ttl')
   // A key written with no TTL (-1) outlives its session forever; that is the

@@ -32,8 +32,7 @@ async function handlers ({ refreshResult }) {
   const mod = await esmock('../tools/networkTools.js', {
     '../services/sessionManager.js': {
       resolveLincxSession: async () => 'test-session',
-      refreshNetworks: async () => refreshResult,
-      switchNetwork: async () => ({ success: true })
+      refreshNetworks: async () => refreshResult
     },
     '../services/sessionStore.js': { getSessionStore: async () => ({ get: async () => null }) }
   })
@@ -52,9 +51,7 @@ const callRefresh = async (registered, args = {}) => {
 test('network_refresh > fits the response guard on a 354-network account', async t => {
   const registered = await handlers({
     refreshResult: {
-      session: { networks: bigNetworks, active_network: 'live0' },
-      previous_network_id: 'live0',
-      active_network_changed: false
+      session: { networks: bigNetworks }
     }
   })
 
@@ -67,15 +64,13 @@ test('network_refresh > fits the response guard on a 354-network account', async
   t.is(body.total, 4) // active only by default
   t.is(body.archived_hidden, 350)
   // slim rows, not the full upstream objects
-  t.deepEqual(Object.keys(body.networks[0]).sort(), ['archived', 'id', 'is_active', 'name'])
+  t.deepEqual(Object.keys(body.networks[0]).sort(), ['archived', 'id', 'name'])
 })
 
 test('network_refresh > pages with the same limit/offset contract as network_list', async t => {
   const registered = await handlers({
     refreshResult: {
-      session: { networks: bigNetworks, active_network: 'live0' },
-      previous_network_id: 'live0',
-      active_network_changed: false
+      session: { networks: bigNetworks }
     }
   })
 
@@ -85,24 +80,23 @@ test('network_refresh > pages with the same limit/offset contract as network_lis
   t.true(page.content === undefined)
 })
 
-test('network_refresh > reports when the refresh moved the session off its network', async t => {
+test('network_refresh > returns the refreshed network list without server-side active-network fields', async t => {
   const registered = await handlers({
     refreshResult: {
-      session: { networks: [net('live0')], active_network: 'live0' },
-      previous_network_id: 'gone',
-      active_network_changed: true
+      session: { networks: [net('live0')] }
     }
   })
 
   const body = JSON.parse((await callRefresh(registered)).content[0].text)
-  t.is(body.active_network_changed, true)
-  t.is(body.previous_network_id, 'gone')
-  t.is(body.active_network_id, 'live0')
+  t.is(body.success, true)
+  t.is(body.total, 1)
+  t.falsy(body.active_network)
+  t.falsy(body.active_network_id)
 })
 
 test('network_refresh > an empty list says the fetch may have failed', async t => {
   const registered = await handlers({
-    refreshResult: { session: { networks: [], active_network: null }, previous_network_id: null, active_network_changed: true }
+    refreshResult: { session: { networks: [] } }
   })
 
   const body = JSON.parse((await callRefresh(registered)).content[0].text)

@@ -62,13 +62,13 @@ export function registerResources (server) {
     'lincx://networks',
     {
       title: 'Networks',
-      description: 'Networks the current session can access, plus which one is active. Use the network_switch tool to change the active network.',
+      description: 'Networks the current session can access. Pass the desired network_id to business tools; resources resolve the network from the entity id.',
       mimeType: 'application/json'
     },
     async (uri, extra) => {
       const r = await requireSession(extra)
       if ('error' in r) return plain(uri, r.error)
-      return json(uri, { active_network: r.session.active_network, networks: r.session.networks ?? [] })
+      return json(uri, { networks: r.session.networks ?? [] })
     }
   )
 
@@ -79,7 +79,7 @@ export function registerResources (server) {
       new ResourceTemplate(`lincx://${seg}/{id}`, { list: undefined }),
       {
         title: `${seg} by id`,
-        description: `A single ${seg} by id — equivalent to GET ${basePath}/{id}.`,
+        description: `A single ${seg} by id — equivalent to GET ${basePath}/{id}. The Work API resolves the network from the entity id.`,
         mimeType: 'application/json'
       },
       async (uri, variables, extra) => {

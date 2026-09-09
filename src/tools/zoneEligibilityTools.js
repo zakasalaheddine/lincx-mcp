@@ -1,3 +1,4 @@
+/* eslint-disable camelcase -- Tool input / output fields and OAuth params are snake_case on the wire: protocol, not style. */
 /**
  * tools/zoneEligibilityTools.js
  *
@@ -14,6 +15,7 @@
  */
 
 import { z } from 'zod'
+import { requiredNetworkIdShape } from './_shared.js'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
@@ -29,10 +31,10 @@ import {
 const err = (text) => ({ content: [{ type: 'text', text }] })
 
 /** Resolve + validate the session; returns the session or a ready-to-return error. */
-async function guard (extra) {
+async function guard (extra, networkId) {
   const sessionId = await resolveLincxSession(extra)
   if (!sessionId) return { ok: false, result: err("Error: Not authenticated. Use 'auth_login' first.") }
-  const v = await validateSession(sessionId)
+  const v = await validateSession(sessionId, networkId)
   if (!v.valid || !v.session) return { ok: false, result: err(`Error: ${v.error}`) }
   return { ok: true, session: v.session }
 }
@@ -40,13 +42,13 @@ async function guard (extra) {
 ;
 
 /** One GET per entity — each returns the whole network set (documented in workApi). */
-async function fetchIndex (session) {
+async function fetchIndex (session, network_id) {
   const [zonesRaw, adGroupsRaw, campaignsRaw, adsRaw, creativesRaw] = await Promise.all([
-    workApiRequest(session, 'GET', '/api/zones'),
-    workApiRequest(session, 'GET', '/api/ad-groups'),
-    workApiRequest(session, 'GET', '/api/campaigns'),
-    workApiRequest(session, 'GET', '/api/ads'),
-    workApiRequest(session, 'GET', '/api/creatives')
+    workApiRequest(session, 'GET', '/api/zones', { networkId: network_id }),
+    workApiRequest(session, 'GET', '/api/ad-groups', { networkId: network_id }),
+    workApiRequest(session, 'GET', '/api/campaigns', { networkId: network_id }),
+    workApiRequest(session, 'GET', '/api/ads', { networkId: network_id }),
+    workApiRequest(session, 'GET', '/api/creatives', { networkId: network_id })
   ])
   const zones = asRows(zonesRaw)
   const adGroups = asRows(adGroupsRaw)
@@ -286,6 +288,7 @@ Each row also carries the same live rollup as get_zone_targeting_inventory (camp
 
 EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A zone with too many groups for one response is PAGED, not degraded: use bucket to select one bucket (e.g. bucket:'freeRadicals' for a pure free-radical subset) and offset to walk the rest. The response carries page: { bucket, offset, returned, total, next_offset? } and complete (true only when this ONE response holds the entire selected slice — offset 0 and no next_offset). summary is ALWAYS exact over the full set, regardless of bucket/offset — so with bucket:'all' and complete:true the arrays match the summary counts one-for-one. The only case where a row body is not returned is pathological (a single ad group whose row alone exceeds the whole response budget): then ids are returned with complete:false and a note, never a silent partial. Whole-network scan server-side; compact result in the content text (header + compact JSON).`,
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       zoneId: z.string().describe('Zone ID to list eligible ad groups for'),
       bucket: z.enum(['all', 'directlyTargeted', 'freeRadicals', 'conflicting', 'inertWhitelists']).default('all')
         .describe("Which bucket(s) to return rows for. Summary counts always cover the full set; this only narrows the ROWS so a large zone fits in one response (e.g. 'freeRadicals' for a pure free-radical subset, or 'inertWhitelists' for ads whose zone whitelist is dead because their group cannot reach the zone)."),
@@ -293,14 +296,15 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
         .describe('Row offset within the selected bucket(s) — pass the next_offset from a previous call to continue.')
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ zoneId, bucket, offset }, extra) => {
-    const g = await guard(extra)
+  }, async ({ zoneId, bucket, offset, network_id }, extra) => {
+    const g = await guard(extra, network_id)
     if (!g.ok) return g.result
     try {
       const zoneRaw = await workApiRequest(g.session, 'GET', `/api/zones/${zoneId}`)
       const zone = asEntity(zoneRaw)
       if (!zone.id) return err('Error: Resource not found. Double-check the zone ID.')
-      const idx = await fetchIndex(g.session)
+      if (zone.networkId && zone.networkId !== network_id) return err(`Error: Zone '${zoneId}' belongs to network '${zone.networkId}', not '${network_id}'.`)
+      const idx = await fetchIndex(g.session, network_id)
       const zoneLite = { id: String(zone.id), name: String(zone.name ?? zone.id), creativeAssetGroupId: zone.creativeAssetGroupId, templateId: zone.templateId }
 
       const { directlyTargeted, freeRadicals, conflicting, inertWhitelists } = zoneEligibility(idx.adGroups, zoneLite, idx.adsByGroup)
@@ -321,15 +325,16 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
   server.registerTool('get_ad_group_zone_reach', {
     title: 'Ad Group Zone Reach',
     description: 'Show every zone an ad group can serve or LEAK into — the flip of get_zone_eligible_ad_groups. For the given ad group, evaluates the same eligibility join against all zones: it reaches a zone when the CAG matches, it is not blacklisted there, and it is in scope (whitelists the zone or targets zero zones → free radical across every zone sharing its CAG). Returns each reachable zone with via[] and any conflicts[]. Whole-network scan server-side; compact result in the content text.',
-    inputSchema: z.object({ adGroupId: z.string().describe('Ad group ID to compute zone reach for') }).strict(),
+    inputSchema: z.object({ ...requiredNetworkIdShape, adGroupId: z.string().describe('Ad group ID to compute zone reach for') }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ adGroupId }, extra) => {
-    const g = await guard(extra)
+  }, async ({ adGroupId, network_id }, extra) => {
+    const g = await guard(extra, network_id)
     if (!g.ok) return g.result
     try {
       const agRaw = await workApiRequest(g.session, 'GET', `/api/ad-groups/${adGroupId}`)
       const agE = asEntity(agRaw)
       if (!agE.id) return err('Error: Resource not found. Double-check the ad group ID.')
+      if (agE.networkId && agE.networkId !== network_id) return err(`Error: Ad group '${adGroupId}' belongs to network '${agE.networkId}', not '${network_id}'.`)
       const adGroup = {
         id: String(agE.id),
         name: agE.name,
@@ -338,7 +343,7 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
         exceptParams: agE.exceptParams,
         creativeAssetGroupId: agE.creativeAssetGroupId
       }
-      const idx = await fetchIndex(g.session)
+      const idx = await fetchIndex(g.session, network_id)
       const ads = idx.adsByGroup[adGroup.id] ?? []
       const reach = adGroupReach(adGroup, idx.zones, ads)
       const named = reach.map((e) => ({ ...e, zoneName: idx.zones.find((z) => z.id === e.zoneId)?.name ?? e.zoneId }))
@@ -353,19 +358,21 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
     title: 'Explain Serve',
     description: 'Explain, for a single (zone, ad group OR ad) pair, whether it is eligible to serve in the zone, by what path (via[]), and if not, why not (reasons[]) — the "why did X serve in this zone?" direction of the eligibility join. Pass exactly one of adGroupId or adId (an adId is resolved to its ad group; its own ad-level whitelist/blacklist for the zone is also reported). With an adId the answer is at the OFFER grain (ad group × ad): it adds offer: { scoped_via[] — \'ad-group-whitelist\' | \'ad-group-blacklist\' | \'ad-level-whitelist\' | \'ad-level-blacklist\' | \'zone-selection\' — freeRadical, true only when the pair serves via the shared CAG alone (untargeted group AND untargeted ad, net of blacklists at both levels), and conflicts[], which carries \'inert-ad-level-whitelist\' when this ad whitelists the zone but its group cannot reach it, so the whitelist is dead config that never fires }. Returns the single eligibility verdict with any conflicts[]. Whole-network scan server-side.',
     inputSchema: z.object({
+      ...requiredNetworkIdShape,
       zoneId: z.string().describe('Zone ID to explain serving in'),
       adGroupId: z.string().optional().describe('Ad group ID to explain (omit if passing adId)'),
       adId: z.string().optional().describe('Ad ID to explain (resolved to its ad group; omit if passing adGroupId)')
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ zoneId, adGroupId, adId }, extra) => {
+  }, async ({ zoneId, adGroupId, adId, network_id }, extra) => {
     if ((adGroupId ? 1 : 0) + (adId ? 1 : 0) !== 1) return err('Error: pass exactly one of adGroupId or adId.')
-    const g = await guard(extra)
+    const g = await guard(extra, network_id)
     if (!g.ok) return g.result
     try {
       const zoneRaw = await workApiRequest(g.session, 'GET', `/api/zones/${zoneId}`)
       const zone = asEntity(zoneRaw)
       if (!zone.id) return err('Error: Resource not found. Double-check the zone ID.')
+      if (zone.networkId && zone.networkId !== network_id) return err(`Error: Zone '${zoneId}' belongs to network '${zone.networkId}', not '${network_id}'.`)
       const zoneLite = { id: String(zone.id), name: String(zone.name ?? zone.id), creativeAssetGroupId: zone.creativeAssetGroupId }
 
       let ad
@@ -374,6 +381,7 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
         const adRaw = await workApiRequest(g.session, 'GET', `/api/ads/${adId}`)
         const adE = asEntity(adRaw)
         if (!adE.id) return err('Error: Resource not found. Double-check the ad ID.')
+        if (adE.networkId && adE.networkId !== network_id) return err(`Error: Ad '${adId}' belongs to network '${adE.networkId}', not '${network_id}'.`)
         ad = { id: String(adE.id), enabled: adE.enabled, archived: adE.archived, creativeId: adE.creativeId, params: adE.params, exceptParams: adE.exceptParams, adGroupId: adE.adGroupId }
         groupId = ad.adGroupId
         if (!groupId) return err('Error: that ad has no ad group.')
@@ -381,6 +389,7 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
       const agRaw = await workApiRequest(g.session, 'GET', `/api/ad-groups/${groupId}`)
       const agE = asEntity(agRaw)
       if (!agE.id) return err('Error: Resource not found. Double-check the ad group ID.')
+      if (agE.networkId && agE.networkId !== network_id) return err(`Error: Ad group '${groupId}' belongs to network '${agE.networkId}', not '${network_id}'.`)
       const adGroup = { id: String(agE.id), name: agE.name, archived: agE.archived, params: agE.params, exceptParams: agE.exceptParams, creativeAssetGroupId: agE.creativeAssetGroupId }
 
       // Group-level verdict first; ad-level params only narrow WHICH ads serve within it.

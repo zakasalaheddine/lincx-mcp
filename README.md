@@ -27,7 +27,7 @@ The client handles authentication automatically:
 5. Exchanges the auth code at `/oauth/token` for access + refresh tokens
 6. Sends `Authorization: Bearer <access_token>` on every `/mcp` call
 
-Tokens are stored by your MCP client and survive desktop-app reloads — no re-auth on reconnect. Once signed in, run `network_list` → `network_switch` to pick a network.
+Tokens are stored by your MCP client and survive desktop-app reloads — no re-auth on reconnect. Once signed in, run `network_list` to see your networks, then pass the chosen `network_id` to any business tool.
 
 ---
 
@@ -50,7 +50,7 @@ client on every `/mcp` request) and the Lincx JWT (server-side only, used by
 `workApiRequest`). They meet in Redis: `oauth:access:<token>` →
 `lincx_session_id` → Lincx session.
 
-Multi-tenancy is handled by appending `?networkId=<id>` to every Work API request. The `networkId` is always injected server-side from the active session — Claude never controls it directly.
+Multi-tenancy is scoped per tool call: every business tool takes a required `network_id` argument, which `workApiRequest` attaches to the Work API request (`?networkId=<id>` on list endpoints). There is no server-side active network.
 
 ---
 
@@ -58,33 +58,43 @@ Multi-tenancy is handled by appending `?networkId=<id>` to every Work API reques
 
 ```
 src/
-├── index.ts                     # Entry point: MCP server + Express login UI
-├── types.ts                     # Shared TypeScript types
-├── constants.ts                 # Env vars with defaults
+├── index.js                     # Bootstrap — loads secrets/env, then calls server.js start()
+├── server.js                    # MCP tool registration + start({ port })
+├── constants.js                 # Env vars with defaults
+│
+├── http/                        # respond / request / router / health — the whole URL surface
+├── middleware/                  # toolGuard (response-size guard), rateLimit
+├── routes/                      # Login UI + OAuth endpoints
+├── views/                       # Login page template
 │
 ├── services/
-│   ├── auth.ts                  # loginWithCredentials() → identity server
-│   ├── sessionStore.ts          # Redis (or in-memory) session persistence
-│   ├── sessionManager.ts        # create / validate / switch / destroy sessions
-│   ├── networkService.ts        # fetchUserNetworks() from /api/networks
-│   └── workApi.ts               # Authenticated HTTP client (?networkId injected on every call)
+│   ├── auth.js                  # loginWithCredentials() → identity server
+│   ├── sessionStore.js          # Redis (or in-memory) session persistence
+│   ├── sessionManager.js        # create / validate / refreshNetworks / destroy sessions
+│   ├── networkService.js        # fetchUserNetworks() from /api/networks
+│   ├── oauth/                   # clients, codes, tokens, pkce, metadata
+│   └── workApi.js               # Authenticated Work API client (?networkId on list GETs)
 │
 └── tools/
-    ├── authTools.ts             # auth_login, auth_status, auth_logout
-    ├── networkTools.js          # network_list, network_switch, network_refresh
-    ├── templateTools.ts         # list_templates, get_template, get_template_versions, get_template_version, get_template_parents, render_template
-    ├── creativeAssetGroupTools.ts # list_creative_asset_groups, get_creative_asset_group
-    ├── zoneTools.ts             # list_zones, get_zone, get_zone_parents, get_zone_report, zone_load_trace
-    ├── adTools.ts               # list_ads, get_ad, get_ad_parents, get_zone_ads
-    ├── adGroupTools.ts          # list_ad_groups, get_ad_group, get_ad_group_parents
-    ├── creativeTools.ts         # list_creatives, get_creative, get_creative_parents
-    ├── campaignTools.ts         # list_campaigns, get_campaign, get_campaign_parents
-    ├── channelTools.ts          # list_channels, get_channel, get_channel_parents
-    ├── siteTools.ts             # list_sites, get_site, get_site_parents
-    ├── publisherTools.ts        # list_publishers, get_publisher
-    ├── reportingTools.ts        # list_dimension_sets, get_dimension_set, get_event_stats_keys, report_query
-    ├── advertiserTools.ts       # list_advertisers, get_advertiser
-    └── experienceTools.ts       # list_experiences, get_experience
+    ├── authTools.js             # auth_login, auth_status, auth_logout
+    ├── networkTools.js          # network_list, network_refresh
+    ├── templateTools.js         # list_templates, get_template, get_template_versions, get_template_version
+    ├── creativeAssetGroupTools.js # list_creative_asset_groups, get_creative_asset_group
+    ├── zoneTools.js             # list_zones, get_zone, get_zone_report
+    ├── zoneInventoryTools.js    # get_zone_targeting_inventory
+    ├── zoneEligibilityTools.js  # get_zone_eligible_ad_groups, get_ad_group_zone_reach, explain_serve
+    ├── adTools.js               # list_ads, get_ad, get_zone_ads
+    ├── adGroupTools.js          # list_ad_groups, get_ad_group
+    ├── creativeTools.js         # list_creatives, get_creative
+    ├── campaignTools.js         # list_campaigns, get_campaign
+    ├── channelTools.js          # list_channels, get_channel
+    ├── siteTools.js             # list_sites, get_site
+    ├── publisherTools.js        # list_publishers, get_publisher
+    ├── advertiserTools.js       # list_advertisers, get_advertiser
+    ├── experienceTools.js       # list_experiences, get_experience
+    ├── analysisTools.js         # list_analyses, get_analysis
+    ├── reportingTools.js        # list_dimension_sets, get_dimension_set, get_event_stats_keys, report_query
+    └── resources.js             # MCP Resources: lincx://networks + lincx://{entity}/{id}
 ```
 
 ---
@@ -224,218 +234,220 @@ must equal the URL the client hits — left unset locally it defaults to
 4. Enter your Lincx email and password
 5. Browser shows a confirmation screen — **close the tab**
 6. Back in Claude, call `auth_status` to confirm the session and see your available networks
-7. If you have multiple networks, call `network_switch` with the network you want to work on
+7. Pass the `network_id` you want to work on to any business tool — it is a required argument on every call
 
 ---
 
 ## Tool reference
 
+Every business tool below takes a **required `network_id`** argument — a 6-character id from `network_list`, passed on each call (there is no server-side active network). Common parameters, omitted from the per-row lists:
+
+- `list_*` tools: `limit` (default 25, max 100), `offset`, `fields` (extra item fields to project beyond `{ id, name }` plus status fields)
+- `get_*` tools: `id`, plus `include: ['parents']` to fetch the parent hierarchy in the same call
+
 ### Auth
 
-| Tool | Description |
-|------|-------------|
-| `auth_login` | Returns the browser login URL. Open it to authenticate. |
-| `auth_status` | Shows current session: email, active network, available networks. |
-| `auth_logout` | Destroys the session. Re-login required for further API calls. |
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `auth_login` | — | Returns the browser login URL. Open it to authenticate. |
+| `auth_status` | `includeArchived`, `limit`, `offset`, `verbose` | Shows current session: email and available networks. |
+| `auth_logout` | — | Destroys the session. Re-login required for further API calls. |
 
 ### Networks
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `network_list` | — | Lists all networks accessible to your account. |
-| `network_switch` | `network_id` | Sets the active network. All subsequent API calls use this network. |
-| `network_refresh` | `includeArchived`, `limit`, `offset`, `verbose` | Re-fetches the network list from the API and returns it in `network_list`'s slim/paged shape (use after network changes, or when login returned no networks). |
+| `network_list` | `includeArchived`, `limit`, `offset`, `verbose` | Lists all networks accessible to your account (active only by default). |
+| `network_refresh` | `includeArchived`, `limit`, `offset`, `verbose` | Re-fetches the network list from the API (use after network changes, or when login returned no networks). |
 
 ### Templates
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_templates` | `limit`, `offset` | Paginated list of all templates on the active network. |
+| `list_templates` | `publisherId` | Templates on the network. |
 | `get_template` | `id` | Full template details including HTML and CSS source. |
-| `get_template_versions` | `id` | All versions of a template. |
-| `get_template_version` | `id`, `version` | A specific version of a template by version number. |
-| `get_template_parents` | `id` | Parent entities of a template (network, etc.). |
-| `render_template` | `templateId`, `version?`, `mockAds?` | Composite tool: fetches the template and its creative asset group schema, generates mock ad data, returns the raw HTML + CSS + mock data used. No server-side rendering — the engineer previews the HTML string locally. |
+| `get_template_versions` | `id` | All saved versions of a template. |
+| `get_template_version` | `id`, `version` | HTML + CSS source of a specific version by version number. |
 
 ### Creative Asset Groups
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_creative_asset_groups` | `limit`, `offset` | Paginated list of creative asset groups on the active network. |
+| `list_creative_asset_groups` | — | Creative asset groups on the network. |
 | `get_creative_asset_group` | `id` | Full creative asset group details, including the field schema that defines what data ads must provide. |
 
 ### Zones
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_zones` | `limit`, `offset` | Paginated list of zones on the active network. |
+| `list_zones` | `publisherId`, `channelId`, `siteId` | Zones on the network. |
 | `get_zone` | `id` | Full zone configuration. |
-| `get_zone_parents` | `id` | Parent hierarchy of a zone (site → publisher → network). |
-| `get_zone_report` | `id`, `startDate?`, `endDate?`, `resolution?` | Time-series performance report for a zone. Resolution: `day` (default) or `hour`. |
-| `zone_load_trace` | `zoneId` | Composite diagnostic tool: in parallel, fetches the zone, its parents, the ads that would serve, debug matching data, per-ad details, creatives, and the template. Returns a structured blob + a summary string. Use this to debug why a zone is or isn't serving ads. |
+| `get_zone_report` | `id`, `startDate`, `endDate`, `resolution` | Time-series performance report for a zone. `resolution`: `day` (default) or `hour`. |
+
+### Zone audits (server-side composites)
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_zone_targeting_inventory` | `zoneId`, `mode` | Which ad groups are directly targeted to a zone, and whether each is fully live (campaign + ad group + live ad with viable creative). `mode`: `all` (default), `live`, `off`. |
+| `get_zone_eligible_ad_groups` | `zoneId`, `bucket`, `offset` | Every ad group eligible to serve in a zone, bucketed: `directlyTargeted`, `freeRadicals`, `conflicting`, `inertWhitelists`. |
+| `get_ad_group_zone_reach` | `adGroupId` | Every zone an ad group can serve or leak into — the flip of `get_zone_eligible_ad_groups`. |
+| `explain_serve` | `zoneId`, `adGroupId` or `adId` | Why a (zone, ad group/ad) pair is or isn't eligible to serve, and by what path. |
 
 ### Ads
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_ads` | `limit`, `offset` | Paginated list of ads on the active network. |
+| `list_ads` | `adGroupId`, `campaignId`, `advertiserId` | Ads on the network. |
 | `get_ad` | `id` | Full ad configuration. |
-| `get_ad_parents` | `id` | Parent hierarchy of an ad (ad group → campaign → network). |
-| `get_zone_ads` | `zoneId`, `adFeedCount?`, `geoState?`, `geoCity?`, `geoIP?`, `geoPostal?`, `geoCountry?`, `scoreKey?` | Calls the live ad-serving endpoint for a zone. Returns the ads that would be shown and the template they render into (`{ ads, template }`). Supports geo and scoring parameters. |
+| `get_zone_ads` | `zoneId`, `debug`, `adFeedCount`, `geoState`, `geoCity`, `geoIP`, `geoPostal`, `geoCountry`, `scoreKey` | Calls the live ad-serving endpoint for a zone — the ads that would be shown and the template they render into (`{ ads, template }`). `debug: true` returns ad-group match/reject diagnostics. |
 
 ### Ad Groups
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_ad_groups` | `limit`, `offset` | Paginated list of ad groups on the active network. |
+| `list_ad_groups` | `advertiserId`, `campaignId` | Ad groups on the network. |
 | `get_ad_group` | `id` | Full ad group configuration. |
-| `get_ad_group_parents` | `id` | Parent hierarchy of an ad group (campaign → network). |
 
 ### Creatives
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_creatives` | `limit`, `offset` | Paginated list of creatives on the active network. |
+| `list_creatives` | `advertiserId` | Creatives on the network. |
 | `get_creative` | `id` | Full creative details. |
-| `get_creative_parents` | `id` | Parent hierarchy of a creative (ad → ad group → campaign). |
 
 ### Campaigns
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_campaigns` | `limit`, `offset` | Paginated list of campaigns on the active network. |
+| `list_campaigns` | `advertiserId` | Campaigns on the network. |
 | `get_campaign` | `id` | Full campaign configuration. |
-| `get_campaign_parents` | `id` | Parent hierarchy of a campaign (network). |
 
 ### Channels
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_channels` | `limit`, `offset` | Paginated list of channels on the active network. |
+| `list_channels` | `publisherId` | Channels on the network. |
 | `get_channel` | `id` | Full channel configuration. |
-| `get_channel_parents` | `id` | Parent hierarchy of a channel. |
 
 ### Sites
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_sites` | `limit`, `offset` | Paginated list of sites on the active network. |
+| `list_sites` | `publisherId`, `channelId` | Sites on the network. |
 | `get_site` | `id` | Full site configuration. |
-| `get_site_parents` | `id` | Parent hierarchy of a site (publisher → network). |
 
 ### Publishers
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_publishers` | `limit`, `offset` | Paginated list of publishers on the active network. |
+| `list_publishers` | — | Publishers on the network. |
 | `get_publisher` | `id` | Full publisher details. |
 
 ### Advertisers
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_advertisers` | `limit`, `offset` | Paginated list of advertisers on the active network. |
+| `list_advertisers` | — | Advertisers on the network. |
 | `get_advertiser` | `id` | Full advertiser details. |
 
 ### Experiences
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_experiences` | `limit`, `offset` | Paginated list of experiences on the active network. |
+| `list_experiences` | `publisherId`, `channelId`, `siteId` | Experiences on the network. |
 | `get_experience` | `id` | Full experience details. |
 
-### Dimension Sets
+### Analyses
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `list_dimension_sets` | `limit`, `offset` | Paginated list of dimension sets configured for the active network. Dimension sets define the available reporting dimensions (zone, campaign, day, etc.). |
+| `list_analyses` | `status`, `limit`, `cursor` | Zone-tier analysis jobs on the network, newest first. |
+| `get_analysis` | `id` | One analysis job by ID — poll until `succeeded` or `failed`. |
+
+### Dimension Sets & Reporting
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `list_dimension_sets` | — | Dimension sets configured for the network — they define the available reporting dimensions (zone, campaign, day, etc.). |
 | `get_dimension_set` | `id` | Full dimension set details. Use this to inspect which metrics and dimensions are available for a `report_query` call. |
-
-### Reporting
-
-| Tool | Parameters | Description |
-|------|-----------|-------------|
-| `get_event_stats_keys` | — | Returns unique event key-value pairs collected by the active network over the last 31 days. Use this to discover what filter dimensions are available before calling `report_query`. |
-| `report_query` | `dimensionSetId`, `startDate`, `endDate`, `groupBy?`, `raw?`, `testMode?` | Runs `GET /api/reports/{dimensionSetId}` and **aggregates server-side**, returning compact rolled-up metric sums. `startDate`/`endDate` (YYYY-MM-DD) are required. Omit `groupBy` for a grand total, or pass it for breakdowns (`["zone"]`, `["zone","date"]`, `["advertiser"]`, …). `raw: true` returns the unaggregated hourly rows (large). |
+| `get_event_stats_keys` | — | Unique event key-value pairs collected on the network over the last 31 days. Use this to discover filter keys before calling `report_query`. |
+| `report_query` | `dimensionSetId`, `startDate`, `endDate`, `groupBy`, `filter`, `timezone`, `raw`, `testMode` | Runs `GET /api/reports/{dimensionSetId}` and **aggregates server-side**, returning compact rolled-up metric sums. `startDate`/`endDate` (YYYY-MM-DD) are required. Omit `groupBy` for a grand total, or pass it for breakdowns (`["zone"]`, `["zone","date"]`, `["advertiser"]`, …). `filter` scopes the report to one entity server-side; `raw: true` returns the unaggregated hourly rows (large). |
 
 ---
 
 ## Multi-tenancy
 
-Every Work API call automatically gets `?networkId=<active_network>` appended:
+`network_id` is a required argument on every business tool. `workApiRequest` attaches it as `?networkId=<id>` on Work API **list** endpoints:
 
 ```
-GET /api/zones?networkId=<networkId>
-GET /api/reports/<dimensionSetId>?networkId=<networkId>&startDate=...
-POST /api/campaigns?networkId=<networkId>
+GET /api/zones?networkId=<id>
+GET /api/campaigns?networkId=<id>&limit=20
 ```
 
-The `networkId` comes from `session.active_network`, set by `network_switch`. Claude never passes `networkId` directly — it calls `network_switch` and the server handles the rest.
+Get-by-id, parents, reports, and network endpoints resolve tenancy from the entity ID and receive no `networkId` at all — those tools still take `network_id` for a uniform call shape, but do not forward it.
 
 ---
 
 ## Security model
 
 **Claude never sees or controls:**
-- `auth_token` (stored server-side only, never returned to Claude)
-- `networkId` query param (injected from `session.active_network`)
-- `session_id` (lives in MCP server process memory only)
+- `auth_token` (the Lincx JWT — stored server-side only, never returned to Claude)
+- `session_id` (resolved from the OAuth bearer on each request, never exposed via any tool)
 
-**Claude only controls:**
-- `network_switch(network_id)` → sets the active network in the session
-- Business tool parameters (entity IDs, pagination, date ranges, filters) — never auth or network context
+**Claude controls:**
+- `network_id` — a required argument on every business tool (call `network_list` for valid ids)
+- Business tool parameters (entity IDs, pagination, date ranges, filters)
 
 ---
 
 ## Adding new tools
 
-1. Create `src/tools/yourDomainTools.ts`
+1. Create `src/tools/yourDomainTools.js`
 2. Follow the pattern:
-   - Call `validateSession(sessionId)` first — fail fast if not authenticated
-   - **Never** accept `networkId` as a tool parameter
-   - Use `workApiRequest(session, method, path, opts)` — `?networkId` is injected automatically
-   - Wrap all JSON responses with `truncateIfNeeded()` before returning
+   - Resolve the session from the request's OAuth bearer via `resolveLincxSession(extra)`, then call `validateSession(sessionId, network_id)` — fail fast if not authenticated
+   - Spread `requiredNetworkIdShape` into the input schema and pass `network_id` to `workApiRequest` via `options.networkId`
+   - Use `workApiRequest(session, method, path, opts)` — never call `fetch`/`axios` directly in tools
    - Use `handleWorkApiError(err)` in catch blocks
    - Use `z.object({...}).strict()` on all input schemas
-   - Use `type: "text" as const` on all content array entries
+   - Never log OAuth tokens or the Lincx JWT
 
-```ts
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
-import { validateSession } from "../services/sessionManager.js";
-import { workApiRequest, handleWorkApiError, truncateIfNeeded } from "../services/workApi.js";
+```js
+import { z } from 'zod'
+import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
+import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
+import { requiredNetworkIdShape } from './_shared.js'
 
-export function registerYourDomainTools(server: McpServer, getSessionId: () => string | null): void {
-  server.registerTool("your_tool_name", {
-    title: "Human Readable Name",
-    description: "What this tool does and what it returns.",
+export function registerYourDomainTools (server) {
+  server.registerTool('your_tool_name', {
+    title: 'Human Readable Name',
+    description: 'What this tool does and what it returns.',
     inputSchema: z.object({
-      id: z.string().describe("Entity ID"),
+      ...requiredNetworkIdShape,
+      limit: z.number().int().min(1).max(100).default(20)
     }).strict(),
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ id }) => {
-    const sessionId = getSessionId();
-    if (!sessionId) return { content: [{ type: "text" as const, text: "Error: Not authenticated. Use 'auth_login' first." }] };
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+  }, async ({ limit, network_id }, extra) => {
+    const sessionId = await resolveLincxSession(extra)
+    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId);
-    if (!v.valid || !v.session) return { content: [{ type: "text" as const, text: `Error: ${v.error}` }] };
+    const v = await validateSession(sessionId, network_id)
+    if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
 
     try {
-      const data = await workApiRequest<unknown>(v.session, "GET", `/api/your-endpoint/${id}`);
-      const text = JSON.stringify(data, null, 2);
-      return { content: [{ type: "text" as const, text: truncateIfNeeded(text) }] };
+      const data = await workApiRequest(v.session, 'GET', '/api/your-endpoint', { networkId: network_id, params: { limit } })
+      return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] }
     } catch (err) {
-      return { content: [{ type: "text" as const, text: handleWorkApiError(err) }] };
+      return { content: [{ type: 'text', text: handleWorkApiError(err) }] }
     }
-  });
+  })
 }
 ```
 
-3. Register in `src/index.ts`:
+3. Register in `createMcpServer()` in `src/server.js`:
 
-```ts
-import { registerYourDomainTools } from "./tools/yourDomainTools.js";
-registerYourDomainTools(server, getSessionId);
+```js
+import { registerYourDomainTools } from './tools/yourDomainTools.js'
+registerYourDomainTools(server)
 ```
 
 4. Lint it: `npm run lint`
@@ -460,7 +472,7 @@ registerYourDomainTools(server, getSessionId);
 → Check `WORK_API_BASE_URL` is correct and reachable. Run `network_refresh` to retry fetching networks.
 
 **Wrong network on API calls**
-→ Run `auth_status` to see which network is active, then `network_switch` to correct it.
+→ Check the `network_id` passed on the call — run `network_list` for the valid ids.
 
 **Large responses truncated**
 → Expected — `truncateIfNeeded` caps response size to keep MCP messages manageable. Use more specific tools (e.g. `get_zone` instead of `list_zones`) to retrieve targeted data without truncation.
@@ -473,9 +485,11 @@ Full step-by-step guide: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 Production is Google App Engine Standard (`nodejs22`) with Memorystore Redis —
 no build step, no container. See [DEPLOYMENT.md](DEPLOYMENT.md).
-The requirement that bites is **exactly one running instance** (MCP transport state
-is in process memory; Redis holds auth, not connections), which is why `app.yaml`
-pins `manual_scaling: instances: 1`.
+The MCP transport is **stateless** — identity is the OAuth bearer on each request,
+resolved to a Lincx session in Redis — so the service can run more than one
+instance and restart without dropping clients. `app.yaml` still pins
+`manual_scaling: instances: 1` as a staged-rollout hold (the rate limiter counts
+in-process; lifting the pin is its own deploy).
 
 | File | Use |
 |------|-----|

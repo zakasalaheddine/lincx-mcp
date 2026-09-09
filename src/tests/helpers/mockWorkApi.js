@@ -36,7 +36,13 @@ export function workApiMock (routes = []) {
 export function sessionMock (overrides = {}) {
   return {
     resolveLincxSession: async () => 'test-session',
-    validateSession: async () => ({ valid: true, session: { token: 't' } }),
+    validateSession: async () => ({
+      valid: true,
+      session: {
+        auth_token: 't',
+        networks: [{ id: 'n1', name: 'Test Network' }]
+      }
+    }),
     ...overrides
   }
 }

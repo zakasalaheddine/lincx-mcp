@@ -2,7 +2,7 @@
 /**
  * tools/authTools.js
  *
- * auth_login  — points the caller at their client's OAuth flow.
+ * auth_login  — points the caller at their client OAuth flow.
  * auth_status — reports current session state.
  * auth_logout — destroys the Lincx session behind the caller's OAuth token.
  *   It does NOT revoke the OAuth grant: the access token stays valid for its hour
@@ -55,16 +55,16 @@ Use 'auth_status' to check the current session.`,
 Returns:
   - authenticated (boolean)
   - email (string)
-  - active_network: currently selected network ID
   - networks: accessible networks (active only by default, slimmed to
-    { id, name, is_active, archived }) plus total / archived_hidden /
+    { id, name, archived }) plus total / archived_hidden /
     next_offset paging fields
 
 Pass includeArchived: true to include archived networks, limit/offset to page,
 and verbose: true for full network objects. Defaults keep the response small on
 high-network accounts.
 
-Use after 'auth_login' to confirm the session is ready.`,
+Network context is now passed per tool call via the network_id argument; auth_status
+no longer tracks a server-side active network.`,
       inputSchema: z.object({
         includeArchived: z.boolean().default(false).describe('Include archived networks. Default: active only.'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max networks to return'),
@@ -108,12 +108,11 @@ Use after 'auth_login' to confirm the session is ready.`,
         }
       }
 
-      const { active_network_id, ...netView } = selectNetworks(session, { includeArchived, limit, offset, verbose })
+      const netView = selectNetworks(session, { includeArchived, limit, offset, verbose })
       const status = {
         authenticated: true,
         user: session.email,
         email: session.email,
-        active_network: active_network_id,
         ...netView
       }
       return {
