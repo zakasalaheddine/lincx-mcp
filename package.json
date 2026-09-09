@@ -1,20 +1,17 @@
 {
   "name": "lincx-mcp-server",
   "version": "1.0.0",
-  "description": "Lincx MCP server — browser login UI, Redis-backed sessions, multi-network support",
+  "description": "Lincx MCP server — browser login UI, wrapped-token auth, multi-network support",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
     "lint": "standard src/ scripts/",
     "lint:fix": "standard --fix src/ scripts/",
-    "predev": "docker compose -f docker-compose.dev.yml up -d redis || echo '[predev] Could not start Redis (is Docker running?) — continuing; set REDIS_URL= in .env for the in-memory store.'",
     "dev": "node scripts/dev-tunnel.mjs",
     "dev:ngrok": "node scripts/dev-tunnel.mjs ngrok",
     "dev:cloudflared": "node scripts/dev-tunnel.mjs cloudflared",
-    "predev:local": "docker compose -f docker-compose.dev.yml up -d redis || echo '[predev:local] Could not start Redis (is Docker running?) — continuing; set REDIS_URL= in .env for the in-memory store.'",
     "dev:local": "node --watch --env-file=.env src/index.js",
-    "redis:stop": "docker compose -f docker-compose.dev.yml stop redis",
     "test": "ava",
     "test:watch": "ava --watch",
     "smoke": "node scripts/smoke-prod.mjs",
@@ -23,13 +20,12 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "http-hash-router": "^2.0.1",
-    "ioredis": "^5.3.0",
-    "uuid": "^9.0.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {
     "ava": "^6.4.1",
     "esmock": "^2.7.6",
+    "puppeteer": "^25.10.0",
     "standard": "^17.1.2",
     "supertest": "^7.2.2"
   },
@@ -42,7 +38,7 @@
     ],
     "environmentVariables": {
       "NODE_ENV": "test",
-      "REDIS_URL": ""
+      "WRAPPING_KEY": "test-wrapping-key-32chars-minimum!!"
     },
     "workerThreads": false,
     "timeout": "30s"

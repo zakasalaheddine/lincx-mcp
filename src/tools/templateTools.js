@@ -29,10 +29,10 @@ Pass publisherId to enumerate one publisher's templates exhaustively; without it
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit, offset, fields, publisherId, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
       const params = { limit, offset }
@@ -58,10 +58,10 @@ Returns the template object with id, name, html, css, creativeAssetGroupId, and 
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, include, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
       const data = await getEntityWithIncludes(v.session, '/api/templates', id, include)
@@ -84,10 +84,10 @@ Use 'get_template_version' to fetch the HTML + CSS of a specific version.`,
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
       const data = await workApiRequest(v.session, 'GET', `/api/templates/${id}/versions`)
@@ -110,10 +110,10 @@ Use 'get_template_versions' first to see available version numbers.`,
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, version, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
       const data = await workApiRequest(v.session, 'GET', `/api/templates/${id}/versions/${version}`)

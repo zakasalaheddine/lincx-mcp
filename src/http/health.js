@@ -1,27 +1,20 @@
 import { json } from './respond.js'
-import { probeStore } from '../services/sessionStore.js'
-import { IS_PRODUCTION } from '../constants.js'
+import { WORK_API_BASE_URL, WRAPPING_KEY, WRAPPING_KEY_MIN_LEN } from '../constants.js'
 
 export function buildHealthHandler () {
   return async (_req, res) => {
-    let store = 'unknown'
-    let redisOk = false
-    try {
-      ({ store, redis_ok: redisOk } = await probeStore())
-    } catch (err) {
-      console.error(`[Health]  store probe failed: ${err.message}`)
-    }
+    const wrappingKeyOk = Boolean(WRAPPING_KEY) &&
+      WRAPPING_KEY.length >= WRAPPING_KEY_MIN_LEN
 
     json(res, 200, {
-      status: judgeStatus({ store, redisOk, isProduction: IS_PRODUCTION }),
+      status: judgeStatus({ wrappingKeyOk }),
       uptime_s: Math.round(process.uptime()),
-      store,
-      redis_ok: redisOk
+      wrapping_key_ok: wrappingKeyOk,
+      work_api: WORK_API_BASE_URL
     })
   }
 }
 
-export function judgeStatus ({ store, redisOk, isProduction }) {
-  if (!isProduction) return 'ok'
-  return store === 'redis' && redisOk ? 'ok' : 'degraded'
+export function judgeStatus ({ wrappingKeyOk }) {
+  return wrappingKeyOk ? 'ok' : 'degraded'
 }

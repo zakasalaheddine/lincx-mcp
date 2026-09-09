@@ -8,8 +8,7 @@
  */
 
 import HttpHashRouter from 'http-hash-router'
-import { json, noContent } from './respond.js'
-import { closeKvStore } from '../services/sessionStore.js'
+import { json } from './respond.js'
 import { authServerMetadata, resourceMetadata } from '../routes/wellKnown.js'
 import { postRegister } from '../routes/oauthRegister.js'
 import { postToken } from '../routes/oauthToken.js'
@@ -19,25 +18,6 @@ export function buildRouter ({ health, mcp, dev }) {
   const router = HttpHashRouter()
 
   router.set('/health', { GET: health })
-
-  // GAE manual/basic scaling sends these; a non-200 means the instance never
-  // becomes healthy and the deploy silently fails.
-  router.set('/_ah/start', { GET: (_req, res) => noContent(res, 200) })
-  router.set('/_ah/warmup', { GET: (_req, res) => noContent(res, 200) })
-
-  // /_ah/stop precedes shutdown, so it is the one place a graceful Redis close
-  // belongs. It answers 200 either way: a failed close must not make the instance
-  // look unhealthy while it is already going away.
-  router.set('/_ah/stop', {
-    GET: async (_req, res) => {
-      try {
-        await closeKvStore()
-      } catch (err) {
-        console.error('[HTTP]   /_ah/stop close failed:', err instanceof Error ? err.message : String(err))
-      }
-      noContent(res, 200)
-    }
-  })
 
   router.set('/.well-known/oauth-authorization-server', { GET: authServerMetadata })
   router.set('/.well-known/oauth-protected-resource', { GET: resourceMetadata })

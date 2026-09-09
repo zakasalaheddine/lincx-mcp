@@ -11,7 +11,7 @@ An MCP (Model Context Protocol) server that gives Claude access to the Lincx / I
 It handles authentication, multi-network context, and exposes business tools as MCP tools.
 
 The server is **HTTP-only** — there is no stdio transport. Everything runs on one
-bare `http.createServer` on `PORT` (5001 dev default; App Engine sets it in
+bare `http.createServer` on `PORT` (5001 dev default; the platform sets it in
 production), routed by `http-hash-router`:
 - the MCP Streamable HTTP transport at `POST /mcp` (stateless — see below)
 - the browser login UI and OAuth endpoints
@@ -47,8 +47,8 @@ src/
 │
 ├── services/
 │   ├── auth.js               # loginWithCredentials() → POST ix-id.lincx.la/auth/login
-│   ├── sessionStore.js       # Redis (with in-memory fallback) — session persistence
-│   ├── sessionManager.js     # create / validate / refreshNetworks / destroy
+│   ├── tokenService.js       # AES-GCM wrap + HMAC-signed OAuth tokens
+│   ├── sessionManager.js     # unwrap bearer → auth context / validateSession
 │   ├── networkService.js     # fetchUserNetworks() → GET WORK_API_BASE_URL/api/networks
 │   └── workApi.js            # workApiRequest() — injects Bearer token; adds ?networkId to list GETs and networkId to child-entity POST/PUT bodies (passed via options.networkId)
 │
@@ -78,7 +78,7 @@ instead of separate `get_*_parents` tools — keeps the per-request tool surface
 ### Claude never controls auth context
 - `auth_token` — stored in session server-side only, never returned to Claude
 - `network_id` — required per business tool call
-- `session_id` — stored in Redis as `lincx:session:<id>`, never exposed via any tool. Session identity comes from the OAuth bearer on the request: `await resolveLincxSession(extra)`, which reads `extra.requestInfo.headers.authorization` — never from `extra.sessionId` (always `undefined` under the stateless transport) and never from a module-global.
+- Identity comes from the OAuth bearer on the request: `await resolveLincxSession(extra)`, which reads `extra.requestInfo.headers.authorization`, unwraps the encrypted access token, and yields `{ auth_token, user_id, email }` — never from `extra.sessionId` (always `undefined` under the stateless transport) and never from a module-global. There is no Redis session store.
 
 ### Business tools require network_id
 Every business tool that reads or writes Work API data requires a `network_id`.
@@ -96,13 +96,13 @@ const data = await workApiRequest(v.session, 'GET', '/api/your-endpoint', { netw
 ```
 
 ### Always validate session before any API call
-Every business tool must call `validateSession(sessionId, network_id)` before touching the Work API.
-It checks: session exists, has not expired, and `network_id` (when provided) is in the session's accessible networks. `network_id` is then passed directly to `workApiRequest` in `options.networkId`.
+Every business tool must call `validateSession(auth)` before touching the Work API.
+It checks: the bearer resolved to an auth context and the Lincx JWT has not expired. Network membership is enforced by the Work API, not here. `network_id` is passed directly to `workApiRequest` in `options.networkId`.
 
 ### Never log OAuth tokens
-Access tokens, refresh tokens, and auth codes are bearer credentials. Never log
-them in full — at most log the first 8 chars or a SHA hash. Same applies to the
-Lincx JWT (`auth_token`).
+Access tokens and auth codes are bearer credentials. Never log them in full —
+at most log the first 8 chars or a SHA hash. Same applies to the Lincx JWT
+(`auth_token`).
 
 ---
 
@@ -145,60 +145,62 @@ sends `Authorization: Bearer <access_token>` on every `/mcp` request.
 4. Client opens browser → GET /oauth/authorize?response_type=code&client_id=...
    &redirect_uri=...&state=...&code_challenge=...&code_challenge_method=S256
 
-5. Server stores pending auth-request, redirects browser to /login?req=<request_id>
-6. User submits email+password to POST /api/login?req=<request_id>
-7. Server: loginWithCredentials() → createSession() → issueAuthCode()
+5. Server signs the auth-request into `ctx`, redirects browser to /login?ctx=<ctx>
+6. User submits email+password to POST /api/login?ctx=<ctx>
+7. Server: loginWithCredentials() → issueAuthCode()
    → JSON { success: true, redirect: "<redirect_uri>?code=...&state=..." }
    Browser navigates to redirect.
 
 8. Client → POST /oauth/token { grant_type: "authorization_code", code, code_verifier, ... }
-   ← { access_token, refresh_token, token_type: "Bearer", expires_in: 3600 }
+   ← { access_token, token_type: "Bearer", expires_in }  (no refresh_token)
 
-9. Client → POST /mcp with Authorization: Bearer <access_token> → resolves to Lincx session
-10. After expiry: POST /oauth/token { grant_type: "refresh_token", refresh_token, client_id }
-    Refresh tokens rotate — old refresh becomes invalid.
+9. Client → POST /mcp with Authorization: Bearer <access_token> → unwraps to Lincx JWT
+10. When the Lincx JWT expires, the client re-authenticates (no refresh tokens).
 ```
 
 Identity server: `https://ix-id.lincx.la` (authentic-server) — unchanged.
 Login endpoint: `POST /auth/login` with body `{ email, password }`.
 Response shape: `{ success: boolean, data: { authToken: string } }`.
-Token type: JWT (Lincx), ~30 day expiry. The OAuth access token is opaque
-(32-byte hex), 1 hour TTL. The Lincx JWT lives only in `Session.auth_token`
-server-side; clients only ever see the OAuth tokens.
+Token type: JWT (Lincx), ~30 day expiry. The OAuth access token is an opaque
+AES-GCM-sealed payload wrapping the Lincx JWT; it lives for the JWT's
+remaining lifetime. Clients only ever see opaque OAuth tokens — the JWT is
+ciphertext wherever it transits (auth code and access token alike).
 
-**Two-token architecture:** OAuth tokens identify the caller; the Lincx JWT
-authorizes Work API calls. They meet in Redis: `oauth:access:<token>` →
-`{ lincx_session_id }` → `lincx:session:<id>` → `{ auth_token, ... }`. The bearer
-is the ONLY identity — there is no MCP session id and no `mcp:session:<id>`
-binding any more (see § Stateless transport).
+**Wrapped-token architecture:** The OAuth access token is an AES-GCM wrapping
+of the Lincx JWT. The server unwraps it on each request; there is no Redis
+session store. The bearer is the ONLY identity — there is no MCP session id and
+no `mcp:session:<id>` binding (see § Stateless transport).
 
 ---
 
-## Session model
+## Auth context model
 
-The shape (there are no type declarations any more — this is the documented
-contract, enforced by nothing but the code that reads it):
+There is no session store. `resolveLincxSession` unwraps the bearer and yields
+the auth context for the request:
 
 ```js
 {
-  session_id,      // UUID string, key of lincx:session:<uuid> in Redis
+  auth_token,      // Lincx JWT — injected as Bearer on every API call
   user_id,         // decoded from the JWT's sub/user_id/email field
   email,
-  auth_token,      // Lincx JWT — injected as Bearer on every API call
-  networks         // Network[] fetched from /api/networks at login
+  expires_at       // the JWT's exp (seconds)
 }
 ```
 
-Session store: Redis when `REDIS_URL` is set, in-memory Map otherwise.
-In-memory sessions are lost on server restart — Redis is required in production.
+Networks are not cached anywhere — `network_list` / `auth_status` call
+`fetchUserNetworks(auth_token)` live on every invocation.
 
-TTLs:
-- `lincx:session:<uuid>` — 7 days (Lincx session, holds the JWT)
-- `oauth:client:<id>` — 90 days (DCR-registered MCP clients)
-- `oauth:pending:<request_id>` — 10 min (in-flight authorize requests)
-- `oauth:code:<code>` — 60 sec (single-use auth codes)
-- `oauth:access:<token>` — 1 hour
-- `oauth:refresh:<token>` — 30 days (rotated on every refresh)
+Token TTLs (all self-contained, verified by `tokenService.js` — `typ` binds each
+token to its family):
+- `client_id` — 90 days (HMAC-signed, public metadata)
+- `ctx` (pending auth-request) — 10 min (HMAC-signed; reusable — a password typo
+  must not burn the login link)
+- auth `code` — 60 sec (AES-GCM sealed; **reusable within the window — NOT
+  single-use.** Deliberate: the sealed envelope leaks nothing and PKCE binds
+  redemption to the verifier, so replay needs a code+verifier pair inside the
+  TTL. A replay cache would need shared state this deployment does not run —
+  revisit if the instance count grows)
+- access token — the wrapped JWT's `exp` (~30 days); no refresh tokens
 
 ---
 
@@ -209,7 +211,7 @@ TTLs:
 | `WORK_API_BASE_URL` | Yes | `http://localhost:3050` | Work API — all requests go here |
 | `IDENTITY_SERVER` | No | `https://ix-id.lincx.la` | Lincx auth server |
 | `PORT` | No | `5001` | Express HTTP port (login UI + MCP over HTTP) |
-| `REDIS_URL` | No | `` (empty) | Redis for persistent sessions — required in production, where it comes from the platform's own environment/secret store, never `app.yaml`. `npm run dev` points this at a Dockerized Redis it starts automatically |
+| `WRAPPING_KEY` | Yes | — | ≥32-char secret for AES-GCM access-token wrapping and HMAC-signed OAuth tokens. Server refuses to start without it. Injected by the platform in production, never committed. |
 | `NODE_ENV` | No | `development` | Set to `production` to disable the `/dev/*` debug routes |
 | `PUBLIC_BASE_URL` | No | `http://localhost:<PORT>` | Used when building browser login URLs returned to Claude |
 | `RESPONSE_SIZE_LIMIT` | No | `30000` | Hard per-response character ceiling enforced by `toolGuard`. Raise if your client tolerates larger tool results; floored at 5k. The soft serializer budget (`CHARACTER_LIMIT`) derives from it (−5k) |
@@ -257,13 +259,9 @@ interstitial.
 Use **`npm run dev:local`** for plain local work with no tunnel (Claude Code via
 `mcp-remote`, or curl).
 
-Both run a `predev` hook (`docker compose -f docker-compose.dev.yml up -d redis`)
-that brings up the bundled Redis on `localhost:6380` (6379 collides with
-lincx-core's test stack, whose suite FLUSHALLs it) so the dev server always has
-persistent sessions. This
-requires Docker; if it isn't running the hook is a non-blocking no-op. To use the
-in-memory store instead, blank `REDIS_URL` in `.env`. Stop the dev Redis with
-`npm run redis:stop`.
+No external services are needed — auth state is self-contained in the sealed
+tokens, so there is no Redis to run and nothing is lost on restart. The only
+required env is `WRAPPING_KEY` (see `.env.example`).
 
 ---
 
@@ -271,7 +269,7 @@ in-memory store instead, blank `REDIS_URL` in `.env`. Stop the dev Redis with
 
 The server is HTTP-only, so clients connect by URL — there is no stdio command form.
 
-- **Production:** point the client at `https://<your-domain>/mcp` (see `DEPLOYMENT.md`).
+- **Production:** point the client at `https://<your-domain>/mcp`.
 - **Local dev:** run `npm run dev`, then connect to `http://localhost:5001/mcp`.
 
 `claude.ai` and Claude Desktop take the URL directly (Settings → Connectors).
@@ -315,10 +313,10 @@ export function registerYourDomainTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
 
     try {
@@ -351,7 +349,7 @@ registerYourDomainTools(server)
 
 ### Networks
 - `network_list` — list available networks (active only by default; `includeArchived`, `limit`/`offset` paging via `next_offset`)
-- `network_refresh` — re-fetch networks from API, then return them in `network_list`'s slim/paged shape (same `includeArchived`/`limit`/`offset`/`verbose` args). It used to dump the raw list — 354 full objects, 82k chars — so the tool was unreachable behind the 30k guard with an empty input schema advertising pagination that did not exist. Returns `success` and a `note` when the list comes back empty — `fetchUserNetworks` returns `[]` on failure as well as on a genuinely empty account, so bare `success: true` reads wrong.
+- `network_refresh` — re-fetch networks from API, then return them in `network_list`'s slim/paged shape (same `includeArchived`/`limit`/`offset`/`verbose` args). It used to dump the raw list — 354 full objects, 82k chars — so the tool was unreachable behind the 30k guard with an empty input schema advertising pagination that did not exist. `fetchUserNetworks` throws on an upstream failure and returns `[]` only when the account truly has none, so an empty result is unambiguous.
 
 ### Resources (MCP Resources, `src/tools/resources.js`)
 Pull-based reference data — read by URI, not via a tool call. Not part of the
@@ -500,23 +498,13 @@ log sink is for.
 
 ## Deployment
 
-**Operator guide lives in `DEPLOYMENT.md` — keep deployment prose there, not here.**
-
-**Two platforms are live at once during the migration.** Production runs on
-**Coolify** today (`Dockerfile` + `docker-compose.coolify.yml`); the target is
-**App Engine** (`app.yaml` + `cloudbuild.yaml`). The same code serves both — config is read
-from the process environment on either, with no platform branch. The Docker
-files are transitional and get deleted after cutover, per DEPLOYMENT.md's
-§ Cutover order. Do not delete them earlier: they are the rollback.
-
-Target platform: Google App Engine Standard (`nodejs22`) + Memorystore Redis.
-No build step and no container: App Engine uploads `src/` and runs `npm start`.
-Config splits two ways — `app.yaml` (committed, non-secret) and the platform's
-own environment (`REDIS_URL`); `.env` is local dev only. `cloudbuild.yaml` deploys on
-a master push, gated by lint + tests. Users get one URL — `https://<your-domain>/mcp`.
-
-Docker survives for exactly one local purpose: `docker-compose.dev.yml`, standalone,
-`redis` only, host port 6380.
+No build step and no container: the platform runs `npm ci --omit=dev`, starts
+`node src/index.js`, sets `PORT`, and health-checks `/health`. A
+TLS-terminating proxy must sit in front and overwrite `X-Forwarded-For`.
+Config splits two ways — committed platform config for non-secret vars and the
+platform's secret store for `WRAPPING_KEY`; `.env` is local dev only.
+`PUBLIC_BASE_URL` must equal the URL clients actually hit. Users get one URL —
+`https://<your-domain>/mcp`.
 
 Two facts that constrain code changes:
 - **Stateless transport — nothing lives in the process.** `createTransport()` in
@@ -528,11 +516,9 @@ Two facts that constrain code changes:
     header is ignored rather than answered with a 400 re-initialize — that is what
     makes a redeploy invisible to connected clients.
   - Identity comes from the OAuth bearer: `resolveLincxSession(extra)` reads
-    `extra.requestInfo.headers.authorization` and memoises the resolved id on
-    `extra`, so a second resolve in the same request is free. An authenticated
-    tool call still costs **two** Redis GETs on the token — `mcpPost`'s gate
-    (which must resolve before any transport exists, to answer the 401 challenge)
-    and the handler's. The memo stops it becoming three.
+    `extra.requestInfo.headers.authorization`, unwraps the sealed token (local
+    AES-GCM — no store lookup) and memoises the auth context on `extra`, so a
+    second resolve in the same request is free.
   - **Neither `GET` nor `DELETE` is registered on `/mcp`** — the router answers
     405, the one status the SDK client tolerates for both. GET only ever served
     the standalone SSE stream, which stateless mode cannot hold open
@@ -563,8 +549,8 @@ Two facts that constrain code changes:
       wiped the flooder's own exhausted bucket and doubled what got served
   - **`clientIp()` is a trust boundary, not a logging convenience.** It keys the
     limiter above and the brute-force guard on `POST /api/login`, and
-    `X-Forwarded-For` is client-supplied unless a proxy overwrites it. Both
-    deployments front the app and do overwrite it, which is why
+    `X-Forwarded-For` is client-supplied unless a proxy overwrites it. The
+    deployment fronts the app and does overwrite it, which is why
     `TRUSTED_PROXY_HOPS` defaults to 1 — but a deployment that exposes the
     process directly MUST set it to 0 or every rate limit becomes decorative
     (measured: 700/700 served against a 600 cap by rotating the header). The
@@ -586,14 +572,15 @@ Two facts that constrain code changes:
     (measured: 26 rotations, 26 distinct access tokens, all live; at 600/min and a
     3600s access TTL that is ~36k live tokens per caller, against ~1.8k under the
     old shared 30/min).
-  - `app.yaml` still pins `manual_scaling: instances: 1` — that pin is now a
-    deliberate follow-up to lift, not a correctness requirement.
+  - Running more than one instance is not a correctness problem (the transport
+    is stateless) — but the rate limiter counts in-process, so N instances
+    silently means N × the per-caller limits.
 - **No auth gate in front of `/mcp`.** OAuth 2.1 (DCR + PKCE) is the sole identity
   layer — `/mcp` must be able to answer `401 WWW-Authenticate: Bearer
   resource_metadata=...` to unauthenticated callers. A query-param "access key" gate
   is intentionally NOT used: it suppresses the RFC-9728 challenge and is dropped by
   some clients between the discovery probe and post-OAuth calls. To kill access
-  deploy-wide, stop the app or flush Redis (invalidates every OAuth token).
+  deploy-wide, stop the app or rotate `WRAPPING_KEY` (invalidates every token).
 
 ---
 
@@ -607,10 +594,11 @@ a pointer: if it resurfaces, add temporary request/response logging in
 and diff against the web app's login request in DevTools.
 
 ### Response size — access persistence & the guard (field-test Qs)
-- **Do sessions survive redeploys?** Yes. Redis is a separate Memorystore instance
-  that a deploy never touches, so OAuth tokens + Lincx sessions outlive a redeploy —
-  the connector stays authenticated across iterations. Only flushing Redis (or
-  `auth_logout`) drops access.
+- **Do sessions survive redeploys?** Yes — trivially. Tokens are self-contained
+  sealed payloads; any instance with the same `WRAPPING_KEY` can open them, so
+  access outlives redeploys, restarts, and instance swaps. Only rotating
+  `WRAPPING_KEY` drops access (there is no per-token revocation — `auth_logout`
+  is client-side only).
 - **Is the 30k guard hard or tunable?** Tunable via `RESPONSE_SIZE_LIMIT` (see the
   env table). The intended path for a legitimately large pull is server-side
   narrowing, not a bigger dump: `report_query` `filter` + `groupBy` aggregation
@@ -655,7 +643,7 @@ authentic-server JWTs expire after ~30 days. `validateSession()` decodes the JWT
 still verifies the signature) and short-circuits with a clear "session has expired,
 use 'auth_login'" prompt before any Work API call, instead of letting every tool 401.
 It fails open when `exp` is unreadable. Re-login is still manual (no auto-refresh of
-the Lincx JWT — only the OAuth access token refreshes).
+the Lincx JWT — and no OAuth refresh tokens; the client re-authenticates).
 
 ---
 

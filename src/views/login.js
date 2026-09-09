@@ -1,7 +1,7 @@
 import { IDENTITY_SERVER } from '../constants.js'
 
-export function buildLoginPage (requestId) {
-  const safeReq = encodeURIComponent(requestId)
+export function buildLoginPage (ctx) {
+  const safeCtx = encodeURIComponent(ctx)
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -49,9 +49,9 @@ export function buildLoginPage (requestId) {
     <p class="foot">POST → ${IDENTITY_SERVER}/auth/login</p>
   </div>
   <script>
-    const REQ = "${safeReq}";
+    const CTX = "${safeCtx}";
     const KEY = new URLSearchParams(window.location.search).get('key') || '';
-    const POST_URL = '/api/login?req=' + encodeURIComponent(REQ) + (KEY ? '&key=' + encodeURIComponent(KEY) : '');
+    const POST_URL = '/api/login?ctx=' + encodeURIComponent(CTX) + (KEY ? '&key=' + encodeURIComponent(KEY) : '');
     document.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
     async function go() {
       const email = document.getElementById('email').value.trim();

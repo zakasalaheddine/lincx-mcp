@@ -22,7 +22,12 @@
 
 import test from 'ava'
 import request from 'supertest'
+import { createHash } from 'node:crypto'
 import { buildContractApp } from './buildApp.js'
+import { registerClient as signTestClient } from '../../services/oauth/clients.js'
+
+const TEST_VERIFIER = 'a'.repeat(64)
+const TEST_CHALLENGE = createHash('sha256').update(TEST_VERIFIER).digest('base64url')
 
 // ONE listener for the whole file, not one per request.
 //
@@ -54,8 +59,8 @@ test.serial('contract: /health > 200 with status ok', async t => {
   t.is(r.status, 200)
   t.is(r.body.status, 'ok')
   t.is(typeof r.body.uptime_s, 'number')
-  t.is(r.body.store, 'memory')
-  t.is(r.body.redis_ok, false)
+  t.is(r.body.wrapping_key_ok, true)
+  t.is(typeof r.body.work_api, 'string')
 })
 
 // ── OAuth discovery ──────────────────────────────────────────────────────────
@@ -69,7 +74,7 @@ test.serial('contract: OAuth discovery > serves authorization-server metadata', 
   t.regex(r.body.token_endpoint, /\/oauth\/token$/)
   t.regex(r.body.registration_endpoint, /\/oauth\/register$/)
   t.deepEqual(r.body.response_types_supported, ['code'])
-  t.deepEqual(r.body.grant_types_supported, ['authorization_code', 'refresh_token'])
+  t.deepEqual(r.body.grant_types_supported, ['authorization_code'])
   t.deepEqual(r.body.code_challenge_methods_supported, ['S256'])
   t.deepEqual(r.body.token_endpoint_auth_methods_supported, ['none'])
   t.deepEqual(r.body.scopes_supported, ['mcp'])
@@ -99,10 +104,10 @@ test.serial('contract: dynamic client registration > 201 with a client_id for a 
     .send({ redirect_uris: ['http://localhost:9999/callback'], client_name: 'contract' })
   t.is(r.status, 201)
   t.is(typeof r.body.client_id, 'string')
-  t.is(r.body.client_id.length, 32)
+  t.true(r.body.client_id.length > 32)
   t.is(typeof r.body.client_id_issued_at, 'number')
   t.is(r.body.token_endpoint_auth_method, 'none')
-  t.deepEqual(r.body.grant_types, ['authorization_code', 'refresh_token'])
+  t.deepEqual(r.body.grant_types, ['authorization_code'])
   t.deepEqual(r.body.response_types, ['code'])
 })
 
@@ -197,18 +202,18 @@ test.serial('contract: token endpoint > 400 invalid_grant for an unknown code on
   t.is(r.body.error, 'invalid_grant')
 })
 
-test.serial('contract: token endpoint > 400 invalid_request when refresh_token fields are missing', async t => {
+test.serial('contract: token endpoint > 400 unsupported_grant_type for refresh_token', async t => {
   const r = await request(app).post('/oauth/token').send({ grant_type: 'refresh_token' })
   t.is(r.status, 400)
-  t.is(r.body.error, 'invalid_request')
+  t.is(r.body.error, 'unsupported_grant_type')
 })
 
-test.serial('contract: token endpoint > 400 invalid_grant for an unknown refresh_token', async t => {
+test.serial('contract: token endpoint > 400 unsupported_grant_type even with refresh fields', async t => {
   const r = await request(app)
     .post('/oauth/token')
     .send({ grant_type: 'refresh_token', refresh_token: 'nope', client_id: 'nope' })
   t.is(r.status, 400)
-  t.is(r.body.error, 'invalid_grant')
+  t.is(r.body.error, 'unsupported_grant_type')
 })
 
 test.serial('contract: token endpoint > accepts an application/x-www-form-urlencoded body', async t => {
@@ -225,7 +230,7 @@ test.serial('contract: token endpoint > accepts an application/x-www-form-urlenc
   const validQuery = (clientId) =>
     `/oauth/authorize?response_type=code&client_id=${clientId}` +
     `&redirect_uri=${encodeURIComponent('http://localhost:9999/callback')}` +
-    '&state=st&code_challenge=chal&code_challenge_method=S256'
+    `&state=st&code_challenge=${TEST_CHALLENGE}&code_challenge_method=S256`
 
   test.serial('contract: authorize > 400 HTML for an unsupported response_type', async t => {
     const r = await request(app).get('/oauth/authorize?response_type=token')
@@ -264,42 +269,60 @@ test.serial('contract: token endpoint > accepts an application/x-www-form-urlenc
     t.regex(r.text, /does not match/)
   })
 
-  test.serial('contract: authorize > 302-redirects a valid authorize to /login?req=<32 hex>', async t => {
+  test.serial('contract: authorize > 400 for a code_challenge that is not 43 base64url chars', async t => {
+    // S256 pins the challenge to a base64url SHA-256 — exactly 43 chars of
+    // [A-Za-z0-9_-]. Anything else (e.g. multibyte chars) can never verify, and
+    // letting it through crashes /oauth/token inside timingSafeEqual.
+    // Signs a client directly: this file already spends all 10 oauthRegister
+    // limiter slots per window, so a real POST /oauth/register here would 429
+    // the next test's registration.
+    const { client_id: clientId } = await signTestClient({
+      redirect_uris: ['http://localhost:9999/callback']
+    })
+    const r = await request(app).get(
+      `/oauth/authorize?response_type=code&client_id=${clientId}` +
+        `&redirect_uri=${encodeURIComponent('http://localhost:9999/callback')}` +
+        `&state=st&code_challenge=${encodeURIComponent('é'.repeat(43))}&code_challenge_method=S256`
+    )
+    t.is(r.status, 400)
+  })
+
+  test.serial('contract: authorize > 302-redirects a valid authorize to /login?ctx=<token>', async t => {
     // The login flow hangs off this exact status + Location. A hand-rolled
     // redirect that returns 200-with-a-body, or omits Location, breaks login
     // with no useful client-side error.
     const clientId = await registerClient()
     const r = await request(app).get(validQuery(clientId))
     t.is(r.status, 302)
-    t.regex(r.headers.location, /^\/login\?req=[0-9a-f]{32}$/)
+    t.regex(r.headers.location, /^\/login\?ctx=/)
   })
 }
 
 // contract: login UI
-test.serial('contract: login UI > 400 HTML for /login without a req id', async t => {
+test.serial('contract: login UI > 400 HTML for /login without a ctx', async t => {
   const r = await request(app).get('/login')
   t.is(r.status, 400)
   t.regex(r.headers['content-type'], /html/)
 })
 
-test.serial('contract: login UI > 400 HTML for /login with an expired req id', async t => {
-  const r = await request(app).get('/login?req=deadbeefdeadbeefdeadbeefdeadbeef')
+test.serial('contract: login UI > 400 HTML for /login with an invalid ctx', async t => {
+  const r = await request(app).get('/login?ctx=deadbeefdeadbeefdeadbeefdeadbeef')
   t.is(r.status, 400)
   t.regex(r.text, /expired/i)
 })
 
-test.serial('contract: login UI > serves the login page for a live req id', async t => {
+test.serial('contract: login UI > serves the login page for a live ctx', async t => {
   const clientId = await registerClient()
   const auth = await request(app).get(
     `/oauth/authorize?response_type=code&client_id=${clientId}` +
       `&redirect_uri=${encodeURIComponent('http://localhost:9999/callback')}` +
-      '&state=st&code_challenge=chal&code_challenge_method=S256'
+      `&state=st&code_challenge=${TEST_CHALLENGE}&code_challenge_method=S256`
   )
-  const reqId = new URL(auth.headers.location, 'http://x').searchParams.get('req')
-  const r = await request(app).get(`/login?req=${reqId}`)
+  const ctx = new URL(auth.headers.location, 'http://x').searchParams.get('ctx')
+  const r = await request(app).get(`/login?ctx=${encodeURIComponent(ctx)}`)
   t.is(r.status, 200)
   t.regex(r.headers['content-type'], /html/)
-  t.true(r.text.includes(reqId))
+  t.true(r.text.includes(encodeURIComponent(ctx)) || r.text.includes(ctx))
 })
 
 test.serial('contract: login UI > serves the success page as HTML', async t => {
@@ -308,22 +331,22 @@ test.serial('contract: login UI > serves the success page as HTML', async t => {
   t.regex(r.headers['content-type'], /html/)
 })
 
-test.serial('contract: login UI > 400 JSON for POST /api/login without a req id', async t => {
+test.serial('contract: login UI > 400 JSON for POST /api/login without a ctx', async t => {
   const r = await request(app).post('/api/login').send({ email: 'a@b.c', password: 'p' })
   t.is(r.status, 400)
   t.is(r.body.success, false)
-  t.regex(r.body.error, /request id/i)
+  t.regex(r.body.error, /context/i)
 })
 
 test.serial('contract: login UI > 400 JSON for POST /api/login without credentials', async t => {
-  const r = await request(app).post('/api/login?req=abc').send({})
+  const r = await request(app).post('/api/login?ctx=abc').send({})
   t.is(r.status, 400)
   t.regex(r.body.error, /required/i)
 })
 
-test.serial('contract: login UI > 400 JSON for POST /api/login with an expired req id', async t => {
+test.serial('contract: login UI > 400 JSON for POST /api/login with an invalid ctx', async t => {
   const r = await request(app)
-    .post('/api/login?req=deadbeefdeadbeefdeadbeefdeadbeef')
+    .post('/api/login?ctx=deadbeefdeadbeefdeadbeefdeadbeef')
     .send({ email: 'a@b.c', password: 'p' })
   t.is(r.status, 400)
   t.regex(r.body.error, /expired/i)

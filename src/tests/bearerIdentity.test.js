@@ -1,42 +1,24 @@
 import test from 'ava'
+import { wrapAccessToken } from '../services/tokenService.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 
 import { start } from '../server.js'
-import { getKvStore, getSessionStore } from '../services/sessionStore.js'
-import { resolveUserBucket } from '../services/sessionManager.js'
+import { resolveUserBucket, resolveLincxSessionFromBearer } from '../services/sessionManager.js'
 
-// The one path every other test stubs out.
-//
-// mcpProtocol.test.js and helpers/mockWorkApi.js both mock resolveLincxSession,
-// so the whole suite can go green without ever reading a bearer token off the
-// request. That read — `extra.requestInfo.headers.authorization` inside
-// resolveLincxSession — is what the stateless transport rests on: if the SDK
-// does not hand `requestInfo` to tool handlers, every tool answers
-// "Not authenticated" in production and CI never notices.
-//
-// So nothing is mocked here. A real OAuth access token and a real Lincx session
-// are seeded into the store, a real client connects over a real transport, and
-// auth_status has to find its way back to the session from the bearer alone.
+const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
+const jwt = (payload) => `${b64url({ alg: 'none', typ: 'JWT' })}.${b64url(payload)}.sig`
 
-/** Seed a real OAuth access token + Lincx session, the way a real login would. */
-async function seed (token, lincxSessionId) {
-  await (await getKvStore()).set(
-    `oauth:access:${token}`,
-    JSON.stringify({ lincx_session_id: lincxSessionId, client_id: 'c1' }),
-    3600
-  )
-  await (await getSessionStore()).set(lincxSessionId, {
-    session_id: lincxSessionId,
-    user_id: 'bearer@test.com',
-    email: 'bearer@test.com',
-    auth_token: 'not-a-real-jwt',
-    networks: [{ id: 'svce6t', name: 'Test Network' }],
-    active_network: 'svce6t'
+function makeToken (email = 'bearer@test.com', extra = {}) {
+  const lincx = jwt({
+    sub: email,
+    email,
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    ...extra
   })
+  return wrapAccessToken(lincx)
 }
 
-/** A connected client over the real transport, carrying a real bearer. */
 async function connect (t, port, token) {
   const client = new Client({ name: 'bearer-client', version: '1.0.0' })
   await client.connect(new StreamableHTTPClientTransport(
@@ -47,12 +29,6 @@ async function connect (t, port, token) {
   return client
 }
 
-/**
- * Poll until `read()` returns something truthy, or fail at the deadline.
- *
- * The alternative is a fixed sleep, which flaked under full-suite CPU load.
- * Polling is faster in the normal case and honest about the deadline.
- */
 async function until (read, { deadlineMs = 3000, everyMs = 20 } = {}) {
   const stopAt = Date.now() + deadlineMs
   for (;;) {
@@ -63,18 +39,28 @@ async function until (read, { deadlineMs = 3000, everyMs = 20 } = {}) {
   }
 }
 
-/** A server that is torn down even when an assertion throws. */
 async function serve (t) {
   const { server, port } = await start({ port: 0 })
   t.teardown(() => new Promise((resolve) => server.close(resolve)))
   return port
 }
 
-test.serial('a real bearer resolves to a session through the SDK, unmocked', async t => {
-  const token = 'test-access-token-abcdef'
-  const lincxSessionId = 'lincx-bearer-test'
-  await seed(token, lincxSessionId)
+const realFetch = globalThis.fetch
+test.before(() => {
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url)
+    if (u.includes('/api/networks')) {
+      return new Response(JSON.stringify({
+        data: [{ id: 'svce6t', name: 'Test Network' }]
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return realFetch(url, opts)
+  }
+})
+test.after.always(() => { globalThis.fetch = realFetch })
 
+test.serial('a real wrapped bearer resolves through the SDK, unmocked', async t => {
+  const token = makeToken()
   const client = await connect(t, await serve(t), token)
 
   const result = await client.callTool({ name: 'auth_status', arguments: {} })
@@ -106,19 +92,6 @@ test.serial('a bogus bearer is challenged, not silently served', async t => {
 })
 
 test.serial('every transport the server builds is disposed, aborts included', async t => {
-  // The stateless design builds a fresh McpServer (40+ tool registrations) and a
-  // fresh transport PER REQUEST, disposed via res.on('close') in mcpPost.
-  // Deleting that block leaks both on every call and passes the whole suite.
-  //
-  // The invariant is CREATED === DISPOSED, not a fixed count. Counting disposals
-  // alone cannot see the case that actually distinguishes 'close' from 'finish':
-  // an aborted request, whose response never finishes. And an abort that never
-  // reaches the server builds nothing, so a fixed expected count would fail for a
-  // reason that is not a leak.
-  //
-  // This lives here, not in mcpProtocol.test.js: esmock gives that file an
-  // isolated module graph, so patching McpServer.prototype there patches a
-  // different class object than the one server.js actually constructs.
   const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js')
   const { StreamableHTTPServerTransport } =
     await import('@modelcontextprotocol/sdk/server/streamableHttp.js')
@@ -129,12 +102,6 @@ test.serial('every transport the server builds is disposed, aborts included', as
   let stall = 0
   McpServer.prototype.connect = function (...args) {
     created++
-    // `stall` opens the window the abort case needs. Without it the request
-    // completes in a few ms and the abort lands before the server ever builds a
-    // transport — nothing is created, so nothing can leak, and the test would
-    // pass under BOTH 'close' and 'finish'. Delaying connect means the transport
-    // exists while the client gives up, which is the real cancelled-tool-call
-    // shape.
     if (stall === 0) return originalConnect.apply(this, args)
     const self = this
     return new Promise((resolve) => setTimeout(resolve, stall))
@@ -149,8 +116,7 @@ test.serial('every transport the server builds is disposed, aborts included', as
     McpServer.prototype.close = originalClose
   })
 
-  const token = 'test-access-token-disposal'
-  await seed(token, 'lincx-disposal-test')
+  const token = makeToken('disposal@test.com')
   const port = await serve(t)
 
   const headers = {
@@ -166,10 +132,6 @@ test.serial('every transport the server builds is disposed, aborts included', as
   }
   t.is(created, 3, 'each request must build its own transport + server')
 
-  // Now abort one WHILE the server is holding a transport for it. The response
-  // never finishes, so a res.on('finish') listener never fires and both the
-  // transport and its 40-tool McpServer leak — the realistic shape of a
-  // long-running MCP call the client cancels.
   stall = 300
   const abort = new AbortController()
   const inflight = fetch(`http://127.0.0.1:${port}/mcp`, {
@@ -184,13 +146,6 @@ test.serial('every transport the server builds is disposed, aborts included', as
   t.truthy(await until(() => disposed === created || null),
     `${created} transports built, ${disposed} disposed — an aborted request leaked its transport and McpServer`)
 
-  // Second window, and the one that separates 'close' from 'finish'.
-  //
-  // The abort above is caught by mcpPost's `res.destroyed` check, because the
-  // client gave up while createTransport() was still awaiting — so that case
-  // passes under a 'finish' listener too. The listener itself only earns its
-  // keep when the abort lands AFTER it is attached, i.e. during handleRequest:
-  // a slow tool call the client cancels. Stall handleRequest to open it.
   const originalHandle = StreamableHTTPServerTransport.prototype.handleRequest
   let handleStall = 0
   StreamableHTTPServerTransport.prototype.handleRequest = function (...args) {
@@ -216,34 +171,20 @@ test.serial('every transport the server builds is disposed, aborts included', as
     `${created} built, ${disposed} disposed — a request aborted mid-handling leaked; res.on('close') is what covers this, 'finish' never fires`)
 })
 
-test.serial('auth_logout actually destroys the session server-side', async t => {
-  // auth_logout had no test at all: deleting destroySession(sessionId) from it
-  // passes the whole suite, leaving a "Logged out" message over a session that is
-  // still fully usable. This branch touched that handler (it dropped the
-  // now-dead unbindMcpSession call), so pin the half that matters.
-  const token = 'test-access-token-logout'
-  const lincxSessionId = 'lincx-logout-test'
-  await seed(token, lincxSessionId)
-
-  const store = await getSessionStore()
-  t.truthy(await store.get(lincxSessionId), 'seed failed')
-
+test.serial('auth_logout instructs client-side discard without revoking the token', async t => {
+  const token = makeToken('logout@test.com')
   const client = await connect(t, await serve(t), token)
   const result = await client.callTool({ name: 'auth_logout', arguments: {} })
 
-  t.regex(result.content[0].text, /Logged out/)
-  t.falsy(await store.get(lincxSessionId),
-    'auth_logout reported success but the session is still live in Redis')
+  t.regex(result.content[0].text, /Token discarded/i)
+  // Server has no revocation — the same bearer still authenticates.
+  const auth = await resolveLincxSessionFromBearer(`Bearer ${token}`)
+  t.truthy(auth)
+  t.is(auth.email, 'logout@test.com')
 })
 
 test.serial('/dev/tools forwards the real bearer, and is gone in production', async t => {
-  // The dev route builds `extra` by hand — `{ requestInfo: { headers: {...} } }` —
-  // so it is the one identity shape nothing else exercises. Replacing it with `{}`
-  // passed the whole suite. It also USED to run tools under a shared,
-  // credential-free `{ sessionId: 'stdio' }` binding, which this branch removed;
-  // that is worth keeping pinned.
-  const token = 'test-access-token-dev'
-  await seed(token, 'lincx-dev-test')
+  const token = makeToken('dev@test.com')
   const port = await serve(t)
 
   const call = (headers) => fetch(`http://127.0.0.1:${port}/dev/tools/auth_status`, {
@@ -262,44 +203,29 @@ test.serial('/dev/tools forwards the real bearer, and is gone in production', as
 })
 
 test.serial('start() rejects on a bind failure instead of killing the process', async t => {
-  // The reason start() stopped calling process.exit(1): a test that binds an
-  // explicit port and loses the race to a concurrently-running file would take the
-  // whole ava worker down with no assertion message. That justification had no
-  // test, so `reject(err)` could become `resolve(null)` with the suite green.
   const squatter = await start({ port: 0 })
   t.teardown(() => new Promise((resolve) => squatter.server.close(resolve)))
 
   await t.throwsAsync(start({ port: squatter.port }), { code: 'EADDRINUSE' })
 })
 
-test.serial('the rate-limit bucket follows the ACCOUNT, not the session', async t => {
-  // createSession mints a fresh UUID on every login and each lives 7 days, so
-  // keying the per-user limiter on the session id let one account accumulate
-  // budgets: N logins bought N x 120/min, with only the 10/min login limiter as a
-  // brake (~100 logins over ten minutes ≈ 12 000 req/min for one account).
-  await seed('tok-acct-1', 'lincx-login-one')
-  await seed('tok-acct-2', 'lincx-login-two')
+test.serial('the rate-limit bucket follows the ACCOUNT from the JWT sub', async t => {
+  const one = await resolveLincxSessionFromBearer(`Bearer ${makeToken('acct@test.com')}`)
+  const two = await resolveLincxSessionFromBearer(`Bearer ${makeToken('acct@test.com')}`)
 
-  const one = await resolveUserBucket('lincx-login-one')
-  const two = await resolveUserBucket('lincx-login-two')
+  t.is(resolveUserBucket(one), 'acct@test.com')
+  t.is(resolveUserBucket(one), resolveUserBucket(two),
+    'two tokens for the same account must share one budget')
+  t.is(resolveUserBucket(null), 'unknown')
 
-  t.is(one, 'bearer@test.com', 'the bucket must be the account, not the session id')
-  t.is(one, two, 'two logins by the same account must share one budget')
-  t.not(one, 'lincx-login-one')
-
-  // A session that no longer resolves falls back to its own id rather than
-  // throwing — that request is about to fail closed inside every tool anyway.
-  t.is(await resolveUserBucket('lincx-does-not-exist'), 'lincx-does-not-exist')
+  const subless = await resolveLincxSessionFromBearer(
+    `Bearer ${makeToken('x', { sub: undefined, email: undefined })}`)
+  t.true(resolveUserBucket(subless).startsWith('tok:'),
+    'an unreadable sub falls back to a per-token bucket, not a shared one')
 })
 
 test.serial('a JSON-RPC batch is capped and charged per message', async t => {
-  // One POST can carry an array and the transport runs every message in it —
-  // measured at 500 tool executions from a request the limiter counted as 1. With
-  // the 100kb body cap that is ~1100 messages, each costing Redis GETs and a Work
-  // API call, so an uncapped batch amplifies against Redis and the Work API, not
-  // just this process.
-  const token = 'test-access-token-batch'
-  await seed(token, 'lincx-batch-test')
+  const token = makeToken('batch@test.com')
   const port = await serve(t)
 
   const post = (payload) => fetch(`http://127.0.0.1:${port}/mcp`, {

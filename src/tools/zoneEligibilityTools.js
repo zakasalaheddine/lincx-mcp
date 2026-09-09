@@ -32,9 +32,9 @@ const err = (text) => ({ content: [{ type: 'text', text }] })
 
 /** Resolve + validate the session; returns the session or a ready-to-return error. */
 async function guard (extra, networkId) {
-  const sessionId = await resolveLincxSession(extra)
-  if (!sessionId) return { ok: false, result: err("Error: Not authenticated. Use 'auth_login' first.") }
-  const v = await validateSession(sessionId, networkId)
+  const auth = await resolveLincxSession(extra)
+  if (!auth) return { ok: false, result: err("Error: Not authenticated. Use 'auth_login' first.") }
+  const v = await validateSession(auth)
   if (!v.valid || !v.session) return { ok: false, result: err(`Error: ${v.error}`) }
   return { ok: true, session: v.session }
 }

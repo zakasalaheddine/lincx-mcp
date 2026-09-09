@@ -23,10 +23,10 @@ export function registerCreativeTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit, offset, fields, advertiserId, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
       const params = { limit, offset }
@@ -50,10 +50,10 @@ export function registerCreativeTools (server) {
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, include, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
       const data = await getEntityWithIncludes(v.session, '/api/creatives', id, include)

@@ -1,78 +1,59 @@
 import test from 'ava'
-
-// test.serial throughout: these tests share a module-level store, and ava runs a
-// file's tests concurrently where vitest's forked pool ran them one at a time.
-import { getJwtExpiry, isJwtExpired } from '../services/auth.js'
+import { getJwtExpiry, isJwtExpired, getJwtUserId } from '../services/auth.js'
 import { validateSession } from '../services/sessionManager.js'
-import { getSessionStore } from '../services/sessionStore.js'
 
-// Build an unsigned-but-structurally-valid JWT (header.payload.sig) for testing.
 const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
 const jwt = (payload) => `${b64url({ alg: 'none', typ: 'JWT' })}.${b64url(payload)}.sig`
 
-const NOW = 1_700_000_000_000 // fixed clock for determinism
+const NOW = 1_700_000_000_000
 
-// getJwtExpiry / isJwtExpired
 test.serial('getJwtExpiry / isJwtExpired > reads a numeric exp claim', t => {
   t.is(getJwtExpiry(jwt({ exp: 1234 })), 1234)
 })
 
 test.serial('getJwtExpiry / isJwtExpired > returns null for non-JWTs and missing/invalid exp', t => {
   t.is(getJwtExpiry('not-a-jwt'), null)
-  t.is(getJwtExpiry('a.b.c'), null) // payload not JSON
-  t.is(getJwtExpiry(jwt({ sub: 'x' })), null) // no exp
+  t.is(getJwtExpiry('a.b.c'), null)
+  t.is(getJwtExpiry(jwt({ sub: 'x' })), null)
 })
 
 test.serial('getJwtExpiry / isJwtExpired > is expired only when exp has passed; fails open when unreadable', t => {
   t.is(isJwtExpired(jwt({ exp: Math.floor(NOW / 1000) - 60 }), NOW), true)
   t.is(isJwtExpired(jwt({ exp: Math.floor(NOW / 1000) + 60 }), NOW), false)
-  t.is(isJwtExpired('not-a-jwt', NOW), false) // fail open — let the API decide
+  t.is(isJwtExpired('not-a-jwt', NOW), false)
 })
 
-{ // validateSession token-expiry gate
-  const baseSession = (token) => ({
-    session_id: 's-expiry-test',
-    user_id: 'u@x.com',
-    email: 'u@x.com',
-    auth_token: token,
-    networks: [{ id: 'net1', name: 'Net One' }]
+test.serial('getJwtUserId > prefers sub, then user_id, then email; null when missing', t => {
+  t.is(getJwtUserId(jwt({ sub: 'a@b.c' })), 'a@b.c')
+  t.is(getJwtUserId(jwt({ user_id: 'uid' })), 'uid')
+  t.is(getJwtUserId(jwt({ email: 'e@x.com' })), 'e@x.com')
+  t.is(getJwtUserId(jwt({ nbf: 1 })), null)
+  t.is(getJwtUserId('not-a-jwt'), null)
+})
+
+test.serial('validateSession > rejects an expired token with a clear re-login prompt', async t => {
+  const expired = jwt({
+    sub: 'u@x.com',
+    exp: Math.floor(Date.now() / 1000) - 10
   })
+  const r = await validateSession({ auth_token: expired, email: 'u@x.com' })
+  t.is(r.valid, false)
+  t.regex(r.error, /expired/i)
+  t.regex(r.error, /auth_login/)
+})
 
-  test.serial('validateSession token-expiry gate > rejects an expired token with a clear re-login prompt before any network check', async t => {
-    const store = await getSessionStore()
-    const expired = jwt({ exp: Math.floor(Date.now() / 1000) - 10 })
-    await store.set('s-expiry-test', baseSession(expired))
-
-    const r = await validateSession('s-expiry-test')
-    t.is(r.valid, false)
-    t.regex(r.error, /expired/i)
-    t.regex(r.error, /auth_login/)
-    await store.delete('s-expiry-test')
+test.serial('validateSession > passes a still-valid (or expiry-less) token', async t => {
+  const fresh = jwt({
+    sub: 'u@x.com',
+    exp: Math.floor(Date.now() / 1000) + 3600
   })
+  const r = await validateSession({ auth_token: fresh, email: 'u@x.com' })
+  t.is(r.valid, true)
+  t.is(r.session?.auth_token, fresh)
+})
 
-  test.serial('validateSession token-expiry gate > passes a still-valid (or expiry-less) token through to a valid session', async t => {
-    const store = await getSessionStore()
-    const fresh = jwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
-    await store.set('s-expiry-test', baseSession(fresh))
-
-    const r = await validateSession('s-expiry-test')
-    t.is(r.valid, true)
-    t.is(r.session?.networks.length, 1)
-    await store.delete('s-expiry-test')
-  })
-
-  test.serial('validateSession networkId check > validates network membership when networkId is provided', async t => {
-    const store = await getSessionStore()
-    const fresh = jwt({ exp: Math.floor(Date.now() / 1000) + 3600 })
-    await store.set('s-expiry-test', baseSession(fresh))
-
-    const validNet = await validateSession('s-expiry-test', 'net1')
-    t.is(validNet.valid, true)
-
-    const invalidNet = await validateSession('s-expiry-test', 'other_net')
-    t.is(invalidNet.valid, false)
-    t.is(invalidNet.error, "Network 'other_net' is not in your networks. Use 'network_list'.")
-
-    await store.delete('s-expiry-test')
-  })
-}
+test.serial('validateSession > rejects missing auth', async t => {
+  const r = await validateSession(null)
+  t.is(r.valid, false)
+  t.regex(r.error, /Not authenticated/)
+})

@@ -1,39 +1,24 @@
 import test from 'ava'
+import { issueTokens, lookupAccessToken } from '../../services/oauth/tokens.js'
 
-// test.serial throughout: these tests share a module-level store, and ava runs a
-// file's tests concurrently where vitest's forked pool ran them one at a time.
-import {
-  issueTokens,
-  refreshTokens,
-  lookupAccessToken,
-  revokeRefreshToken
-} from '../../services/oauth/tokens.js'
+const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
+const jwt = (payload) => `${b64url({ alg: 'none', typ: 'JWT' })}.${b64url(payload)}.sig`
 
-// OAuth tokens
-test.serial('OAuth tokens > issues access + refresh, then refreshes (rotating refresh)', async t => {
-  const a = await issueTokens({ client_id: 'c', lincx_session_id: 's' })
-  t.regex(a.access_token, /^[a-f0-9]{64}$/)
-  t.regex(a.refresh_token, /^[a-f0-9]{64}$/)
-  t.is(a.expires_in, 3600)
+test('OAuth tokens > issues a wrapped access token with no refresh_token', t => {
+  const lincx = jwt({
+    sub: 'u@x.com',
+    exp: Math.floor(Date.now() / 1000) + 7200
+  })
+  const a = issueTokens({ lincx_jwt: lincx })
+  t.truthy(a.access_token)
+  t.is(a.token_type, 'Bearer')
+  t.true(a.expires_in > 7000)
+  t.falsy(a.refresh_token)
 
-  const lookup = await lookupAccessToken(a.access_token)
-  t.is(lookup?.lincx_session_id, 's')
-
-  const b = await refreshTokens(a.refresh_token, 'c')
-  t.not(b, null)
-  t.not(b.access_token, a.access_token)
-  t.not(b.refresh_token, a.refresh_token)
-
-  t.is(await refreshTokens(a.refresh_token, 'c'), null)
+  const lookup = lookupAccessToken(a.access_token)
+  t.is(lookup?.lincx_jwt, lincx)
 })
 
-test.serial('OAuth tokens > rejects refresh from wrong client', async t => {
-  const a = await issueTokens({ client_id: 'c1', lincx_session_id: 's' })
-  t.is(await refreshTokens(a.refresh_token, 'c2'), null)
-})
-
-test.serial('OAuth tokens > revokes a refresh token', async t => {
-  const a = await issueTokens({ client_id: 'c', lincx_session_id: 's' })
-  await revokeRefreshToken(a.refresh_token)
-  t.is(await refreshTokens(a.refresh_token, 'c'), null)
+test('OAuth tokens > lookup rejects garbage', t => {
+  t.is(lookupAccessToken('nope'), null)
 })

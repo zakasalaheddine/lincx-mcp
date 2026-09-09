@@ -27,10 +27,10 @@ Each template is linked to exactly one creative asset group.`,
     inputSchema: z.object({ ...requiredNetworkIdShape, ...paginationShape }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ limit, offset, fields, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
       const data = await workApiRequest(v.session, 'GET', '/api/creative-asset-groups', { networkId: network_id, params: { limit, offset } })
@@ -56,10 +56,10 @@ Use this with 'get_template' to understand what mock ad data a template expects.
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ id, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
-    const v = await validateSession(sessionId, network_id)
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
       const data = await workApiRequest(v.session, 'GET', `/api/creative-asset-groups/${id}`)

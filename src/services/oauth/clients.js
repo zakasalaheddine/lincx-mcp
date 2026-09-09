@@ -1,8 +1,6 @@
-import { randomBytes } from 'node:crypto'
-import { getKvStore } from '../sessionStore.js'
+/* eslint-disable camelcase -- OAuth client_id is snake_case on the wire. */
+import { signClient, verifyClient } from '../tokenService.js'
 import { OAUTH_CLIENT_TTL_SECONDS } from '../../constants.js'
-
-const PREFIX = 'oauth:client:'
 
 function isValidRedirectUri (uri) {
   try {
@@ -15,9 +13,7 @@ function isValidRedirectUri (uri) {
   }
 }
 
-export async function registerClient (input
-
-) {
+export async function registerClient (input) {
   if (!Array.isArray(input.redirect_uris) || input.redirect_uris.length === 0) {
     throw new Error('redirect_uris must be a non-empty array')
   }
@@ -27,25 +23,27 @@ export async function registerClient (input
     }
   }
 
-  const client = {
-    client_id: randomBytes(16).toString('hex'),
+  const createdAt = Date.now()
+  const client_id = signClient({
+    redirect_uris: input.redirect_uris,
+    client_name: input.client_name,
+    exp: Math.floor(createdAt / 1000) + OAUTH_CLIENT_TTL_SECONDS
+  })
+
+  return {
+    client_id,
     client_name: input.client_name,
     redirect_uris: input.redirect_uris,
-    created_at: Date.now()
+    created_at: createdAt
   }
-
-  const kv = await getKvStore()
-  await kv.set(PREFIX + client.client_id, JSON.stringify(client), OAUTH_CLIENT_TTL_SECONDS)
-  return client
 }
 
 export async function getClient (clientId) {
-  const kv = await getKvStore()
-  const raw = await kv.get(PREFIX + clientId)
-  if (!raw) return null
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return null
+  const payload = verifyClient(clientId)
+  if (!payload) return null
+  return {
+    client_id: clientId,
+    client_name: payload.client_name,
+    redirect_uris: payload.redirect_uris
   }
 }

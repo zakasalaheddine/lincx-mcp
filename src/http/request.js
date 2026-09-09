@@ -19,10 +19,10 @@ const MAX_BODY_BYTES = 100 * 1024
 // proxy overwrites it, and clientIp() now keys the /mcp flood limiter and the
 // brute-force guard on POST /api/login. Measured against a server reachable
 // directly: a caller rotating the header took 700/700 where the cap was 600, and
-// 0/40 blocked on the credential endpoint. Both deployments do front the app
-// (GAE's load balancer, Coolify's Traefik) and both overwrite XFF, which is why
-// the default stays 1 — but a deployment that exposes the process directly MUST
-// set TRUSTED_PROXY_HOPS=0, or its rate limits are decorative.
+// 0/40 blocked on the credential endpoint. Production fronts the app with a
+// proxy that overwrites XFF, which is why the default stays 1 — but a
+// deployment that exposes the process directly MUST set TRUSTED_PROXY_HOPS=0,
+// or its rate limits are decorative.
 //
 // The opposite error is just as real and still unmeasured: if MORE than this many
 // proxies sit in front, every caller collapses into one bucket.

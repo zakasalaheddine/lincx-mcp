@@ -12,11 +12,14 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 async function startServer (port = 0) {
   const { start } = await esmock('../server.js', {}, {
     '../services/sessionManager.js': {
-      resolveLincxSessionFromBearer: async (h) => (h ? 'lincx-test-session' : null),
-      resolveLincxSession: async () => 'lincx-test-session',
+      resolveLincxSessionFromBearer: async (h) => (h
+        ? { auth_token: 't', email: 'a@b.c', user_id: 'a@b.c' }
+        : null),
+      resolveLincxSession: async () => ({ auth_token: 't', email: 'a@b.c', user_id: 'a@b.c' }),
+      resolveUserBucket: (auth) => auth?.user_id ?? 'unknown',
       validateSession: async () => ({
         valid: true,
-        session: { session_id: 'lincx-test-session', email: 'a@b.c', active_network: 'svce6t', networks: [] }
+        session: { auth_token: 't', email: 'a@b.c', networks: [] }
       })
     }
   })
@@ -26,15 +29,16 @@ async function startServer (port = 0) {
 const close = (server) => new Promise((resolve) => server.close(resolve))
 
 test.serial('esmock merges partial mocks with the original module', async t => {
-  // startServer() mocks four sessionManager exports; routes/login.js imports a
-  // fifth (createSession). If esmock replaced instead of merged, every test below
+  // startServer() mocks sessionManager exports; other importers may need
+  // unmocked ones. If esmock replaced instead of merged, every test below
   // would fail deep inside the SDK with an unhelpful error — so assert the
   // assumption directly.
   const mod = await esmock('../services/sessionManager.js', {}, {
     '../services/networkService.js': { fetchUserNetworks: async () => [] }
   })
-  t.is(typeof mod.createSession, 'function',
+  t.is(typeof mod.validateSession, 'function',
     'esmock replaced instead of merged — every mock must then define every export')
+  t.is(typeof mod.resolveLincxSessionFromBearer, 'function')
 })
 
 test.serial('MCP > initialize, tools/list, tools/call, DELETE', async t => {

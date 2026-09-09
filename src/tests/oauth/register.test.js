@@ -11,7 +11,8 @@ import { buildContractApp } from '../contract/buildApp.js'
       client_name: 'Claude'
     })
     t.is(res.status, 201)
-    t.regex(res.body.client_id, /^[a-f0-9]{32}$/)
+    t.truthy(res.body.client_id)
+    t.true(res.body.client_id.length > 32)
     t.deepEqual(res.body.redirect_uris, ['https://claude.ai/api/mcp/auth_callback'])
   })
 

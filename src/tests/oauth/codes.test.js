@@ -1,26 +1,25 @@
 import test from 'ava'
+import { issueAuthCode, redeemAuthCode } from '../../services/oauth/codes.js'
 
-// test.serial throughout: these tests share a module-level store, and ava runs a
-// file's tests concurrently where vitest's forked pool ran them one at a time.
-import { issueAuthCode, consumeAuthCode } from '../../services/oauth/codes.js'
-
-// OAuth auth codes
-test.serial('OAuth auth codes > issues, consumes once, then fails on reuse', async t => {
-  const code = await issueAuthCode({
+test.serial('OAuth auth codes > issues a sealed code that opens', t => {
+  const code = issueAuthCode({
     client_id: 'c1',
     redirect_uri: 'https://x/cb',
     code_challenge: 'ch',
-    lincx_session_id: 'lsid'
+    lincx_jwt: 'jwt-value'
   })
-  t.regex(code, /^[a-f0-9]{64}$/)
+  t.truthy(code)
 
-  const first = await consumeAuthCode(code)
-  t.is(first?.lincx_session_id, 'lsid')
+  const first = redeemAuthCode(code)
+  t.is(first?.lincx_jwt, 'jwt-value')
+  t.is(first?.client_id, 'c1')
 
-  const second = await consumeAuthCode(code)
-  t.is(second, null)
+  // Deliberate: no replay store — sealed codes stay redeemable until expiry.
+  // See the tradeoff comment on redeemAuthCode in services/oauth/codes.js.
+  const second = redeemAuthCode(code)
+  t.is(second?.lincx_jwt, 'jwt-value')
 })
 
-test.serial('OAuth auth codes > returns null for unknown code', async t => {
-  t.is(await consumeAuthCode('nope'), null)
+test.serial('OAuth auth codes > returns null for unknown code', t => {
+  t.is(redeemAuthCode('nope'), null)
 })

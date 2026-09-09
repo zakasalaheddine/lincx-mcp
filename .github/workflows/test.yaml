@@ -13,21 +13,6 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 3s
-          --health-retries 5
-
-    env:
-      TEST_REDIS_URL: redis://localhost:6379
-      TEST_REDIS_REQUIRED: '1'
-
     steps:
     - uses: actions/checkout@v6
       with:
@@ -39,6 +24,14 @@ jobs:
       with:
         node-version: '22.20.0'
         cache: 'npm'
+
+    # Puppeteer's postinstall downloads Chrome for Testing to ~/.cache/puppeteer
+    # (~170MB) — outside the npm cache. Cache it so `npm ci` reuses the build.
+    - name: Cache Puppeteer browser
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/puppeteer
+        key: ${{ runner.os }}-puppeteer-${{ hashFiles('package-lock.json') }}
 
     - name: Install dependencies
       run: npm ci

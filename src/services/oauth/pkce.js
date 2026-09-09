@@ -14,6 +14,8 @@ export function verifyPkce (
   if (!/^[A-Za-z0-9\-._~]+$/.test(verifier)) return false
 
   const computed = createHash('sha256').update(verifier).digest('base64url')
-  if (computed.length !== challenge.length) return false
-  return timingSafeEqual(Buffer.from(computed), Buffer.from(challenge))
+  const computedBuf = Buffer.from(computed)
+  const challengeBuf = Buffer.from(challenge)
+  if (computedBuf.length !== challengeBuf.length) return false
+  return timingSafeEqual(computedBuf, challengeBuf)
 }

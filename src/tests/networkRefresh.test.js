@@ -3,11 +3,6 @@ import esmock from 'esmock'
 
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
 
-// The field failure: network_refresh dumped `session.networks` raw — 354 full
-// network objects, 81974 chars against a 30k guard — and had an empty input
-// schema, so the guard's "use pagination" hint named controls that did not
-// exist. It now shares network_list's slim/paged shape via selectNetworks.
-
 const net = (id, archived) => ({
   id,
   name: `Network ${id} — a name long enough to matter when 354 of them are dumped raw`,
@@ -21,20 +16,20 @@ const net = (id, archived) => ({
   ...(archived === undefined ? {} : { archived })
 })
 
-// Adnet-shaped: a handful of live networks buried in archived test entries.
 const bigNetworks = [
   ...Array.from({ length: 4 }, (_, i) => net(`live${i}`)),
   ...Array.from({ length: 350 }, (_, i) => net(`arch${i}`, true))
 ]
 
-/** Register the tools onto a fake server and hand back the handlers by name. */
 async function handlers ({ refreshResult }) {
   const mod = await esmock('../tools/networkTools.js', {
     '../services/sessionManager.js': {
-      resolveLincxSession: async () => 'test-session',
+      resolveLincxSession: async () => ({ auth_token: 't', email: 'u@x.com' }),
       refreshNetworks: async () => refreshResult
     },
-    '../services/sessionStore.js': { getSessionStore: async () => ({ get: async () => null }) }
+    '../services/networkService.js': {
+      fetchUserNetworks: async () => []
+    }
   })
   const registered = {}
   mod.registerNetworkTools({
@@ -61,9 +56,8 @@ test('network_refresh > fits the response guard on a 354-network account', async
 
   const body = JSON.parse(text)
   t.is(body.success, true)
-  t.is(body.total, 4) // active only by default
+  t.is(body.total, 4)
   t.is(body.archived_hidden, 350)
-  // slim rows, not the full upstream objects
   t.deepEqual(Object.keys(body.networks[0]).sort(), ['archived', 'id', 'name'])
 })
 
@@ -94,18 +88,19 @@ test('network_refresh > returns the refreshed network list without server-side a
   t.falsy(body.active_network_id)
 })
 
-test('network_refresh > an empty list says the fetch may have failed', async t => {
+test('network_refresh > an empty list is a real result, not a failure', async t => {
   const registered = await handlers({
     refreshResult: { session: { networks: [] } }
   })
 
   const body = JSON.parse((await callRefresh(registered)).content[0].text)
+  t.is(body.success, true)
   t.is(body.total, 0)
-  t.regex(body.note, /fetch failed/)
+  t.is(body.note, undefined)
 })
 
-test('network_refresh > a dead session is an error, not an empty success', async t => {
+test('network_refresh > missing auth is an error, not an empty success', async t => {
   const registered = await handlers({ refreshResult: false })
   const res = await callRefresh(registered)
-  t.regex(res.content[0].text, /Session may be invalid/)
+  t.regex(res.content[0].text, /Could not refresh networks/)
 })

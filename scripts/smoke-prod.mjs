@@ -80,10 +80,5 @@ await check('DCR issues a client_id', async () => {
   assert(typeof b.client_id === 'string' && b.client_id.length > 0, 'no client_id')
 })
 
-await check('/_ah/start answers 200', async () => {
-  const r = await fetch(`${base}/_ah/start`)
-  assert(r.status === 200, `status ${r.status}`)
-})
-
 console.error(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`)
 process.exit(failures === 0 ? 0 : 1)

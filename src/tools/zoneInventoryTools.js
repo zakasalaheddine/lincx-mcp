@@ -225,9 +225,9 @@ The result is the text content: a one-line header, then a blank line, then compa
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ zoneId, mode, network_id }, extra) => {
-    const sessionId = await resolveLincxSession(extra)
-    if (!sessionId) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
-    const v = await validateSession(sessionId, network_id)
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
+    const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     const session = v.session
     try {

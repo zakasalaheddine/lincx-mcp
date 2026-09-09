@@ -1,21 +1,16 @@
-/* eslint-disable camelcase -- OAuth params and Work API / tool-output fields are snake_case on the wire: protocol, not style. */
+/* eslint-disable camelcase -- OAuth params and tool-output fields are snake_case on the wire. */
 /**
  * tools/authTools.js
  *
  * auth_login  — points the caller at their client OAuth flow.
- * auth_status — reports current session state.
- * auth_logout — destroys the Lincx session behind the caller's OAuth token.
- *   It does NOT revoke the OAuth grant: the access token stays valid for its hour
- *   and the refresh token keeps minting new ones for 30 days, all bound to a
- *   session id that no longer resolves. Every tool therefore fails closed at
- *   validateSession, so no data is reachable — but a user logging out BECAUSE a
- *   token leaked gets no revocation. The deploy-wide kill switch is still
- *   flushing Redis (CLAUDE.md § Deployment).
+ * auth_status — reports auth state from the wrapped token + Work API networks.
+ * auth_logout — client-side instruction; the server has nothing to revoke.
  */
 
 import { z } from 'zod'
-import { destroySession, resolveLincxSession } from '../services/sessionManager.js'
-import { getSessionStore } from '../services/sessionStore.js'
+import { resolveLincxSession } from '../services/sessionManager.js'
+import { fetchUserNetworks } from '../services/networkService.js'
+import { getJwtExpiry } from '../services/auth.js'
 import { selectNetworks } from './networkTools.js'
 
 export function registerAuthTools (server) {
@@ -27,7 +22,7 @@ export function registerAuthTools (server) {
       description: `Authentication is now handled by your MCP client via OAuth.
 If you are not yet signed in, your client should open a browser automatically.
 Use 'auth_status' to check the current session.`,
-      inputSchema: z.object({}),
+      inputSchema: z.object({}).strict(),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -50,7 +45,7 @@ Use 'auth_status' to check the current session.`,
     'auth_status',
     {
       title: 'Auth Status',
-      description: `Check current authentication status and session details.
+      description: `Check current authentication status.
 
 Returns:
   - authenticated (boolean)
@@ -63,14 +58,14 @@ Pass includeArchived: true to include archived networks, limit/offset to page,
 and verbose: true for full network objects. Defaults keep the response small on
 high-network accounts.
 
-Network context is now passed per tool call via the network_id argument; auth_status
-no longer tracks a server-side active network.`,
+Network context is passed per tool call via the network_id argument; auth_status
+does not track a server-side active network.`,
       inputSchema: z.object({
         includeArchived: z.boolean().default(false).describe('Include archived networks. Default: active only.'),
         limit: z.number().int().min(1).max(500).default(100).describe('Max networks to return'),
         offset: z.number().int().min(0).default(0).describe('Skip this many (page with next_offset)'),
         verbose: z.boolean().default(false).describe('Return full network objects instead of the slim fields')
-      }),
+      }).strict(),
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -79,9 +74,9 @@ no longer tracks a server-side active network.`,
       }
     },
     async ({ includeArchived, limit, offset, verbose }, extra) => {
-      const sessionId = await resolveLincxSession(extra)
+      const auth = await resolveLincxSession(extra)
 
-      if (!sessionId) {
+      if (!auth) {
         return {
           content: [{
             type: 'text',
@@ -93,27 +88,24 @@ no longer tracks a server-side active network.`,
         }
       }
 
-      const store = await getSessionStore()
-      const session = await store.get(sessionId)
-
-      if (!session) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              authenticated: false,
-              message: "Session expired. Use 'auth_login' to re-authenticate."
-            })
-          }]
+      let status
+      try {
+        const networks = await fetchUserNetworks(auth.auth_token)
+        status = {
+          authenticated: true,
+          user: auth.email,
+          email: auth.email,
+          ...selectNetworks({ networks }, { includeArchived, limit, offset, verbose })
         }
-      }
-
-      const netView = selectNetworks(session, { includeArchived, limit, offset, verbose })
-      const status = {
-        authenticated: true,
-        user: session.email,
-        email: session.email,
-        ...netView
+      } catch (err) {
+        // Auth is valid — only the networks fetch failed. Report the failure
+        // explicitly rather than as an empty list (which reads as lost access).
+        status = {
+          authenticated: true,
+          user: auth.email,
+          email: auth.email,
+          networks_error: err instanceof Error ? err.message : String(err)
+        }
       }
       return {
         content: [{ type: 'text', text: JSON.stringify(status) }],
@@ -127,10 +119,9 @@ no longer tracks a server-side active network.`,
     'auth_logout',
     {
       title: 'Logout',
-      description: `Destroy the current session and clear all auth context.
-
-The user will need to log in again via the browser to continue.`,
-      inputSchema: z.object({}),
+      description: `Discard the access token on the client. The server has no session store
+to revoke — the token remains valid until the Lincx JWT expires.`,
+      inputSchema: z.object({}).strict(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -139,12 +130,21 @@ The user will need to log in again via the browser to continue.`,
       }
     },
     async (_args, extra) => {
-      const sessionId = await resolveLincxSession(extra)
-      if (!sessionId) {
-        return { content: [{ type: 'text', text: 'No active session to log out from.' }] }
+      const auth = await resolveLincxSession(extra)
+      if (!auth) {
+        return { content: [{ type: 'text', text: 'No active token to discard.' }] }
       }
-      await destroySession(sessionId)
-      return { content: [{ type: 'text', text: 'Logged out. Session cleared.' }] }
+      const exp = getJwtExpiry(auth.auth_token)
+      const remaining = exp !== null
+        ? Math.max(0, Math.ceil((exp * 1000 - Date.now()) / 60_000))
+        : null
+      const mins = remaining === null ? 'unknown' : String(remaining)
+      return {
+        content: [{
+          type: 'text',
+          text: `Token discarded. It will expire in ${mins} minutes and is no longer usable on this client.`
+        }]
+      }
     }
   )
 }

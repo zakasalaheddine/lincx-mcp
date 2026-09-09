@@ -92,8 +92,8 @@ test('clientIp > TRUSTED_PROXY_HOPS=0 ignores X-Forwarded-For entirely', async t
 })
 
 test.serial('clientIp > warns ONCE naming the observed hop count on a mismatch', async t => {
-  // The hop count is what has to be measured on a new deployment (Render fronts
-  // the service with Cloudflare AND its own load balancer, so the default 1 is
+  // The hop count is what has to be measured on each deployment (a CDN in front
+  // of the platform's own load balancer is already two hops, so the default 1 is
   // probably wrong), and both ways of being wrong are silent: too low believes
   // the caller's own header, too high collapses every caller into one bucket.
   // The warning is the measurement — it has to name the observed count.

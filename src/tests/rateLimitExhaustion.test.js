@@ -102,12 +102,14 @@ test.serial('the per-account tier caps a single session at its limit', async t =
   // and once hit 32s against ava's 30s inactivity cap.
   const { start: startMocked } = await esmock('../server.js', {}, {
     '../services/sessionManager.js': {
-      resolveLincxSessionFromBearer: async (h) => (h ? 'lincx-test-session' : null),
-      resolveUserBucket: async () => 'ratelimit@test.com',
-      resolveLincxSession: async () => 'lincx-test-session',
+      resolveLincxSessionFromBearer: async (h) => (h
+        ? { auth_token: 't', email: 'a@b.c', user_id: 'ratelimit@test.com' }
+        : null),
+      resolveUserBucket: (auth) => auth?.user_id ?? 'unknown',
+      resolveLincxSession: async () => ({ auth_token: 't', email: 'a@b.c', user_id: 'ratelimit@test.com' }),
       validateSession: async () => ({
         valid: true,
-        session: { session_id: 'lincx-test-session', email: 'a@b.c', active_network: 'svce6t', networks: [] }
+        session: { auth_token: 't', email: 'a@b.c', networks: [] }
       })
     }
   })
@@ -238,12 +240,16 @@ test.serial('one account burning its own cap does not starve others behind the s
   const { start: startMocked } = await esmock('../server.js', {}, {
     '../services/sessionManager.js': {
       // Identity comes from the bearer, so A and B are distinct accounts on one address.
-      resolveLincxSessionFromBearer: async (h) => (h ? `lincx-${h.split(' ')[1]}` : null),
-      resolveUserBucket: async (id) => `${id}@test.com`,
-      resolveLincxSession: async () => 'lincx-test-session',
+      resolveLincxSessionFromBearer: async (h) => {
+        if (!h) return null
+        const who = h.split(/\s+/)[1]
+        return { auth_token: 't', user_id: `${who}@test.com`, email: `${who}@test.com` }
+      },
+      resolveUserBucket: (auth) => auth?.user_id ?? 'unknown',
+      resolveLincxSession: async () => ({ auth_token: 't', email: 'a@b.c' }),
       validateSession: async () => ({
         valid: true,
-        session: { session_id: 'lincx-test-session', email: 'a@b.c', active_network: 'svce6t', networks: [] }
+        session: { auth_token: 't', email: 'a@b.c', networks: [] }
       })
     }
   })

@@ -1,16 +1,14 @@
 import test from 'ava'
-
-// test.serial throughout: these tests share a module-level store, and ava runs a
-// file's tests concurrently where vitest's forked pool ran them one at a time.
 import { registerClient, getClient } from '../../services/oauth/clients.js'
+import { verifyClient } from '../../services/tokenService.js'
 
-// OAuth clients
-test.serial('OAuth clients > registers and retrieves a client', async t => {
+test.serial('OAuth clients > registers a signed client_id', async t => {
   const c = await registerClient({
     redirect_uris: ['https://claude.ai/api/mcp/auth_callback'],
     client_name: 'Claude'
   })
-  t.regex(c.client_id, /^[a-f0-9]{32}$/)
+  t.truthy(c.client_id)
+  t.truthy(verifyClient(c.client_id))
   const fetched = await getClient(c.client_id)
   t.deepEqual(fetched?.redirect_uris, ['https://claude.ai/api/mcp/auth_callback'])
 })

@@ -4,7 +4,9 @@
  * Fetches the list of networks the authenticated user belongs to.
  * Uses the same Work API — no separate Network Service exists.
  *
- * Adjust NETWORKS_PATH if your endpoint differs.
+ * Throws on timeout/upstream failure — an empty array means a genuinely
+ * empty account, and callers must surface failures as errors rather than
+ * "no networks". Adjust NETWORKS_PATH if your endpoint differs.
  */
 
 import { WORK_API_BASE_URL } from '../constants.js'
@@ -22,11 +24,7 @@ export async function fetchUserNetworks (authToken) {
     })
 
     if (!res.ok) {
-      console.error('[Networks] Failed to fetch:', {
-        url: `${WORK_API_BASE_URL}${NETWORKS_PATH}`,
-        status: res.status
-      })
-      return []
+      throw new Error(`GET ${NETWORKS_PATH} failed: HTTP ${res.status}`)
     }
 
     const body = await res.json()
@@ -58,13 +56,11 @@ export async function fetchUserNetworks (authToken) {
       archived: n.archived === true
     }))
   } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      console.error('[Networks] Request timed out')
-    } else {
-      console.error('[Networks] Unexpected error:', err)
-    }
-    // Return empty list — login still succeeds, user can call network_refresh later
-    return []
+    const e = err instanceof Error && err.name === 'AbortError'
+      ? new Error(`GET ${NETWORKS_PATH} timed out after 10s`)
+      : err
+    console.error('[Networks] fetch failed:', e instanceof Error ? e.message : String(e))
+    throw e
   } finally {
     clearTimeout(timer)
   }

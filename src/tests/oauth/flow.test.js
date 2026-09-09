@@ -1,21 +1,10 @@
-/* eslint-disable camelcase -- OAuth params and Work API / tool-output fields are snake_case on the wire: protocol, not style. */
+/* eslint-disable camelcase -- OAuth params are snake_case on the wire. */
 import test from 'ava'
 import request from 'supertest'
 import { createHash, randomBytes } from 'node:crypto'
 import { buildContractApp } from '../contract/buildApp.js'
 import { resolveLincxSessionFromBearer } from '../../services/sessionManager.js'
 
-// This flow spans FOUR routers and the OAuth client/code/token stores, and it
-// asserts on a Lincx session created deep inside that chain. Every participant
-// has to see the SAME module instances: esmock (like vi.mock before it) builds a
-// fresh module graph per call, so mocking login.js and sessionManager.js
-// separately gives the register route one clients store and the authorize route
-// another — the registered client_id is then unknown and authorize 400s.
-//
-// So the two boundaries this test needs to fake are faked where they actually
-// are: both services/auth.js and services/networkService.js reach the outside
-// world through global fetch, and nothing else here does. One stub, one graph.
-// test.serial throughout, since globalThis.fetch is shared state.
 const realFetch = globalThis.fetch
 
 function jsonResponse (body, status = 200) {
@@ -25,9 +14,19 @@ function jsonResponse (body, status = 200) {
   })
 }
 
+const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
+const jwt = (payload) => `${b64url({ alg: 'none', typ: 'JWT' })}.${b64url(payload)}.sig`
+const TEST_JWT = jwt({
+  sub: 'u@x.com',
+  email: 'u@x.com',
+  exp: Math.floor(Date.now() / 1000) + 3600
+})
+
 globalThis.fetch = async (url) => {
   const u = String(url)
-  if (u.endsWith('/auth/login')) return jsonResponse({ success: true, data: { authToken: 'jwt-for-u@x.com' } })
+  if (u.endsWith('/auth/login')) {
+    return jsonResponse({ success: true, data: { authToken: TEST_JWT } })
+  }
   if (u.includes('/api/networks')) {
     return jsonResponse({
       data: [{
@@ -56,15 +55,14 @@ const app = buildContractApp()
 
 /** Register a client, then walk authorize → login → code → tokens. */
 async function fullFlow (t) {
-  // 1. Register
   const reg = await request(app).post('/oauth/register').send({
     redirect_uris: ['https://localhost:1/cb'],
     client_name: 'test'
   })
   t.is(reg.status, 201)
   const client_id = reg.body.client_id
+  t.falsy(reg.body.grant_types?.includes('refresh_token'))
 
-  // 2. Authorize → 302 to /login?req=<id>
   const verifier = randomBytes(40).toString('base64url')
   const auth = await request(app).get('/oauth/authorize').query({
     response_type: 'code',
@@ -75,13 +73,12 @@ async function fullFlow (t) {
     code_challenge_method: 'S256'
   })
   t.is(auth.status, 302)
-  const reqId = new URL(auth.headers.location, 'http://x').searchParams.get('req')
-  t.truthy(reqId)
+  const ctx = new URL(auth.headers.location, 'http://x').searchParams.get('ctx')
+  t.truthy(ctx)
 
-  // 3. POST /api/login → JSON { redirect: "https://localhost:1/cb?code=...&state=abc" }
   const login = await request(app)
     .post('/api/login')
-    .query({ req: reqId })
+    .query({ ctx })
     .send({ email: 'u@x.com', password: 'pw' })
   t.is(login.status, 200)
   t.is(login.body.success, true)
@@ -89,7 +86,6 @@ async function fullFlow (t) {
   const code = redirect.searchParams.get('code')
   t.is(redirect.searchParams.get('state'), 'abc')
 
-  // 4. Exchange code → access + refresh tokens
   const tok = await request(app).post('/oauth/token').type('form').send({
     grant_type: 'authorization_code',
     code,
@@ -101,41 +97,54 @@ async function fullFlow (t) {
   return { client_id, tokens: tok.body }
 }
 
-test.serial('OAuth end-to-end > client → register → authorize → login → token → bearer resolves to Lincx session', async t => {
-  const { client_id, tokens } = await fullFlow(t)
+test.serial('OAuth end-to-end > register → authorize → login → wrapped access token', async t => {
+  const { tokens } = await fullFlow(t)
 
-  // 5. Bearer resolves to a Lincx session id
-  const lincxSid = await resolveLincxSessionFromBearer(`Bearer ${tokens.access_token}`)
-  t.regex(lincxSid, /^[0-9a-f-]{36}$/)
+  t.truthy(tokens.access_token)
+  t.falsy(tokens.refresh_token)
+  t.is(tokens.token_type, 'Bearer')
 
-  // 6. Refresh
-  const refr = await request(app).post('/oauth/token').type('form').send({
-    grant_type: 'refresh_token',
-    refresh_token: tokens.refresh_token,
-    client_id
-  })
-  t.is(refr.status, 200)
-  t.not(refr.body.access_token, tokens.access_token)
+  const auth = await resolveLincxSessionFromBearer(`Bearer ${tokens.access_token}`)
+  t.truthy(auth)
+  t.is(auth.email, 'u@x.com')
+  t.is(auth.auth_token, TEST_JWT)
 })
 
-test.serial('OAuth end-to-end > refresh rotates and invalidates the old token', async t => {
+test.serial('OAuth end-to-end > refresh_token grant is rejected', async t => {
   const { client_id, tokens } = await fullFlow(t)
 
-  const first = await request(app).post('/oauth/token').type('form').send({
+  const refr = await request(app).post('/oauth/token').type('form').send({
     grant_type: 'refresh_token',
-    refresh_token: tokens.refresh_token,
+    refresh_token: tokens.access_token,
     client_id
   })
-  t.is(first.status, 200)
-  t.not(first.body.refresh_token, tokens.refresh_token)
+  t.is(refr.status, 400)
+  t.is(refr.body.error, 'unsupported_grant_type')
+})
 
-  // The ORIGINAL refresh token must now be dead — rotating without invalidating
-  // would leave a replayable credential live for its full 30-day TTL.
-  const replay = await request(app).post('/oauth/token').type('form').send({
-    grant_type: 'refresh_token',
-    refresh_token: tokens.refresh_token,
-    client_id
+test.serial('OAuth end-to-end > expired auth code is rejected', async t => {
+  const { wrapAuthCode } = await import('../../services/tokenService.js')
+  const reg = await request(app).post('/oauth/register').send({
+    redirect_uris: ['https://localhost:1/cb'],
+    client_name: 'test'
   })
-  t.is(replay.status, 400)
-  t.is(replay.body.error, 'invalid_grant')
+  const client_id = reg.body.client_id
+  const verifier = randomBytes(40).toString('base64url')
+  const code = wrapAuthCode({
+    client_id,
+    redirect_uri: 'https://localhost:1/cb',
+    code_challenge: challenge(verifier),
+    lincx_jwt: TEST_JWT,
+    exp: Math.floor(Date.now() / 1000) - 10
+  })
+
+  const tok = await request(app).post('/oauth/token').type('form').send({
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: 'https://localhost:1/cb',
+    client_id,
+    code_verifier: verifier
+  })
+  t.is(tok.status, 400)
+  t.is(tok.body.error, 'invalid_grant')
 })

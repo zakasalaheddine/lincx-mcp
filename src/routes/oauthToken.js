@@ -1,6 +1,6 @@
-/* eslint-disable camelcase -- OAuth params and Work API / tool-output fields are snake_case on the wire: protocol, not style. */
-import { consumeAuthCode } from '../services/oauth/codes.js'
-import { issueTokens, refreshTokens } from '../services/oauth/tokens.js'
+/* eslint-disable camelcase -- OAuth params are snake_case on the wire. */
+import { redeemAuthCode } from '../services/oauth/codes.js'
+import { issueTokens } from '../services/oauth/tokens.js'
 import { verifyPkce } from '../services/oauth/pkce.js'
 import { getClient } from '../services/oauth/clients.js'
 import { json } from '../http/respond.js'
@@ -29,7 +29,7 @@ export async function postToken (req, res, _opts, cb) {
     const client = await getClient(client_id)
     if (!client) return json(res, 400, { error: 'invalid_client' })
 
-    const authCode = await consumeAuthCode(code)
+    const authCode = redeemAuthCode(code)
     if (!authCode) return json(res, 400, { error: 'invalid_grant' })
     if (authCode.client_id !== client_id) return json(res, 400, { error: 'invalid_grant' })
     if (authCode.redirect_uri !== redirect_uri) return json(res, 400, { error: 'invalid_grant' })
@@ -37,20 +37,15 @@ export async function postToken (req, res, _opts, cb) {
       return json(res, 400, { error: 'invalid_grant' })
     }
 
-    const tokens = await issueTokens({
-      client_id,
-      lincx_session_id: authCode.lincx_session_id
-    })
+    const tokens = issueTokens({ lincx_jwt: authCode.lincx_jwt })
     return json(res, 200, tokens)
   }
 
   if (grant_type === 'refresh_token') {
-    const { refresh_token, client_id } = body
-    if (!refresh_token || !client_id) return json(res, 400, { error: 'invalid_request' })
-
-    const tokens = await refreshTokens(refresh_token, client_id)
-    if (!tokens) return json(res, 400, { error: 'invalid_grant' })
-    return json(res, 200, tokens)
+    return json(res, 400, {
+      error: 'unsupported_grant_type',
+      error_description: 'Refresh tokens are not issued; re-authenticate when the access token expires.'
+    })
   }
 
   json(res, 400, { error: 'unsupported_grant_type' })

@@ -65,10 +65,40 @@ export async function loginWithCredentials (
 
 /**
  * authentic-server has no token revocation endpoint.
- * Logout is purely session destruction — the JWT expires naturally (default 30d).
+ * Logout is client-side — the JWT expires naturally (~30d).
  */
 export async function revokeToken (_token) {
   // intentional no-op
+}
+
+const MAX_JWT_CLAIM_LEN = 320
+
+/**
+ * Read a JWT's header and payload WITHOUT verifying the signature. Returns null
+ * when the value isn't a 3-part JWT, the header/payload aren't JSON objects, or
+ * the header explicitly claims a type other than 'JWT'.
+ */
+function readJwt (token) {
+  if (typeof token !== 'string') return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  try {
+    const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'))
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+    if (!header || typeof header !== 'object' || !payload || typeof payload !== 'object') {
+      return null
+    }
+    // Reject a token whose header explicitly claims another type, but allow a
+    // missing typ for compatibility with tokens that omit it.
+    if (header.typ !== undefined && header.typ !== 'JWT') return null
+    return { header, payload }
+  } catch {
+    return null
+  }
+}
+
+function readJwtPayload (token) {
+  return readJwt(token)?.payload ?? null
 }
 
 /**
@@ -79,14 +109,8 @@ export async function revokeToken (_token) {
  * value isn't a 3-part JWT or carries no numeric `exp`.
  */
 export function getJwtExpiry (token) {
-  const parts = token.split('.')
-  if (parts.length !== 3) return null
-  try {
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
-    return typeof payload.exp === 'number' ? payload.exp : null
-  } catch {
-    return null
-  }
+  const payload = readJwtPayload(token)
+  return typeof payload?.exp === 'number' ? payload.exp : null
 }
 
 /**
@@ -96,4 +120,54 @@ export function getJwtExpiry (token) {
 export function isJwtExpired (token, nowMs = Date.now()) {
   const exp = getJwtExpiry(token)
   return exp !== null && exp * 1000 <= nowMs
+}
+
+function validJwtClaim (value) {
+  if (typeof value !== 'string') return null
+  const v = value.trim()
+  if (v.length === 0 || v.length > MAX_JWT_CLAIM_LEN) return null
+  return v
+}
+
+function validJwtEmail (value) {
+  const v = validJwtClaim(value)
+  if (!v) return null
+  const lower = v.toLowerCase()
+  const at = lower.indexOf('@')
+  if (at <= 0 || at === lower.length - 1 || at !== lower.lastIndexOf('@')) return null
+  return lower
+}
+
+/**
+ * User id for rate-limit bucketing. Prefers `sub`, then `user_id`, then `email`.
+ * Validates the token is a well-formed JWT and the selected claim is a non-empty,
+ * trimmed string. Returns null when none are present or the JWT is unreadable.
+ */
+export function getJwtUserId (token) {
+  const payload = readJwtPayload(token)
+  if (!payload) return null
+  for (const key of ['sub', 'user_id', 'email']) {
+    const id = validJwtClaim(payload[key])
+    if (id) return id
+  }
+  return null
+}
+
+/**
+ * Best-effort email (or verified user identifier) from the JWT payload for
+ * auth_status display. Prefers a value that looks like an email, then falls
+ * back to `sub` or `user_id` as a verified non-empty string. Returns null when
+ * none are present or the JWT is unreadable.
+ */
+export function getJwtEmail (token) {
+  const payload = readJwtPayload(token)
+  if (!payload) return null
+  let fallback = null
+  for (const key of ['email', 'sub', 'user_id']) {
+    const value = payload[key]
+    const email = validJwtEmail(value)
+    if (email) return email
+    if (!fallback) fallback = validJwtClaim(value)
+  }
+  return fallback
 }

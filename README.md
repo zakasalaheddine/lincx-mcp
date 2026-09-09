@@ -1,6 +1,6 @@
 # lincx-mcp-server
 
-MCP server for the Lincx / Interlincx platform — OAuth 2.1 + PKCE authentication, Redis-backed sessions, and multi-network support. Credentials never pass through Claude.
+MCP server for the Lincx / Interlincx platform — OAuth 2.1 + PKCE authentication with encrypted wrapped access tokens (no Redis), and multi-network support. Credentials never pass through Claude.
 
 ---
 
@@ -24,10 +24,10 @@ The client handles authentication automatically:
 2. Discovers OAuth endpoints from `/.well-known/oauth-authorization-server`
 3. Registers itself via `POST /oauth/register` (Dynamic Client Registration)
 4. Opens a browser to `/oauth/authorize` — you sign in with Lincx credentials
-5. Exchanges the auth code at `/oauth/token` for access + refresh tokens
+5. Exchanges the auth code at `/oauth/token` for an access token (no refresh tokens)
 6. Sends `Authorization: Bearer <access_token>` on every `/mcp` call
 
-Tokens are stored by your MCP client and survive desktop-app reloads — no re-auth on reconnect. Once signed in, run `network_list` to see your networks, then pass the chosen `network_id` to any business tool.
+Tokens are stored by your MCP client and survive desktop-app reloads — no re-auth on reconnect until the underlying Lincx JWT expires. Once signed in, run `network_list` to see your networks, then pass the chosen `network_id` to any business tool.
 
 ---
 
@@ -36,19 +36,18 @@ Tokens are stored by your MCP client and survive desktop-app reloads — no re-a
 ```
 Client → POST /mcp (no auth)            ← 401 + WWW-Authenticate
 Client → /.well-known/oauth-authorization-server   (discovery)
-Client → POST /oauth/register                      (DCR)
+Client → POST /oauth/register                      (DCR → signed client_id)
 Client → opens browser → GET /oauth/authorize?...&code_challenge=…
-Server stores pending auth-request → redirects browser to /login
-User submits credentials → server signs into Lincx → issues auth code
+Server redirects to /login?ctx=<signed auth request>
+User submits credentials → server signs into Lincx → issues sealed auth code
 Browser navigates to redirect_uri?code=…&state=…
-Client → POST /oauth/token (with code_verifier)    ← access_token, refresh_token
+Client → POST /oauth/token (with code_verifier)    ← access_token (wrapped Lincx JWT)
 Client → POST /mcp + Authorization: Bearer …       (all subsequent calls)
 ```
 
-Two unrelated tokens identify a user: the OAuth access token (sent by the
-client on every `/mcp` request) and the Lincx JWT (server-side only, used by
-`workApiRequest`). They meet in Redis: `oauth:access:<token>` →
-`lincx_session_id` → Lincx session.
+The OAuth access token is an AES-GCM wrapping of the Lincx JWT. The server
+decrypts it on each request; there is no Redis session store. Access tokens
+expire with the Lincx JWT's `exp` — no refresh tokens are issued.
 
 Multi-tenancy is scoped per tool call: every business tool takes a required `network_id` argument, which `workApiRequest` attaches to the Work API request (`?networkId=<id>` on list endpoints). There is no server-side active network.
 
@@ -69,8 +68,8 @@ src/
 │
 ├── services/
 │   ├── auth.js                  # loginWithCredentials() → identity server
-│   ├── sessionStore.js          # Redis (or in-memory) session persistence
-│   ├── sessionManager.js        # create / validate / refreshNetworks / destroy sessions
+│   ├── tokenService.js          # AES-GCM wrap + HMAC-signed OAuth tokens
+│   ├── sessionManager.js        # unwrap bearer → auth context / validateSession
 │   ├── networkService.js        # fetchUserNetworks() from /api/networks
 │   ├── oauth/                   # clients, codes, tokens, pkce, metadata
 │   └── workApi.js               # Authenticated Work API client (?networkId on list GETs)
@@ -101,9 +100,8 @@ src/
 
 ## Prerequisites
 
-- **Node.js 18+** — check with `node --version`
+- **Node.js 22+** — check with `node --version`
 - **npm 9+** — check with `npm --version`
-- **Redis** (optional) — for persistent sessions across server restarts. Without it, sessions live in memory and are lost on restart.
 
 ---
 
@@ -123,15 +121,14 @@ Create a `.env` file in the project root:
 # Required — base URL for all Work API calls (networks, templates, zones, etc.)
 WORK_API_BASE_URL=https://your-work-api.example.com
 
+# Required — ≥32-char secret for access-token wrapping / OAuth signing
+WRAPPING_KEY=change-me-to-a-long-random-secret!!
+
 # Optional — Lincx identity server (defaults shown)
 IDENTITY_SERVER=https://your-identity-server.example.com
 
 # Optional — port for the login UI + MCP /mcp endpoint (default: 5001)
 PORT=5001
-
-# Optional — Redis connection URL. `npm run dev` starts a Dockerized Redis and
-# points here automatically. Omit to use in-memory sessions (lost on restart).
-REDIS_URL=redis://default:localdev@localhost:6379
 ```
 
 > **Note:** There is no `NETWORK_API_BASE_URL`. Networks are fetched from `WORK_API_BASE_URL/api/networks`.
@@ -147,10 +144,11 @@ npm start
 ```
 
 **Dev mode** — `npm run dev` starts a tunnel and prints a public `https://…/mcp`
-URL to paste into a Claude Desktop / claude.ai connector (both require https). It
-also starts a Dockerized Redis via the `predev` hook. It uses **ngrok** if
-installed, otherwise **cloudflared**; `npm run dev:ngrok` and
-`npm run dev:cloudflared` force one (`brew install ngrok` / `brew install cloudflared`).
+URL to paste into a Claude Desktop / claude.ai connector (both require https).
+It uses **ngrok** if installed, otherwise **cloudflared**; `npm run dev:ngrok`
+and `npm run dev:cloudflared` force one (`brew install ngrok` /
+`brew install cloudflared`). For plain local work without a tunnel, use
+`npm run dev:local`.
 
 ```bash
 npm run dev
@@ -459,8 +457,8 @@ registerYourDomainTools(server)
 **"Cannot find module" errors after changes**
 → Check the import has a `.js` extension. The project is ESM with no build step; extensionless imports do not resolve.
 
-**Session lost after restart**
-→ Set `REDIS_URL` in your `.env`. Without Redis, sessions are in-memory only and are lost on restart.
+**Server refuses to start / wrapping key error**
+→ Set `WRAPPING_KEY` in your `.env` to a secret at least 32 characters long.
 
 **Login page unreachable**
 → Confirm the MCP server is running and that `PORT` in your config matches where you're navigating.
@@ -481,19 +479,23 @@ registerYourDomainTools(server)
 
 ## Deployment
 
-Full step-by-step guide: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+The server deploys to any Node ≥22 host — no build step, no container required:
 
-Production is Google App Engine Standard (`nodejs22`) with Memorystore Redis —
-no build step, no container. See [DEPLOYMENT.md](DEPLOYMENT.md).
-The MCP transport is **stateless** — identity is the OAuth bearer on each request,
-resolved to a Lincx session in Redis — so the service can run more than one
-instance and restart without dropping clients. `app.yaml` still pins
-`manual_scaling: instances: 1` as a staged-rollout hold (the rate limiter counts
-in-process; lifting the pin is its own deploy).
+- Build `npm ci --omit=dev`, start `node src/index.js`
+- The platform sets `PORT`; the app listens on it
+- `/health` answers 200 — point the platform's health check at it
+- Terminate TLS in front of the app (it only speaks HTTP) and have the proxy
+  overwrite `X-Forwarded-For` — set `TRUSTED_PROXY_HOPS` to the measured hop
+  count, or every rate limit keys on a client-supplied header
+- Required env vars: `WORK_API_BASE_URL`, `WRAPPING_KEY` (secret, never
+  committed), `PUBLIC_BASE_URL` — must equal the URL clients actually hit, no
+  trailing slash. A mismatch breaks OAuth discovery with no useful
+  client-side error.
 
-| File | Use |
-|------|-----|
-| `app.yaml` | App Engine service config: runtime, scaling, non-secret env vars, VPC connector. Committed — secrets are injected by the platform, never here. |
-| `.gcloudignore` | What not to upload. `src/` is uploaded; `src/tests/` is not. |
-| `cloudbuild.yaml` | Deploy on master push, gated by `npm run lint` + `npm test`. |
-| `docker-compose.dev.yml` | Local-dev Redis only, standalone, host port 6380. The npm scripts pass it explicitly. |
+The MCP transport is **stateless** — identity is the wrapped OAuth bearer on
+each request — so the service restarts and redeploys without dropping clients. One
+caveat before scaling past one instance: the rate limiter counts in-process, so
+N instances silently means N × the per-caller limits.
+
+Post-deploy check: `npm run smoke https://<your-domain>` — read-only,
+unauthenticated; it is what catches a `PUBLIC_BASE_URL` mismatch.

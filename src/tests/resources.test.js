@@ -8,7 +8,7 @@ import { workApiMock, sessionMock } from './helpers/mockWorkApi.js'
 const extra = { sessionId: 'test-session' }
 
 /** Fresh module graph per test — routes are per-test state, not a shared registry. */
-async function build (routes = [], networks) {
+async function build (routes = [], networks, fetchImpl) {
   const sessionOverrides = networks !== undefined
     ? {
         validateSession: async () => ({
@@ -22,7 +22,10 @@ async function build (routes = [], networks) {
     : {}
   const { registerResources } = await esmock('../tools/resources.js', {
     '../services/workApi.js': workApiMock(routes),
-    '../services/sessionManager.js': sessionMock(sessionOverrides)
+    '../services/sessionManager.js': sessionMock(sessionOverrides),
+    '../services/networkService.js': {
+      fetchUserNetworks: fetchImpl ?? (async () => networks ?? [])
+    }
   })
   const server = new McpServer({ name: 'test', version: '0.0.0' })
   registerResources(server)
@@ -54,6 +57,17 @@ test.serial('resources (T1-3 / T4-6) > lincx://networks returns the session netw
   const body = JSON.parse(out.contents[0].text)
   t.is(Array.isArray(body.networks), true)
   t.deepEqual(body.networks, networks)
+})
+
+test.serial('resources > lincx://networks surfaces a clean error when the fetch fails', async t => {
+  const server = await build([], undefined, async () => {
+    throw new Error('GET /api/networks failed: HTTP 503')
+  })
+  const res = server._registeredResources['lincx://networks']
+
+  const out = await res.readCallback(new URL('lincx://networks'), extra)
+  t.is(out.contents[0].mimeType, 'text/plain')
+  t.regex(out.contents[0].text, /^Error: could not fetch networks.*503/)
 })
 
 test.serial('resources (T1-3 / T4-6) > registers entity resource templates that fetch by id', async t => {

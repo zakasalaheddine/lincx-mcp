@@ -30,3 +30,10 @@ test('verifyPkce > rejects too-short verifier (< 43 chars per RFC)', t => {
 test('verifyPkce > rejects too-long verifier (> 128 chars per RFC)', t => {
   t.is(verifyPkce('a'.repeat(129), 'anything', 'S256'), false)
 })
+
+test('verifyPkce > rejects a multibyte challenge instead of throwing', t => {
+  // 'é' is one UTF-16 code unit but two UTF-8 bytes: a 43-char challenge passes
+  // the string-length guard but is 86 bytes wide, so timingSafeEqual throws on
+  // the byte-length mismatch. Must return false, not throw.
+  t.is(verifyPkce('a'.repeat(64), 'é'.repeat(43), 'S256'), false)
+})

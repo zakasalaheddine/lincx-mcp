@@ -1,11 +1,8 @@
-/* eslint-disable camelcase -- OAuth params and Work API / tool-output fields are snake_case on the wire: protocol, not style. */
-import { randomBytes } from 'node:crypto'
+/* eslint-disable camelcase -- OAuth params are snake_case on the wire. */
 import { loginWithCredentials } from '../services/auth.js'
-import { createSession } from '../services/sessionManager.js'
 import {
-  storePendingAuthRequest,
-  consumePendingAuthRequest,
-  peekPendingAuthRequest,
+  issueAuthRequest,
+  peekAuthRequest,
   issueAuthCode
 } from '../services/oauth/codes.js'
 import { getClient } from '../services/oauth/clients.js'
@@ -16,10 +13,6 @@ import { query, readBody } from '../http/request.js'
 
 // ── GET /oauth/authorize ─────────────────────────────────────────────────────
 export async function getAuthorize (req, res) {
-  // Every request writes an unauthenticated 10-min `oauth:pending:<id>` to Redis.
-  // The 429 body is JSON while every other failure here renders buildErrorPage —
-  // a browser sees raw JSON. Left as-is: Retry-After is what a client acts on, and
-  // the limiter owning its own response is what keeps it uniform across routes.
   if (!oauthAuthorizeLimiter(req, res)) return
 
   const q = query(req)
@@ -46,10 +39,11 @@ export async function getAuthorize (req, res) {
   if (!client.redirect_uris.includes(redirect_uri)) {
     return html(res, 400, buildErrorPage('redirect_uri does not match registered URIs.'))
   }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(code_challenge)) {
+    return html(res, 400, buildErrorPage('Invalid code_challenge.'))
+  }
 
-  const request_id = randomBytes(16).toString('hex')
-  await storePendingAuthRequest({
-    request_id,
+  const ctx = issueAuthRequest({
     client_id,
     redirect_uri,
     state,
@@ -57,23 +51,22 @@ export async function getAuthorize (req, res) {
     scope: scope ?? 'mcp'
   })
 
-  redirect(res, `/login?req=${request_id}`)
+  redirect(res, `/login?ctx=${encodeURIComponent(ctx)}`)
 }
 
 // ── GET /login ───────────────────────────────────────────────────────────────
 export async function getLogin (req, res) {
-  const requestId = query(req).get('req') ?? ''
-  if (!requestId) return html(res, 400, buildErrorPage('Missing auth request id.'))
+  const ctx = query(req).get('ctx') ?? ''
+  if (!ctx) return html(res, 400, buildErrorPage('Missing auth request context.'))
 
-  const pending = await peekPendingAuthRequest(requestId)
+  const pending = peekAuthRequest(ctx)
   if (!pending) return html(res, 400, buildErrorPage('This login link has expired.'))
 
-  html(res, 200, buildLoginPage(requestId))
+  html(res, 200, buildLoginPage(ctx))
 }
 
 // ── POST /api/login ──────────────────────────────────────────────────────────
 export async function postApiLogin (req, res, _opts, cb) {
-  // The limiter writes its own 429 and returns false — the request is done.
   if (!loginLimiter(req, res)) return
 
   let body
@@ -83,15 +76,15 @@ export async function postApiLogin (req, res, _opts, cb) {
     return cb(err)
   }
 
-  const requestId = query(req).get('req') ?? ''
+  const ctx = query(req).get('ctx') ?? ''
   const { email, password } = body ?? {}
 
-  if (!requestId) return json(res, 400, { success: false, error: 'Missing request id.' })
+  if (!ctx) return json(res, 400, { success: false, error: 'Missing request context.' })
   if (!email || !password) {
     return json(res, 400, { success: false, error: 'Email and password required.' })
   }
 
-  const pending = await consumePendingAuthRequest(requestId)
+  const pending = peekAuthRequest(ctx)
   if (!pending) {
     return json(res, 400, {
       success: false,
@@ -101,19 +94,18 @@ export async function postApiLogin (req, res, _opts, cb) {
 
   try {
     const { authToken } = await loginWithCredentials(email, password)
-    const session = await createSession({ user_id: email, email, auth_token: authToken })
 
-    const code = await issueAuthCode({
+    const code = issueAuthCode({
       client_id: pending.client_id,
       redirect_uri: pending.redirect_uri,
       code_challenge: pending.code_challenge,
-      lincx_session_id: session.session_id
+      lincx_jwt: authToken
     })
 
     const url = new URL(pending.redirect_uri)
     url.searchParams.set('code', code)
     url.searchParams.set('state', pending.state)
-    console.error(`[OAuth] auth_code issued for ${email} → client=${pending.client_id}`)
+    console.error(`[OAuth] auth_code issued for ${email}`)
     json(res, 200, { success: true, redirect: url.toString() })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Login failed'

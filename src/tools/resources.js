@@ -22,11 +22,12 @@ import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
+import { fetchUserNetworks } from '../services/networkService.js'
 
 async function requireSession (extra) {
-  const sessionId = await resolveLincxSession(extra)
-  if (!sessionId) return { error: "Error: Not authenticated. Use 'auth_login' first." }
-  const v = await validateSession(sessionId)
+  const auth = await resolveLincxSession(extra)
+  if (!auth) return { error: "Error: Not authenticated. Use 'auth_login' first." }
+  const v = await validateSession(auth)
   if (!v.valid || !v.session) return { error: `Error: ${v.error}` }
   return { session: v.session }
 }
@@ -68,7 +69,13 @@ export function registerResources (server) {
     async (uri, extra) => {
       const r = await requireSession(extra)
       if ('error' in r) return plain(uri, r.error)
-      return json(uri, { networks: r.session.networks ?? [] })
+      try {
+        const networks = await fetchUserNetworks(r.session.auth_token)
+        return json(uri, { networks })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return plain(uri, `Error: could not fetch networks — ${msg}`)
+      }
     }
   )
 

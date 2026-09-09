@@ -45,6 +45,7 @@ import { installToolGuards } from './middleware/toolGuard.js'
 import { mcpIpLimiter, mcpUserLimiter, userKey } from './middleware/rateLimit.js'
 import { SERVER_PORT, IS_PRODUCTION, PUBLIC_BASE_URL, MCP_MAX_BATCH } from './constants.js'
 import { resolveLincxSessionFromBearer, resolveUserBucket } from './services/sessionManager.js'
+import { assertWrappingKey } from './services/tokenService.js'
 import { buildRouter, onRouterError } from './http/router.js'
 import { buildHealthHandler } from './http/health.js'
 import { json } from './http/respond.js'
@@ -158,8 +159,8 @@ async function mcpPost (req, res, _opts, cb) {
     // read. A client's `mcp-session-id` header (if it still sends one from a
     // previous stateful connection) is simply ignored — which is exactly why a
     // restart no longer forces a re-initialize.
-    const lincxSessionId = await resolveLincxSessionFromBearer(header(req, 'authorization'))
-    if (!lincxSessionId) return unauthorized(res)
+    const auth = await resolveLincxSessionFromBearer(header(req, 'authorization'))
+    if (!auth) return unauthorized(res)
 
     // One POST can carry a JSON-RPC ARRAY, and the transport runs every message
     // in it. Cap the length and charge the budget per message, or 120 req/min is
@@ -179,8 +180,8 @@ async function mcpPost (req, res, _opts, cb) {
     // Tier 2, post-auth: the real fairness control, keyed on the caller's IDENTITY
     // rather than on anything they send. Not the raw header — `Bearer x` and
     // `bearer  x` authenticate as the same user, so hashing the header would hand
-    // one user several buckets.
-    const bucket = userKey(await resolveUserBucket(lincxSessionId))
+    // one user several buckets. Bucket is the Lincx JWT `sub` (via resolveUserBucket).
+    const bucket = userKey(resolveUserBucket(auth))
     if (!mcpUserLimiter(req, res, bucket, messages)) {
       // Hand back the tier-1 slot this request already spent. Otherwise a single
       // user hitting their own cap burns the address budget everyone behind the
@@ -273,6 +274,11 @@ function buildDevHandlers () {
  * with a running dev server.
  */
 export function start ({ port = SERVER_PORT } = {}) {
+  // Fail before bind when the wrapping key is missing/short — every OAuth and
+  // access-token path needs it, and a half-started instance with no key is worse
+  // than a refuse-to-boot.
+  assertWrappingKey()
+
   const router = buildRouter({
     health: buildHealthHandler(),
     mcp: { post: mcpPost },

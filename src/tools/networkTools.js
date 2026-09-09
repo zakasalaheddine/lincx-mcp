@@ -1,25 +1,21 @@
-/* eslint-disable camelcase -- OAuth params and Work API / tool-output fields are snake_case on the wire: protocol, not style. */
+/* eslint-disable camelcase -- OAuth params and tool-output fields are snake_case on the wire. */
 /**
  * tools/networkTools.js
  *
  * network_list    — list all accessible networks
- * network_refresh — re-fetch networks from the API (same slim/paged shape as network_list)
+ * network_refresh — re-fetch networks from the API (same slim/paged shape)
  *
- * Network selection is now part of the per-tool-call context. Callers pass
- * `network_id` to business tools; `network_list` only lists the networks the
- * user can access.
+ * Network selection is per-tool-call via `network_id`. There is no session
+ * active_network fallback.
  */
 
 import { z } from 'zod'
 import { refreshNetworks, resolveLincxSession } from '../services/sessionManager.js'
-import { getSessionStore } from '../services/sessionStore.js'
+import { fetchUserNetworks } from '../services/networkService.js'
 
 /**
- * Slim + page + archived-filter a session's networks. Shared by network_list and
- * auth_status so both stay small on high-network accounts (Adnet had ~354, mostly
- * archived "Remove Network" test entries — the full dump blew the 30k guard and
- * returned nothing). Active-only by default; archived stays in the session so
- * includeArchived can still surface it.
+ * Slim + page + archived-filter a network list. Shared by network_list and
+ * auth_status so both stay small on high-network accounts.
  */
 export function selectNetworks (
   session,
@@ -73,22 +69,23 @@ Returns:
         limit: z.number().int().min(1).max(500).default(100).describe('Max networks to return'),
         offset: z.number().int().min(0).default(0).describe('Skip this many (use next_offset from a previous call to page)'),
         verbose: z.boolean().default(false).describe('Return full network objects instead of slim { id, name, archived }')
-      }),
+      }).strict(),
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
     },
     async ({ includeArchived, limit, offset, verbose }, extra) => {
-      const sessionId = await resolveLincxSession(extra)
-      if (!sessionId) {
+      const auth = await resolveLincxSession(extra)
+      if (!auth) {
         return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
       }
 
-      const store = await getSessionStore()
-      const session = await store.get(sessionId)
-      if (!session) {
-        return { content: [{ type: 'text', text: "Error: Session not found. Use 'auth_login' to re-authenticate." }] }
+      let networks
+      try {
+        networks = await fetchUserNetworks(auth.auth_token)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `Error: could not fetch networks — ${msg}` }] }
       }
-
-      const result = selectNetworks(session, { includeArchived, limit, offset, verbose })
+      const result = selectNetworks({ networks }, { includeArchived, limit, offset, verbose })
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
         structuredContent: result
@@ -104,7 +101,7 @@ Returns:
       description: `Re-fetch the user's network list from the API and return it.
 
 Use when a network seems to be missing, the user was recently added to a new one,
-or the list came back empty at login (the fetch is allowed to fail there).
+or the list came back empty at login.
 
 Takes the same filtering/paging args as 'network_list' and returns the same shape —
 the raw list is hundreds of full objects on large accounts and would overflow the
@@ -116,29 +113,30 @@ Returns: network_list's shape plus { success }`,
         limit: z.number().int().min(1).max(500).default(100).describe('Max networks to return'),
         offset: z.number().int().min(0).default(0).describe('Skip this many (use next_offset from a previous call to page)'),
         verbose: z.boolean().default(false).describe('Return full network objects instead of slim { id, name, archived }')
-      }),
+      }).strict(),
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
     async ({ includeArchived, limit, offset, verbose }, extra) => {
-      const sessionId = await resolveLincxSession(extra)
-      if (!sessionId) {
+      const auth = await resolveLincxSession(extra)
+      if (!auth) {
         return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
       }
 
-      const refreshed = await refreshNetworks(sessionId)
+      let refreshed
+      try {
+        refreshed = await refreshNetworks(auth)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return { content: [{ type: 'text', text: `Error: Could not refresh networks — ${msg}` }] }
+      }
       if (!refreshed) {
-        return { content: [{ type: 'text', text: 'Error: Could not refresh networks. Session may be invalid.' }] }
+        return { content: [{ type: 'text', text: 'Error: Could not refresh networks.' }] }
       }
 
       const { session } = refreshed
       const result = {
         success: true,
-        ...selectNetworks(session, { includeArchived, limit, offset, verbose }),
-        // fetchUserNetworks returns [] on failure as well as on a genuinely empty
-        // account — don't let `success: true` read as "you have no networks".
-        ...(session.networks.length === 0
-          ? { note: 'The API returned no networks. This can mean the fetch failed — check server logs and retry before concluding the account has none.' }
-          : {})
+        ...selectNetworks(session, { includeArchived, limit, offset, verbose })
       }
       return {
         content: [{ type: 'text', text: JSON.stringify(result) }],
