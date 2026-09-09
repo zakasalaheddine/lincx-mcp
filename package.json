@@ -31,8 +31,7 @@
     "ava": "^6.4.1",
     "esmock": "^2.7.6",
     "standard": "^17.1.2",
-    "supertest": "^7.2.2",
-    "ts-blank-space": "^0.9.0"
+    "supertest": "^7.2.2"
   },
   "engines": {
     "node": ">=22"
