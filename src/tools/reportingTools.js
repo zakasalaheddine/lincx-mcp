@@ -85,7 +85,9 @@ export function registerReportingTools (server) {
   // ── report_query ─────────────────────────────────────────────────────────────
   server.registerTool('report_query', {
     title: 'Report Query',
-    description: `Run a report against a dimension set and get SERVER-SIDE AGGREGATED metrics back — sums of zoneLoads, loads, impressions, clicks, actions, revenue, etc. The upstream API always returns hourly-granular rows (there is no "daily" mode); this tool rolls them up so the response stays small instead of dumping hundreds of rows.
+    description: `Run a report against a dimension set and get SERVER-SIDE AGGREGATED metrics back — sums of zoneLoads, loads, impressions, clicks, actions, revenue, etc. Row granularity follows the dimension set: a set that includes the 'hour' dimension returns hourly rows, a set without it returns one row per UTC day. This tool rolls rows up so the response stays small instead of dumping hundreds of rows.
+
+- The dimension set must carry every dimension the query needs (groupBy, filter keys, and 'hour' for a non-UTC timezone) — otherwise the tool errors and names what's missing. Check with get_dimension_set.
 
 - startDate and endDate are REQUIRED (YYYY-MM-DD).
 - Omit groupBy for a single grand total over the whole range.
@@ -98,8 +100,8 @@ export function registerReportingTools (server) {
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD').describe('Required. End date, YYYY-MM-DD (e.g. 2026-05-25)'),
       groupBy: z.array(z.string()).optional().describe("Dimension fields to roll up by, e.g. ['zone'] or ['zone','date']. Omit for a grand total. Valid fields are the dimension set's dimensions (zone, template, advertiser, campaign, publisher, date, hour, …)."),
       filter: z.record(z.string(), z.string()).optional().describe("Scope to one entity: { dimension: value }, e.g. { advertiser: 'Acme' }. Matches the value the dimension emits (usually its name), case-insensitively. Each key must be a real dimension of this set — it's auto-added to the fetch so its column is present."),
-      timezone: z.string().optional().describe("IANA timezone (e.g. 'America/Denver') to bucket date/hour in local time instead of UTC. Upstream is UTC-only; day boundaries shift, which matters — one Adnet advertiser's daily revenue moved 19% between UTC and Mountain. DST-correct. Omit for UTC."),
-      raw: z.boolean().optional().default(false).describe('Return the raw, unaggregated hourly rows instead of rolled-up sums. Large — only when you specifically need per-hour detail.'),
+      timezone: z.string().optional().describe("IANA timezone (e.g. 'America/Denver') to bucket date/hour in local time instead of UTC. Upstream is UTC-only, so this rebuckets hourly rows (DST-correct) and REQUIRES a dimension set with the 'hour' dimension — on a set without it there are no hours to redistribute and the tool errors instead of returning shifted dates. Omit for UTC."),
+      raw: z.boolean().optional().default(false).describe('Return the raw, unaggregated rows (hourly when the set has hour) instead of rolled-up sums. Large — only when you specifically need per-row detail.'),
       testMode: z.boolean().optional().describe("Enable test mode (maps to query param 'test-mode')")
     }).strict(),
     // structuredContent shape — covers both the aggregated default (total/groups)
@@ -140,8 +142,22 @@ export function registerReportingTools (server) {
     // from the rows and every row fails the match (would look like "no data").
     const filterKeys = filter ? Object.keys(filter) : []
     const apiDims = [...new Set([...cleanGroupBy, ...filterKeys].filter((g) => !TIME_OR_META.has(g)))]
+    // A UTC alias (UTC, Etc/UTC, GMT) is a no-op rebucket — it doesn't need hourly rows.
+    const needsHour = Boolean(timezone) && !isUtcZone(timezone)
 
     try {
+      // Pre-flight: check the set carries every dimension the query needs BEFORE the
+      // (slow) report fetch. Without 'hour', upstream returns one row per UTC day and a
+      // timezone can only relabel it, shifting every date by a day. If the lookup fails
+      // or the set has no dimensions list, skip — the row check below still guards tz.
+      const required = [...new Set([...apiDims, ...(needsHour ? ['hour'] : [])])]
+      const setDims = await fetchSetDimensions(v.session, dimensionSetId)
+      const missing = setDims ? missingDimensions(setDims, required) : []
+      if (missing.length) {
+        const hourNote = missing.includes('hour') ? ` 'hour' is required for timezone '${timezone}'.` : ''
+        return { content: [{ type: 'text', text: `Error: dimension set ${dimensionSetId} is missing [${missing.join(', ')}].${hourNote} Add ${missing.length > 1 ? 'them' : 'it'} to this report in Reports Center, or use a dimension set that carries ${missing.length > 1 ? 'them' : 'it'} (list_dimension_sets / get_dimension_set).` }] }
+      }
+
       // Upstream buckets strictly on UTC day boundaries. To bucket in a local tz we
       // fetch ONE UTC day of padding on each side, rebucket every hourly row's
       // date/hour into the tz, then trim back to the requested LOCAL range — else the
@@ -155,6 +171,12 @@ export function registerReportingTools (server) {
       // Reports can take >10s over a wide range — give them headroom.
       const data = await workApiRequest(v.session, 'GET', `/api/reports/${dimensionSetId}`, { params, timeoutMs: 60_000 })
       let fetchedRows = Array.isArray(data) ? data : []
+
+      // Fallback for when the pre-flight was skipped or its metadata disagrees with what
+      // the report actually returned: daily rows can't be rebucketed, so refuse.
+      if (needsHour && fetchedRows.some((r) => isDateString(r.date) && !isValidHour(r.hour))) {
+        return { content: [{ type: 'text', text: `Error: dimension set ${dimensionSetId} returned daily rows with no hour, so timezone '${timezone}' can't be applied (dates would shift by a day). Add 'hour' to this report in Reports Center, use a dimension set that carries it, or omit timezone for UTC.` }] }
+      }
 
       if (timezone) {
         // Rebucket UTC date/hour → local, then keep only rows inside the requested
@@ -285,6 +307,38 @@ export function isValidTimeZone (tz) {
   }
 }
 
+/** True if `tz` resolves to UTC (UTC, Etc/UTC, GMT, …) — rebucketing to it is a no-op. */
+export function isUtcZone (tz) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz }).resolvedOptions().timeZone === 'UTC'
+}
+
+const isDateString = (d) => /^\d{4}-\d{2}-\d{2}$/.test(String(d ?? ''))
+
+/** True for an hour 0–23 as a number or a 1–2 digit string. Absent/''/'24' are not hours. */
+export function isValidHour (h) {
+  return /^\d{1,2}$/.test(String(h ?? '')) && Number(h) <= 23
+}
+
+/**
+ * The set's `dimensions` array, or null when it can't be read (lookup failed, or an
+ * unexpected shape) — callers treat null as "unknown" and skip the pre-flight.
+ */
+async function fetchSetDimensions (session, dimensionSetId) {
+  try {
+    const data = await workApiRequest(session, 'GET', `/api/dimension-sets/${dimensionSetId}`)
+    const dims = data?.data?.dimensions ?? data?.dimensions
+    return Array.isArray(dims) && dims.length ? dims : null
+  } catch {
+    return null
+  }
+}
+
+/** `required` dimensions absent from the set's dimensions (case-insensitive). */
+export function missingDimensions (setDims, required) {
+  const have = new Set(setDims.map((d) => String(d).toLowerCase()))
+  return required.filter((d) => !have.has(d.toLowerCase()))
+}
+
 /** Shift a YYYY-MM-DD date string by whole UTC days. */
 export function shiftUtcDate (date, days) {
   const [y, m, d] = date.split('-').map(Number)
@@ -296,7 +350,9 @@ export function shiftUtcDate (date, days) {
  * Rebucket each hourly report row from UTC into `tz`, replacing its `date`
  * (YYYY-MM-DD) and `hour` (00–23) with the local values. Uses Intl with the IANA
  * zone so DST transitions are handled correctly (a fixed offset would mis-bucket
- * on transition days). Rows without a usable date/hour pass through unchanged.
+ * on transition days). Rows without a usable date/hour pass through unchanged —
+ * never default a missing hour to 0: a daily row would be stamped 18:00 the previous
+ * local day (in Denver), shifting every date.
  */
 export function rebucketRowsToTimezone (
   rows,
@@ -311,11 +367,9 @@ export function rebucketRowsToTimezone (
     hour12: false
   })
   return rows.map((row) => {
-    const date = String(row.date ?? '')
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return row
-    const [y, mo, d] = date.split('-').map(Number)
-    const hh = Number(row.hour ?? 0)
-    if (!Number.isFinite(hh)) return row
+    if (!isDateString(row.date) || !isValidHour(row.hour)) return row
+    const [y, mo, d] = String(row.date).split('-').map(Number)
+    const hh = Number(row.hour)
     const parts = fmt.formatToParts(new Date(Date.UTC(y, mo - 1, d, hh)))
     const p = {}
     for (const part of parts) p[part.type] = part.value
