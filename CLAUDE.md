@@ -474,6 +474,67 @@ than the whole budget falls back to ids-only + `complete:false`. `complete:false
 
 `fitAnalysis` (exported, unit-tested in `src/tests/analysisFit.test.ts`) always drops `output.rawResponse` and `input.prompt`, then sheds input sections in a fixed order — `rankDistribution` → `zoneMetrics` → the ranked-optimization context (duplicated into `output.json` by the API's finalize step) → the non-monetizing/default-tier lists → `localTiers` last, since that peer comparison is what carries the narrative. Whatever it drops lands in an `omitted[]` array, and `output.json` (the tier verdict) is never shed: a silently partial tier table is one the model completes with invented rows.
 
+### Audit log
+- `get_user_actions` — `GET /api/networks/{network_id}/user-actions`. Who created,
+  cloned, updated, archived, unarchived, moved or reassigned an entity, and when —
+  the question `explain_serve` cannot answer (it knows a group is disabled, never
+  who disabled it). Filters `type` / `model` / `user` / `dateStart` / `dateEnd` are
+  the endpoint's own; **`entityId` is applied server-side** (upstream has no
+  entity filter), the same shape as `report_query`'s `filter` and for the same
+  reason — otherwise "who turned THIS ad group off" means paging a network's whole
+  log through context.
+  - The network is in the **PATH**, not the `?networkId` query param, so this is
+    the one read where the tool's `network_id` argument is interpolated into the
+    URL instead of being handed to `workApiRequest` as `options.networkId` —
+    passing it there would be a silent no-op (`needsNetworkIdInQuery` matches
+    exact list paths only). The argument is still required and still the only
+    source of scope, same as every other business tool.
+  - Rows are requested with `fields: ['*']` by default: the standard projection
+    keeps `{ id, name }` + status fields and an action row has none of them, so
+    the default would return near-empty rows that read as "no data".
+  - **Entity grain, not field grain.** An `update` row does not say which field
+    changed or its previous value. The caveat is in the tool description AND in
+    the response (`grain`), because the model reads the response — `type: update`
+    next to a delivery drop is exactly the row it would otherwise present as a
+    cause. This is why #7 stays blocked: it needs field grain or a versions
+    endpoint, and this is neither.
+  - **Four upstream shapes, each of which fails by returning nothing.** An empty
+    change log reads as "nobody touched it", so none of these may be left to
+    chance (all verified against `lincx-core`'s `server/user-actions.js` and
+    `server/endpoints/user-actions/index.js`; the MCP's tests mock the Work API,
+    so they pin our end of the contract only):
+    - `model` matches the STORED value, which is `_.camelCase(model.name)`
+      filtered by an exact `_.isMatch` — `'AdGroup'` against a stored `'adGroup'`
+      is `false` with no error. Hence `ACTION_MODELS`, a closed `z.enum` of the 17
+      camelCased model names: a rejected argument is recoverable, an empty audit
+      log is not. Add to it when lincx-core adds a tracked model.
+    - both dates are ajv `format: 'date-time'` — a bare `2026-08-01` is a 422.
+      `toDateTime()` normalises, **asymmetrically**: the upstream range is
+      `_id: { $gte: key(dateStart), $lt: key(dateEnd) }`, an EXCLUSIVE end, so a
+      bare end date expands to the FOLLOWING midnight or the whole of the day you
+      asked about drops out. Both bounds are then folded to `Z`, because upstream
+      compares them with `>` — a lexicographic string compare that a mixed
+      `+02:00`/`Z` pair can trip.
+    - with no dates upstream defaults the window to the **last 14 days**, so a
+      group archived three weeks ago returns `total: 0`. `resolveWindow()`
+      resolves and SENDS the window instead, and the envelope echoes it as
+      `window: { dateStart, dateEnd, defaulted }` — the exact bounds the answer
+      covers, not a re-derivation. The default start is anchored to the **end**,
+      not to now: upstream's now-anchored default 422s ("dateStart should be
+      earlier then dateEnd") on a `dateEnd` older than two weeks, a reasonable
+      request with no business failing.
+    - rows arrive **oldest first** (ascending `_id`, which is time order), which
+      puts "who just turned this off" on the last page of a busy network.
+      `newestFirst()` sorts on `timestamp` — same one line as `.reverse()`, minus
+      the dependency on Mongo's ordering — and it also makes
+      `listEnvelopeToText`'s truncation shed the oldest rows rather than the ones
+      being asked about.
+  - `_id` is a pathkey (`networkId-eventId\xff<networkId>\xff<eventId>`) and
+    upstream stores no `eventId` field. `withEventId()` trades one for the other:
+    passed through, `_id` duplicates two fields the row already has and puts a raw
+    `\xff` in the response; dropped outright, it takes the only per-event
+    identifier with it.
+
 ### Advertisers (M3)
 - `list_advertisers` — `GET /api/advertisers` (paginated)
 - `get_advertiser` — `GET /api/advertisers/{id}`

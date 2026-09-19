@@ -92,6 +92,7 @@ src/
     ├── advertiserTools.js       # list_advertisers, get_advertiser
     ├── experienceTools.js       # list_experiences, get_experience
     ├── analysisTools.js         # list_analyses, get_analysis
+    ├── auditTools.js            # get_user_actions
     ├── reportingTools.js        # list_dimension_sets, get_dimension_set, get_event_stats_keys, report_query
     └── resources.js             # MCP Resources: lincx://networks + lincx://{entity}/{id}
 ```
@@ -361,6 +362,12 @@ Every business tool below takes a **required `network_id`** argument — a 6-cha
 |------|-----------|-------------|
 | `list_analyses` | `status`, `limit`, `cursor` | Zone-tier analysis jobs on the network, newest first. |
 | `get_analysis` | `id` | One analysis job by ID — poll until `succeeded` or `failed`. |
+
+### Audit log
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `get_user_actions` | `entityId`, `model`, `type`, `user`, `dateStart`, `dateEnd` | Who created, cloned, updated, archived, unarchived, moved or reassigned an entity on the network, and when. Newest first. **Entity grain, not field grain** — an `update` row does not say which field changed or its previous value. **Defaults to the last 14 days**; pass `dateStart` to look further back, and read the echoed `window` to see what the answer covers. `model` takes the stored camelCase name (`adGroup`, not `AdGroup`). `entityId` is applied server-side (the endpoint has no entity filter); the rest are the endpoint's own filters. |
 
 ### Dimension Sets & Reporting
 

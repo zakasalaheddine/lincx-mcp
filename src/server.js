@@ -37,6 +37,7 @@ import { registerPublisherTools } from './tools/publisherTools.js'
 import { registerAdvertiserTools } from './tools/advertiserTools.js'
 import { registerExperienceTools } from './tools/experienceTools.js'
 import { registerReportingTools } from './tools/reportingTools.js'
+import { registerAuditTools } from './tools/auditTools.js'
 import { registerZoneInventoryTools } from './tools/zoneInventoryTools.js'
 import { registerZoneEligibilityTools } from './tools/zoneEligibilityTools.js'
 import { registerAnalysisTools } from './tools/analysisTools.js'
@@ -77,6 +78,7 @@ function createMcpServer () {
   registerAdvertiserTools(server)
   registerExperienceTools(server)
   registerReportingTools(server)
+  registerAuditTools(server)
   registerZoneInventoryTools(server)
   registerZoneEligibilityTools(server)
   registerAnalysisTools(server)
