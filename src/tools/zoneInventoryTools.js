@@ -44,6 +44,16 @@ export function asEntity (data) {
   return {}
 }
 
+/**
+ * The one-line answer for an archived zone, shared by every zone-keyed tool so the
+ * three give the same verdict. An archived zone is not "a zone nothing targets" —
+ * the serving engine refuses it before any ad group is considered, so every row a
+ * rollup could return is unreachable. Exported for tests.
+ */
+export function archivedZoneText (zone) {
+  return `Zone ${zone.name ?? zone.id} (${zone.id}) is ARCHIVED — the ad server refuses to serve an archived zone, so no ad group can serve here regardless of targeting. No eligibility evaluated. Unarchive the zone to get a meaningful answer.`
+}
+
 /** Is this ad itself live — enabled, not archived, and pointing at an existing,
  * non-archived creative? Zone-independent on purpose: the caller has already
  * decided the ad serves in the zone (adServesHere / adServesInZone). Shared with
@@ -219,7 +229,7 @@ export function registerZoneInventoryTools (server) {
     title: 'Zone Targeting Inventory',
     description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached — or where it is off. Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').
 
-The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[], scoped_via[] }. scoped_via lists HOW the group is scoped to the zone (annotate-only, the row set is unchanged). It uses ONE shared enum across every tool that emits the field — 'ad-group-whitelist' (the group's params.zoneId names the zone — always present on a targeted row), 'ad-group-blacklist' (the group's exceptParams.zoneId excludes the zone; such a group is reported under 'conflicting' here, so this value is rare on a targeted row and common on the eligibility tool's conflicting rows), 'ad-level-whitelist' (one of its ads also whitelists the zone), 'ad-level-blacklist' (one of its ads excludes the zone via ad.exceptParams.zoneId — that ad is hidden here, siblings still serve), 'zone-selection' (the group shares the zone's creativeAssetGroupId — never set when the zone has no creativeAssetGroupId, since no CAG filter applies there). Same five values, same meaning, in get_zone_eligible_ad_groups and explain_serve. For per-(ad group × ad) offer-grain scoping and free-radical counts, use get_zone_eligible_ad_groups. This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
+The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[], scoped_via[] }. scoped_via lists HOW the group is scoped to the zone (annotate-only, the row set is unchanged). It uses ONE shared enum across every tool that emits the field — 'ad-group-whitelist' (the group's params.zoneId names the zone — always present on a targeted row), 'ad-group-blacklist' (the group's exceptParams.zoneId excludes the zone; such a group is reported under 'conflicting' here, so this value is rare on a targeted row and common on the eligibility tool's conflicting rows), 'ad-level-whitelist' (one of its ads also whitelists the zone), 'ad-level-blacklist' (one of its ads excludes the zone via ad.exceptParams.zoneId — that ad is hidden here, siblings still serve), 'zone-selection' (the group shares the zone's creativeAssetGroupId — never set when the zone has no creativeAssetGroupId, since no CAG filter applies there). Same five values, same meaning, in get_zone_eligible_ad_groups and explain_serve. For per-(ad group × ad) offer-grain scoping and free-radical counts, use get_zone_eligible_ad_groups. If the zone is ARCHIVED the tool returns that verdict alone — the ad server refuses an archived zone, so a targeting rollup for it would describe config that cannot run. This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
     inputSchema: z.object({
       ...requiredNetworkIdShape,
       zoneId: z.string().describe('Zone ID to audit targeting for'),
@@ -245,6 +255,10 @@ The result is the text content: a one-line header, then a blank line, then compa
       const zone = asEntity(zoneRaw)
       if (!zone.id) return { content: [{ type: 'text', text: 'Error: Resource not found. Double-check the zone ID.' }] }
       if (zone.networkId && zone.networkId !== network_id) return { content: [{ type: 'text', text: `Error: Zone '${zoneId}' belongs to network '${zone.networkId}', not '${network_id}'.` }] }
+      // An archived zone serves nothing — the serving engine refuses it outright
+      // (throwIfZoneArchived), so a targeting rollup for it would describe config
+      // that cannot run. Say so instead of returning rows that read as live.
+      if (zone.archived === true) return { content: [{ type: 'text', text: archivedZoneText(zone) }] }
 
       const adGroups = asRows(adGroupsRaw)
       const campaignRows = asRows(campaignsRaw)

@@ -20,7 +20,7 @@ import { validateSession, resolveLincxSession } from '../services/sessionManager
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
 import {
-  asRows, asEntity, rollupZoneTargeting, adLiveViable
+  asRows, asEntity, rollupZoneTargeting, adLiveViable, archivedZoneText
 
 } from './zoneInventoryTools.js'
 import {
@@ -276,7 +276,7 @@ export function registerZoneEligibilityTools (server) {
   // 1) zone → eligible ad groups (directly targeted + free radicals)
   server.registerTool('get_zone_eligible_ad_groups', {
     title: 'Zone Eligible Ad Groups',
-    description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when it is NOT archived (archived = out of service), its creativeAssetGroupId matches the zone's — or the zone has NO creativeAssetGroupId, in which case that filter does not apply at all and every group passes it, exactly as the serving engine behaves — it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: the group's params.zoneId names the zone OR it targets ZERO zones (open within its CAG). Ad-level params/exceptParams are a per-ad LAST check (filterAdgroups runs first, so an ad-level whitelist can never rescue an ineligible group) — they decide WHICH ads serve within an eligible group, feed has_live_viable_ad, and drive the offer-grain counts below. Results split into 'directlyTargeted' (ad-group-whitelisted and not blacklisted — this reconciles to get_zone_targeting_inventory's targeted set; groups that are targeted but config-broken, e.g. CAG mismatch, are KEPT here with eligible:false and their reasons[]/conflicts[], never silently dropped), 'freeRadicals' (eligible without direct targeting — via the shared CAG, or, when the zone has no CAG, because no CAG filter applies at all; either way they leak in), 'conflicting' (targets AND excepts the zone), and 'inertWhitelists' (DEAD CONFIG: the group cannot reach this zone, yet one of its ads whitelists the zone via ad.params.zoneId — filterAdgroups runs first, so that whitelist never fires and the ad silently does not serve here, even though the config reads as if it is targeted). directlyTargeted + conflicting reconciles to the inventory tool; inertWhitelists is disjoint from both and nothing in it serves.
+    description: `List every ad group ELIGIBLE to serve in a zone — not just the ones directly targeted. An ad group is eligible when it is NOT archived (archived = out of service), its creativeAssetGroupId matches the zone's — or the zone has NO creativeAssetGroupId, in which case that filter does not apply at all and every group passes it, exactly as the serving engine behaves — it is not blacklisted (zone in its exceptParams.zoneId), and it is in scope: the group's params.zoneId names the zone OR it targets ZERO zones (open within its CAG). Ad-level params/exceptParams are a per-ad LAST check (filterAdgroups runs first, so an ad-level whitelist can never rescue an ineligible group) — they decide WHICH ads serve within an eligible group, feed has_live_viable_ad, and drive the offer-grain counts below. Results split into 'directlyTargeted' (ad-group-whitelisted and not blacklisted — this reconciles to get_zone_targeting_inventory's targeted set; groups that are targeted but config-broken, e.g. CAG mismatch, are KEPT here with eligible:false and their reasons[]/conflicts[], never silently dropped), 'freeRadicals' (eligible without direct targeting — via the shared CAG, or, when the zone has no CAG, because no CAG filter applies at all; either way they leak in), 'conflicting' (targets AND excepts the zone), and 'inertWhitelists' (DEAD CONFIG: the group cannot reach this zone, yet one of its ads whitelists the zone via ad.params.zoneId — filterAdgroups runs first, so that whitelist never fires and the ad silently does not serve here, even though the config reads as if it is targeted). directlyTargeted + conflicting reconciles to the inventory tool; inertWhitelists is disjoint from both and nothing in it serves. If the zone is ARCHIVED, no buckets are returned at all: the ad server refuses an archived zone before any ad group is considered, so every row would be unreachable.
 
 FREE RADICALS ARE REPORTED AT TWO GRAINS. The 'freeRadicals' row set is HOST grain (summary.freeRadicalHosts): ad groups eligible only via the shared CAG — the free radical is the OFFER, the group merely hosts it. The true leak count is OFFER grain — an (ad group × ad) pair that serves solely via the CAG, i.e. an untargeted ad (empty params.zoneId) under an untargeted group, net of blacklists at BOTH levels (summary.freeRadicalOffers). An untargeted group whose only ad is zone-whitelisted is 1 free-radical HOST but 0 free-radical OFFERS — that ad renders because it is ad-level-targeted, not via the CAG.
 
@@ -304,6 +304,7 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
       const zone = asEntity(zoneRaw)
       if (!zone.id) return err('Error: Resource not found. Double-check the zone ID.')
       if (zone.networkId && zone.networkId !== network_id) return err(`Error: Zone '${zoneId}' belongs to network '${zone.networkId}', not '${network_id}'.`)
+      if (zone.archived === true) return err(archivedZoneText(zone))
       const idx = await fetchIndex(g.session, network_id)
       const zoneLite = { id: String(zone.id), name: String(zone.name ?? zone.id), creativeAssetGroupId: zone.creativeAssetGroupId, templateId: zone.templateId }
 
@@ -324,7 +325,7 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
   // 2) ad group → zones it can serve/leak into
   server.registerTool('get_ad_group_zone_reach', {
     title: 'Ad Group Zone Reach',
-    description: 'Show every zone an ad group can serve or LEAK into — the flip of get_zone_eligible_ad_groups. For the given ad group, evaluates the same eligibility join against all zones: it reaches a zone when the CAG matches (or the zone has no CAG, which applies no CAG filter at all), it is not blacklisted there, and it is in scope (whitelists the zone or targets zero zones → free radical across every zone sharing its CAG). Returns each reachable zone with via[] and any conflicts[]. Whole-network scan server-side; compact result in the content text.',
+    description: 'Show every zone an ad group can serve or LEAK into — the flip of get_zone_eligible_ad_groups. For the given ad group, evaluates the same eligibility join against all zones: it reaches a zone when the CAG matches (or the zone has no CAG, which applies no CAG filter at all), it is not blacklisted there, and it is in scope (whitelists the zone or targets zero zones → free radical across every zone sharing its CAG). Returns each reachable zone with via[] and any conflicts[]. An archived zone is never reachable — the ad server refuses archived zones, so they are skipped and counted in scan.archivedZonesSkipped, and any this group still whitelists are named in scan.archivedTargeted (dead targeting: it reads as if the group serves there and it cannot). Whole-network scan server-side; compact result in the content text.',
     inputSchema: z.object({ ...requiredNetworkIdShape, adGroupId: z.string().describe('Ad group ID to compute zone reach for') }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   }, async ({ adGroupId, network_id }, extra) => {
@@ -345,18 +346,29 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
       }
       const idx = await fetchIndex(g.session, network_id)
       const ads = idx.adsByGroup[adGroup.id] ?? []
-      const reach = adGroupReach(adGroup, idx.zones, ads)
-      const named = reach.map((e) => ({ ...e, zoneName: idx.zones.find((z) => z.id === e.zoneId)?.name ?? e.zoneId }))
+      // Reach is "where can this group actually serve", so archived zones are not
+      // reachable at any targeting — the serving engine refuses them outright.
+      const liveZones = idx.zones.filter((z) => z.archived !== true)
+      const archivedZones = idx.zones.length - liveZones.length
+      // An archived zone this group still whitelists is dead config: it cannot serve
+      // there, but the targeting reads as if it can. A bare count would hide WHICH
+      // zone, so name them — same reason the inert-whitelist bucket exists.
+      const whitelist = adGroup.params?.zoneId
+      const archivedTargeted = idx.zones
+        .filter((z) => z.archived === true && Array.isArray(whitelist) && whitelist.includes(z.id))
+        .map((z) => z.id)
+      const reach = adGroupReach(adGroup, liveZones, ads)
+      const named = reach.map((e) => ({ ...e, zoneName: liveZones.find((z) => z.id === e.zoneId)?.name ?? e.zoneId }))
       const direct = named.filter((e) => e.via.includes('ad-group-whitelist')).length
       const header = `Ad group ${adGroup.name ?? adGroup.id} (${adGroup.id}) reaches ${reach.length} zones — ${direct} targeted · ${reach.length - direct} via shared CAG (free radical)`
-      return pack(header, { adGroup: { id: adGroup.id, name: adGroup.name, creativeAssetGroupId: adGroup.creativeAssetGroupId }, summary: { reaches: reach.length, targeted: direct, freeRadical: reach.length - direct }, zones: named, scan: idx.scan }, { zones: 'zoneId' })
+      return pack(header, { adGroup: { id: adGroup.id, name: adGroup.name, creativeAssetGroupId: adGroup.creativeAssetGroupId }, summary: { reaches: reach.length, targeted: direct, freeRadical: reach.length - direct }, zones: named, scan: { ...idx.scan, archivedZonesSkipped: archivedZones, archivedTargeted } }, { zones: 'zoneId' })
     } catch (e) { return err(handleWorkApiError(e)) }
   })
 
   // 3) (zone, adGroup|ad) pair → why did/didn't X serve here
   server.registerTool('explain_serve', {
     title: 'Explain Serve',
-    description: 'Explain, for a single (zone, ad group OR ad) pair, whether it is eligible to serve in the zone, by what path (via[]), and if not, why not (reasons[]) — the "why did X serve in this zone?" direction of the eligibility join. Pass exactly one of adGroupId or adId (an adId is resolved to its ad group; its own ad-level whitelist/blacklist for the zone is also reported). With an adId the answer is at the OFFER grain (ad group × ad): it adds offer: { scoped_via[] — \'ad-group-whitelist\' | \'ad-group-blacklist\' | \'ad-level-whitelist\' | \'ad-level-blacklist\' | \'zone-selection\' — freeRadical, true only when the pair serves without any direct targeting — via the shared CAG, or via no CAG filter at all on a zone with no CAG (untargeted group AND untargeted ad, net of blacklists at both levels), and conflicts[], which carries \'inert-ad-level-whitelist\' when this ad whitelists the zone but its group cannot reach it, so the whitelist is dead config that never fires }. Returns the single eligibility verdict with any conflicts[]. Whole-network scan server-side.',
+    description: 'Explain, for a single (zone, ad group OR ad) pair, whether it is eligible to serve in the zone, by what path (via[]), and if not, why not (reasons[]) — the "why did X serve in this zone?" direction of the eligibility join. Pass exactly one of adGroupId or adId (an adId is resolved to its ad group; its own ad-level whitelist/blacklist for the zone is also reported). With an adId the answer is at the OFFER grain (ad group × ad): it adds offer: { scoped_via[] — \'ad-group-whitelist\' | \'ad-group-blacklist\' | \'ad-level-whitelist\' | \'ad-level-blacklist\' | \'zone-selection\' — freeRadical, true only when the pair serves without any direct targeting — via the shared CAG, or via no CAG filter at all on a zone with no CAG (untargeted group AND untargeted ad, net of blacklists at both levels), and conflicts[], which carries \'inert-ad-level-whitelist\' when this ad whitelists the zone but its group cannot reach it, so the whitelist is dead config that never fires }. Returns the single eligibility verdict with any conflicts[]. If the zone itself is archived the answer is that alone: the ad server refuses archived zones, so nothing serves there at any targeting. Whole-network scan server-side.',
     inputSchema: z.object({
       ...requiredNetworkIdShape,
       zoneId: z.string().describe('Zone ID to explain serving in'),
@@ -373,6 +385,7 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
       const zone = asEntity(zoneRaw)
       if (!zone.id) return err('Error: Resource not found. Double-check the zone ID.')
       if (zone.networkId && zone.networkId !== network_id) return err(`Error: Zone '${zoneId}' belongs to network '${zone.networkId}', not '${network_id}'.`)
+      if (zone.archived === true) return err(archivedZoneText(zone))
       const zoneLite = { id: String(zone.id), name: String(zone.name ?? zone.id), creativeAssetGroupId: zone.creativeAssetGroupId }
 
       let ad
