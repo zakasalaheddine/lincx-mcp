@@ -78,3 +78,42 @@ test.serial('installToolGuards status > logs a returned Error: result as status 
   t.is(byTool.err_tool, 'error')
   t.is(byTool.ok_tool, 'ok')
 })
+
+// An outputSchema'd tool that returns a message instead of a payload (every error
+// path in report_query) tripped the SDK's validateToolOutput, whose -32602 REPLACED
+// the message — a misconfigured report read as a broken connector. `isError: true`
+// is the SDK's own opt-out; the guard sets it. Asserted against the real
+// validateToolOutput, not a re-implementation of its rule.
+function schemaTool (result, { guard = true } = {}) {
+  const server = new McpServer({ name: 't', version: '0.0.0' })
+  server.registerTool(
+    'x',
+    { description: 'test', inputSchema: z.object({}).strict(), outputSchema: z.object({ ok: z.boolean() }) },
+    async () => result
+  )
+  if (guard) installToolGuards(server)
+  return { server, tool: (server)._registeredTools.x }
+}
+
+test.serial('installToolGuards (outputSchema error path) > marks a payload-less result isError so the SDK returns the message, not -32602', async t => {
+  const { server, tool } = schemaTool({ content: [{ type: 'text', text: 'Error: dimension set is missing [hour].' }] })
+  const r = await tool.handler({}, { sessionId: 's' })
+
+  t.is(r.isError, true)
+  t.is(r.content[0].text, 'Error: dimension set is missing [hour].')
+  await t.notThrowsAsync(server.validateToolOutput(tool, r, 'x'))
+})
+
+test.serial('installToolGuards (outputSchema error path) > unguarded, the same result is what the SDK rejects', async t => {
+  const { server, tool } = schemaTool({ content: [{ type: 'text', text: 'Error: nope' }] }, { guard: false })
+  const r = await tool.handler({}, { sessionId: 's' })
+  await t.throwsAsync(server.validateToolOutput(tool, r, 'x'), { message: /no structured content was provided/ })
+})
+
+test.serial('installToolGuards (outputSchema error path) > leaves a successful structured result untouched', async t => {
+  const { server, tool } = schemaTool({ content: [{ type: 'text', text: '{"ok":true}' }], structuredContent: { ok: true } })
+  const r = await tool.handler({}, { sessionId: 's' })
+
+  t.is(r.isError, undefined)
+  await t.notThrowsAsync(server.validateToolOutput(tool, r, 'x'))
+})

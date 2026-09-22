@@ -115,6 +115,9 @@ export function registerReportingTools (server) {
       timezone: z.string().optional(),
       filter: z.record(z.string(), z.string()).optional(),
       rowsFetched: z.number().optional(),
+      // Set when the answer is a legitimate zero (a filter that matched no row) —
+      // carries the values that DO exist so a typo is recoverable. Not an error.
+      note: z.string().optional(),
       total: z.record(z.number()).optional(),
       groups: z.array(z.record(z.unknown())).optional(),
       groupsTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
@@ -210,10 +213,15 @@ export function registerReportingTools (server) {
       if (missingKeys.length) {
         return { content: [{ type: 'text', text: `Error: filter key(s) [${missingKeys.join(', ')}] are not dimensions of this set. Call get_dimension_set to see valid dimensions, or use one in groupBy.` }] }
       }
-      if (filter && fetchedRows.length > 0 && rows.length === 0) {
-        const hint = valueHints.length ? ` Values present in range: ${valueHints.join(' | ')}.` : ''
-        return { content: [{ type: 'text', text: `No rows matched filter ${JSON.stringify(filter)} over ${startDate}→${endDate}.${hint}` }] }
-      }
+      // A filter that matches nothing is a CORRECT ZERO, not a failure — "Acme had $0
+      // that week" is the answer. It used to return early as a bare message, which for
+      // a tool with an outputSchema is a payload-less result: the guard then has to
+      // flag it isError (or the SDK throws -32602), so the same zero read as a failed
+      // call while "no rows upstream at all" read as a success. Fall through instead
+      // and return the normal structured zero (rows is []), carrying the hint as a note.
+      const note = (filter && fetchedRows.length > 0 && rows.length === 0)
+        ? `No rows matched filter ${JSON.stringify(filter)} over ${startDate}→${endDate}.${valueHints.length ? ` Values present in range: ${valueHints.join(' | ')}.` : ''}`
+        : undefined
 
       if (raw) {
         // outputSchema forces structuredContent, so the rows appear ~2.4× in the final
@@ -237,12 +245,16 @@ export function registerReportingTools (server) {
           rowsScanned: rows.length,
           ...(timezone ? { timezone } : {}),
           ...(filter ? { filter, rowsFetched: fetchedRows.length } : {}),
+          ...(note ? { note } : {}),
           raw: kept,
           ...(capped
             ? { rawTruncated: { returned: kept.length, total: rows.length, note: "Raw rows capped to fit the response size limit. Omit 'raw' for server-side aggregated totals, or narrow the date range." } }
             : {})
         }
-        const header = `Report "${dimensionSetId}" | ${startDate}→${endDate} | raw rows: ${kept.length}${capped ? ` of ${rows.length} (capped)` : ''}`
+        // The note rides in the header because hosts feed only `content` to the model —
+        // a hint that lives solely in structuredContent is invisible (same reason the
+        // zone composites carry their rollup in the text).
+        const header = `Report "${dimensionSetId}" | ${startDate}→${endDate} | raw rows: ${kept.length}${capped ? ` of ${rows.length} (capped)` : ''}${note ? `\n${note}` : ''}`
         return {
           content: [{ type: 'text', text: `${header}\n\n${JSON.stringify(kept)}` }],
           structuredContent: structured
@@ -255,7 +267,8 @@ export function registerReportingTools (server) {
         groupBy: cleanGroupBy,
         rowsScanned: rows.length,
         ...(timezone ? { timezone } : {}),
-        ...(filter ? { filter, rowsFetched: fetchedRows.length } : {})
+        ...(filter ? { filter, rowsFetched: fetchedRows.length } : {}),
+        ...(note ? { note } : {})
       }
       const { total, groups } = aggregateReport(rows, cleanGroupBy)
       // Cap the groups array (already sorted by loads/revenue desc, so the top

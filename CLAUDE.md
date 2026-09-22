@@ -605,6 +605,32 @@ and diff against the web app's login request in DevTools.
   (and `groupsTruncated`/`rawTruncated` when still large), and the list tools'
   `fields` selection + `limit`/`offset` paging with `next_offset`.
 
+### An outputSchema'd tool's error message reached the user as -32602 — fixed
+`report_query` is the only tool with an `outputSchema`, and the SDK's
+`validateToolOutput` throws `Output validation error: … has an output schema but no
+structured content was provided` for any result that carries neither
+`structuredContent` nor `isError`. Every error return in the tool is a plain text
+message, so *every* failure — missing `hour` for a timezone, a nonexistent set id,
+an expired session — surfaced as that protocol error instead of its reason: a
+misconfigured report read as a broken connector. `isError: true` is the SDK's own
+opt-out, and `installToolGuards` now sets it on any schema'd result that has no
+`structuredContent` (the SDK's own condition, not a message sniff, so it holds for
+future `outputSchema` tools). Do NOT fix this by adding `isError` at each return
+site in a tool — the guard is the one place every handler routes through.
+
+The corollary is on the tool side: under a schema'd tool, **a correct empty answer
+must be a payload, not a message.** `report_query`'s "no rows matched filter" used to
+return a bare text return, so the guard had to flag it `isError` — a zero that read
+as a failed call, while the *same* zero from an empty upstream came back a success
+(same answer, two verdicts; clients render `isError` as a failure, so the model
+retries instead of reporting "$0"). It now falls through with `rows: []` and returns
+the normal structured zero (`rowsScanned: 0`, `total: {}`, `rowsFetched` intact),
+carrying the value hints in an optional `note` — which rides in the `content` text
+too (raw mode appends it to its header), since hosts feed only `content` to the
+model. The guard firing at all now means a tool bug, so it logs a line to stderr,
+and it runs **before** `logMetrics` — flagging after the log made that call record
+`status: ok` while the client was handed an error.
+
 ### List paging never stalls on one oversized row — fixed
 `listEnvelopeToText` drops trailing items to fit `CHARACTER_LIMIT`. A single row larger
 than the whole budget (field-found: ad group `ducqqp`, 232KB of `params.zoneId`) emptied

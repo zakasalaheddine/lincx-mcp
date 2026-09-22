@@ -93,8 +93,29 @@ export function installToolGuards (server) {
         return oversizedResult(bytes)
       }
 
-      logMetrics({ tool: name, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, status: resultStatus(result) })
-      return result
+      // A tool with an outputSchema MUST return structuredContent or the SDK's
+      // validateToolOutput throws `-32602 Output validation error: … no structured
+      // content was provided` — which REPLACES the handler's message, so every
+      // failure (bad dimension set, expired session, upstream 404) reached the user
+      // as a broken-connector protocol error instead of the reason. `isError: true`
+      // is the documented opt-out, so mark any schema'd result that carries a
+      // message instead of a payload. Mirrors resultStatus: the condition is the
+      // SDK's own, not a message sniff, so it holds for future outputSchema tools.
+      //
+      // It runs BEFORE logMetrics on purpose: flagging after the log made that call
+      // log `status: ok` while the client was handed an error. A result reaching here
+      // is a payload-less non-error from a schema'd tool — i.e. a bug in that tool
+      // (a correct empty answer belongs in structuredContent, see report_query's
+      // `note`) — so it is logged loudly rather than silently converted.
+      const flagged = (tool.outputSchema && !result?.structuredContent && result?.isError !== true)
+        ? { ...result, isError: true }
+        : result
+      if (flagged !== result) {
+        console.error(`[ToolGuard] ${name} returned no structuredContent for a schema'd tool; flagged isError to preserve its message`)
+      }
+
+      logMetrics({ tool: name, duration_ms: duration, response_chars: bytes, params_keys: paramsKeys, status: resultStatus(flagged) })
+      return flagged
     }
   }
 }
