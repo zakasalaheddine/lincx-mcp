@@ -287,7 +287,7 @@ Every business tool below takes a **required `network_id`** argument — a 6-cha
 
 | Tool | Parameters | Description |
 |------|-----------|-------------|
-| `get_zone_targeting_inventory` | `zoneId`, `mode` | Which ad groups are directly targeted to a zone, and whether each is fully live (campaign + ad group + live ad with viable creative). `mode`: `all` (default), `live`, `off`. |
+| `get_zone_targeting_inventory` | `zoneId`, `mode` | Which ad groups are directly targeted to a zone, and whether each is fully live (campaign enabled and inside its flight window + ad group + live ad with viable creative). `mode`: `all` (default), `live`, `off`. |
 | `get_zone_eligible_ad_groups` | `zoneId`, `bucket`, `offset` | Every ad group eligible to serve in a zone, bucketed: `directlyTargeted`, `freeRadicals`, `conflicting`, `inertWhitelists`. |
 | `get_ad_group_zone_reach` | `adGroupId` | Every zone an ad group can serve or leak into — the flip of `get_zone_eligible_ad_groups`. Archived zones are skipped (`scan.archivedZonesSkipped`). |
 | `explain_serve` | `zoneId`, `adGroupId` or `adId` | Why a (zone, ad group/ad) pair is or isn't eligible to serve, and by what path. |

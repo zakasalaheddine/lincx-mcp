@@ -3,8 +3,8 @@
  * tools/zoneInventoryTools.js
  *
  * get_zone_targeting_inventory — composite: which ad groups are DIRECTLY targeted
- * to a zone, and is each fully live (campaign + ad group + a live ad with a viable
- * creative)? Second sanctioned server-side composite alongside report_query — it
+ * to a zone, and is each fully live (campaign enabled and inside its flight window +
+ * ad group + a live ad with a viable creative)? Second sanctioned server-side composite alongside report_query — it
  * fetches whole-network list sets internally and returns only the compact matched
  * rollup, so no ad-group rows are ever paged through the LLM.
  */
@@ -23,6 +23,40 @@ const on = (x) =>
   !!x && x.enabled === true && x.archived !== true
 
 const has = (arr, v) => Array.isArray(arr) && arr.includes(v)
+
+/**
+ * Is this campaign inside its flight window at `now`? Mirrors the serving engine
+ * (filterAdgroupsByEnabledCampaigns → isCampaignActive): `dateStart <= now < dateEnd`
+ * on ISO strings, `dateEnd` INCLUSIVE (upstream adds a day before comparing), and a
+ * missing bound is open ('0000' / '9999').
+ *
+ * Upstream adds that day with local-time `setDate`, but on a UTC container (GAE flex,
+ * node:22-alpine, no TZ), so its window closes at 00:00 UTC after `dateEnd`. The day is
+ * added in UTC here to land on that same instant wherever this server runs — local time
+ * would shift the end by the host's offset, and by an hour across a DST change.
+ *
+ * The bounds are NOT treated alike, and deliberately so. An unparsable `dateEnd` is
+ * treated as open, because upstream would throw a RangeError there (`addOneDay` calls
+ * toISOString on an invalid Date) and one bad record must not fail the whole call. An
+ * unparsable `dateStart` is left to the raw string compare, which puts the campaign
+ * outside its window — that looks harsh, but it is exactly what the engine does
+ * ('not-a-date' <= now is false there too), and matching the engine is the point.
+ * Exported for tests.
+ */
+export function campaignInWindow (campaign, now) {
+  if (!campaign) return false
+  const nowIso = new Date(now).toISOString()
+  const start = campaign.dateStart || '0000'
+  let end = '9999'
+  if (campaign.dateEnd) {
+    const d = new Date(campaign.dateEnd)
+    if (!Number.isNaN(d.getTime())) {
+      d.setUTCDate(d.getUTCDate() + 1)
+      end = d.toISOString()
+    }
+  }
+  return start <= nowIso && nowIso < end
+}
 
 /** Pull the row array out of an unknown list response (bare array, {data:[]}, {items:[]}). */
 export function asRows (data) {
@@ -84,7 +118,10 @@ export function selectTargeting (adGroups, zoneId) {
 export function rollupZoneTargeting (args
 
 ) {
-  const { zoneId, zoneCag, targeted, conflicting, campaigns, adsByGroup, creatives, mode } = args
+  const { zoneId, zoneCag, targeted, conflicting, campaigns, adsByGroup, creatives, mode, now } = args
+  // Required, not defaulted: campaign liveness is time-dependent, and a silent
+  // fallback to the real clock would let a test assert a window it never pinned.
+  if (now === undefined) throw new TypeError('rollupZoneTargeting: `now` is required — campaign windows are time-dependent')
   const creativeResolves = (creativeId) =>
     creativeId !== undefined && creatives[creativeId] !== undefined
 
@@ -103,7 +140,13 @@ export function rollupZoneTargeting (args
     const campaign = ag.campaignId !== undefined ? campaigns[ag.campaignId] : undefined
     const ads = adsByGroup[ag.id] ?? []
 
-    const campaign_on = on(campaign)
+    // A campaign is on only while it is enabled, not archived, AND inside its flight
+    // window — the engine drops its ad groups the moment the window closes. The engine's
+    // campaign filter checks enabled + window only; the `archived` term is ours, and it
+    // cannot disagree in practice (archiving a campaign writes enabled:false in the same
+    // op and cascades to its ad groups), so it only guards inconsistent data.
+    const campaign_enabled = on(campaign)
+    const campaign_on = campaign_enabled && campaignInWindow(campaign, now)
     const adgroup_on = on(ag)
     const has_enabled_ad = ads.some(on)
     const creative_resolves = ads.some((a) => creativeResolves(a.creativeId))
@@ -112,7 +155,9 @@ export function rollupZoneTargeting (args
     const archived = ag.archived === true
 
     const off_reason = []
-    if (!campaign_on) off_reason.push('campaign')
+    // Two different fixes, so two different reasons: switch the campaign on, or
+    // move its dates.
+    if (!campaign_on) off_reason.push(campaign_enabled ? 'campaign-window' : 'campaign')
     if (!adgroup_on) off_reason.push(archived ? 'archived' : 'adgroup')
     if (!has_live_viable_ad) off_reason.push('no_live_viable_ad')
 
@@ -227,7 +272,7 @@ export function fitZoneInventory (full, limit) {
 export function registerZoneInventoryTools (server) {
   server.registerTool('get_zone_targeting_inventory', {
     title: 'Zone Targeting Inventory',
-    description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached — or where it is off. Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').
+    description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached, and the campaign inside its dateStart/dateEnd flight window (dateEnd inclusive, a missing bound open) — or where it is off. An enabled campaign whose window has passed is reported campaign_on:false with off_reason 'campaign-window', distinct from 'campaign' (switched off or archived). Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').
 
 The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[], scoped_via[] }. scoped_via lists HOW the group is scoped to the zone (annotate-only, the row set is unchanged). It uses ONE shared enum across every tool that emits the field — 'ad-group-whitelist' (the group's params.zoneId names the zone — always present on a targeted row), 'ad-group-blacklist' (the group's exceptParams.zoneId excludes the zone; such a group is reported under 'conflicting' here, so this value is rare on a targeted row and common on the eligibility tool's conflicting rows), 'ad-level-whitelist' (one of its ads also whitelists the zone), 'ad-level-blacklist' (one of its ads excludes the zone via ad.exceptParams.zoneId — that ad is hidden here, siblings still serve), 'zone-selection' (the group shares the zone's creativeAssetGroupId — never set when the zone has no creativeAssetGroupId, since no CAG filter applies there). Same five values, same meaning, in get_zone_eligible_ad_groups and explain_serve. For per-(ad group × ad) offer-grain scoping and free-radical counts, use get_zone_eligible_ad_groups. If the zone is ARCHIVED the tool returns that verdict alone — the ad server refuses an archived zone, so a targeting rollup for it would describe config that cannot run. This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
     inputSchema: z.object({
@@ -266,7 +311,7 @@ The result is the text content: a one-line header, then a blank line, then compa
       const creativeRows = asRows(creativesRaw)
 
       const campaigns = {}
-      for (const c of campaignRows) if (c.id) campaigns[c.id] = { enabled: c.enabled, archived: c.archived }
+      for (const c of campaignRows) if (c.id) campaigns[c.id] = { enabled: c.enabled, archived: c.archived, dateStart: c.dateStart, dateEnd: c.dateEnd }
       const creatives = {}
       for (const c of creativeRows) if (c.id) creatives[c.id] = { archived: c.archived }
       const adsByGroup = {}
@@ -284,7 +329,8 @@ The result is the text content: a one-line header, then a blank line, then compa
         campaigns,
         adsByGroup,
         creatives,
-        mode
+        mode,
+        now: Date.now()
       })
 
       const full = {

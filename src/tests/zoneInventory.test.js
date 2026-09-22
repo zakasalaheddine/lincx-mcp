@@ -33,6 +33,10 @@ test('selectTargeting > flags zone-in-both as conflicting, not targeted', t => {
   t.deepEqual(conflicting.map((g) => g.id), ['y'])
 })
 
+// Campaign windows are evaluated against an injected clock, so every fixture pins
+// one instead of drifting with the wall clock.
+const NOW = Date.parse('2026-06-15T12:00:00.000Z')
+
 const base = (over = {}) =>
   rollupZoneTargeting({
     zoneId: ZONE,
@@ -43,6 +47,7 @@ const base = (over = {}) =>
     adsByGroup: { ag1: [{ id: 'ad1', enabled: true, creativeId: 'cr1' }] },
     creatives: { cr1: {} },
     mode: 'all',
+    now: NOW,
     ...over
   })
 
@@ -246,3 +251,71 @@ test('fitZoneInventory (never drops ad groups, data in text) > only as a last re
   t.is(s.groupIds.length, 2000) // every id accounted for
   t.regex(r.content[0].text, /INCOMPLETE/)
 })
+
+// campaign flight window — the engine drops a campaign's ad groups the moment the
+// window closes, so an enabled-but-expired campaign is NOT on.
+{
+  const DAY = 86400000
+  const iso = (t) => new Date(t).toISOString().slice(0, 10)
+  const win = (over) => base({ campaigns: { c1: { enabled: true, ...over } } }).groups[0]
+
+  test('campaign flight window > inside the window is on', t => {
+    const r = win({ dateStart: iso(NOW - DAY), dateEnd: iso(NOW + DAY) })
+    t.is(r.campaign_on, true)
+    t.is(r.fully_live, true)
+    t.deepEqual(r.off_reason, [])
+  })
+
+  test('campaign flight window > an ended window is off, and says so distinctly from a disabled campaign', t => {
+    const ended = win({ dateStart: iso(NOW - 10 * DAY), dateEnd: iso(NOW - DAY) })
+    t.is(ended.campaign_on, false)
+    t.is(ended.fully_live, false)
+    t.true(ended.off_reason.includes('campaign-window'))
+    t.false(ended.off_reason.includes('campaign'))
+
+    const disabled = base({ campaigns: { c1: { enabled: false } } }).groups[0]
+    t.true(disabled.off_reason.includes('campaign'))
+    t.false(disabled.off_reason.includes('campaign-window'))
+  })
+
+  test('campaign flight window > a window that has not opened yet is off', t => {
+    const r = win({ dateStart: iso(NOW + DAY) })
+    t.is(r.campaign_on, false)
+    t.true(r.off_reason.includes('campaign-window'))
+  })
+
+  test('campaign flight window > dateEnd is inclusive — the last day still serves', t => {
+    const r = win({ dateEnd: iso(NOW) })
+    t.is(r.campaign_on, true)
+  })
+
+  test('campaign flight window > missing bounds are open', t => {
+    t.is(win({}).campaign_on, true)
+    t.is(win({ dateStart: iso(NOW - DAY) }).campaign_on, true)
+    t.is(win({ dateEnd: iso(NOW + DAY) }).campaign_on, true)
+  })
+
+  test('campaign flight window > an unparsable dateEnd does not dark a live campaign', t => {
+    t.is(win({ dateEnd: 'not-a-date' }).campaign_on, true)
+  })
+
+  // The two bounds behave differently on garbage, matching the engine: it throws on a
+  // bad dateEnd (so we guard that one) and string-compares a bad dateStart to false.
+  test('campaign flight window > an unparsable dateStart puts the campaign outside its window, as upstream does', t => {
+    const r = win({ dateStart: 'not-a-date' })
+    t.is(r.campaign_on, false)
+    t.true(r.off_reason.includes('campaign-window'))
+  })
+
+  test('campaign flight window > an archived campaign reads as campaign, not campaign-window', t => {
+    const r = base({ campaigns: { c1: { enabled: true, archived: true, dateEnd: iso(NOW - DAY) } } }).groups[0]
+    t.true(r.off_reason.includes('campaign'))
+    t.false(r.off_reason.includes('campaign-window'))
+  })
+
+  test('campaign flight window > the clock is required, not silently the wall clock', t => {
+    t.throws(() => rollupZoneTargeting({
+      zoneId: ZONE, zoneCag: CAG, targeted: [], conflicting: [], campaigns: {}, adsByGroup: {}, creatives: {}, mode: 'all'
+    }), { instanceOf: TypeError })
+  })
+}

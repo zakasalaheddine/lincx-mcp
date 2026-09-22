@@ -472,7 +472,8 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
     campaigns: { c1: { enabled: true } },
     adsByGroup: { ag1: ads },
     creatives: { cr1: {} },
-    mode: 'all'
+    mode: 'all',
+    now: Date.parse('2026-06-15T12:00:00.000Z')
   }).groups[0]
 
   test('C3 — shared scoped_via domain > the group-grain rollup emits ad-group-blacklist (the value that used to be missing)', t => {

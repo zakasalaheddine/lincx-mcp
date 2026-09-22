@@ -57,7 +57,7 @@ async function fetchIndex (session, network_id) {
   const creativeRows = asRows(creativesRaw)
 
   const campaigns = {}
-  for (const c of campaignRows) if (c.id) campaigns[c.id] = { enabled: c.enabled, archived: c.archived }
+  for (const c of campaignRows) if (c.id) campaigns[c.id] = { enabled: c.enabled, archived: c.archived, dateStart: c.dateStart, dateEnd: c.dateEnd }
   const creatives = {}
   for (const c of creativeRows) if (c.id) creatives[c.id] = { archived: c.archived }
   const adsByGroup = {}
@@ -104,7 +104,7 @@ function pack (header, payload, rowKeys) {
 
 /** Merge each group's live rollup row with its join verdict (eligible/via/reasons/
  * conflicts) and its offer-grain (ad group × ad) counts. */
-function enrich (elig, idx, zoneId, zoneCag) {
+function enrich (elig, idx, zoneId, zoneCag, now) {
   const byId = new Map(elig.map((e) => [e.adGroupId, e]))
   const groups = idx.adGroups.filter((g) => byId.has(g.id))
   const groupById = new Map(groups.map((g) => [g.id, g]))
@@ -117,7 +117,8 @@ function enrich (elig, idx, zoneId, zoneCag) {
     campaigns: idx.campaigns,
     adsByGroup: idx.adsByGroup,
     creatives: idx.creatives,
-    mode: 'all'
+    mode: 'all',
+    now
   })
   return rows.map((r) => {
     const e = byId.get(r.id)
@@ -284,7 +285,7 @@ BOTH GRAINS HAVE A LIVE AXIS, AND ONLY THE LIVE ONE IS EXPOSURE. summary.freeRad
 
 Every row carries offers: { total, inScope, live, freeRadical, freeRadicalLive, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, inertWhitelisted, freeRadicalAdIds[], inertWhitelistedAdIds[] } so a pure free-radical subset is derivable. offers.inScope is TARGETING ONLY — the group is eligible and this ad is neither blacklisted nor confined to other zones — and says nothing about on/off state; offers.live is the same set with the whole chain on. summary also totals adLevelTargetedOffers, adLevelBlacklistedOffers, inertWhitelistGroups and inertWhitelistOffers.
 
-Each row also carries the same live rollup as get_zone_targeting_inventory (campaign_on, adgroup_on, has_live_viable_ad, fully_live, off_reason[], scoped_via[]) plus eligible, via[], reasons[], conflicts[]. scoped_via uses the SAME five-value enum as get_zone_targeting_inventory and explain_serve ('ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection').
+Each row also carries the same live rollup as get_zone_targeting_inventory (campaign_on — enabled, not archived AND inside the campaign's flight window; adgroup_on, has_live_viable_ad, fully_live, off_reason[] — 'campaign' vs 'campaign-window' tell a switched-off campaign from an expired one — scoped_via[]) plus eligible, via[], reasons[], conflicts[]. scoped_via uses the SAME five-value enum as get_zone_targeting_inventory and explain_serve ('ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection').
 
 EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A zone with too many groups for one response is PAGED, not degraded: use bucket to select one bucket (e.g. bucket:'freeRadicals' for a pure free-radical subset) and offset to walk the rest. The response carries page: { bucket, offset, returned, total, next_offset? } and complete (true only when this ONE response holds the entire selected slice — offset 0 and no next_offset). summary is ALWAYS exact over the full set, regardless of bucket/offset — so with bucket:'all' and complete:true the arrays match the summary counts one-for-one. The only case where a row body is not returned is pathological (a single ad group whose row alone exceeds the whole response budget): then ids are returned with complete:false and a note, never a silent partial. Whole-network scan server-side; compact result in the content text (header + compact JSON).`,
     inputSchema: z.object({
@@ -309,10 +310,13 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
       const zoneLite = { id: String(zone.id), name: String(zone.name ?? zone.id), creativeAssetGroupId: zone.creativeAssetGroupId, templateId: zone.templateId }
 
       const { directlyTargeted, freeRadicals, conflicting, inertWhitelists } = zoneEligibility(idx.adGroups, zoneLite, idx.adsByGroup)
-      const direct = enrich(directlyTargeted, idx, zoneLite.id, zoneLite.creativeAssetGroupId)
-      const radicals = enrich(freeRadicals, idx, zoneLite.id, zoneLite.creativeAssetGroupId)
-      const conflict = enrich(conflicting, idx, zoneLite.id, zoneLite.creativeAssetGroupId)
-      const inert = enrich(inertWhitelists, idx, zoneLite.id, zoneLite.creativeAssetGroupId)
+      // One clock for all four buckets: two reads either side of a window boundary
+      // would otherwise disagree inside a single response.
+      const now = Date.now()
+      const direct = enrich(directlyTargeted, idx, zoneLite.id, zoneLite.creativeAssetGroupId, now)
+      const radicals = enrich(freeRadicals, idx, zoneLite.id, zoneLite.creativeAssetGroupId, now)
+      const conflict = enrich(conflicting, idx, zoneLite.id, zoneLite.creativeAssetGroupId, now)
+      const inert = enrich(inertWhitelists, idx, zoneLite.id, zoneLite.creativeAssetGroupId, now)
 
       const summary = summarizeEligibility(direct, radicals, conflict, inert)
       return fitEligibility(
