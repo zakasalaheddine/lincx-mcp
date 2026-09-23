@@ -40,8 +40,14 @@ export const SCOPED_VIA = [
 export function eligibility ({ adGroup, zone }) {
   const zoneId = zone.id
   const archived = adGroup.archived === true
-  const cagMatch = zone.creativeAssetGroupId !== undefined &&
+  // A zone with no CAG is NOT a zone every group mismatches — the serving engine
+  // drops the filter entirely for a falsy zone CAG (filterByCreativeAssetGroupId),
+  // so every group passes it. Falsy, not `!== undefined`: a null CAG is "absent"
+  // upstream too.
+  const cagScoped = Boolean(zone.creativeAssetGroupId)
+  const cagMatch = cagScoped &&
     adGroup.creativeAssetGroupId === zone.creativeAssetGroupId
+  const cagOk = !cagScoped || cagMatch
   const inParams = has(adGroup.params?.zoneId, zoneId)
   const inExcept = has(adGroup.exceptParams?.zoneId, zoneId)
   const targetsZeroZones = (adGroup.params?.zoneId?.length ?? 0) === 0
@@ -52,7 +58,7 @@ export function eligibility ({ adGroup, zone }) {
 
   const conflicts = []
   if (inParams && inExcept) conflicts.push('targets-and-excepts')
-  if (inParams && !cagMatch) conflicts.push('whitelisted-cag-mismatch')
+  if (inParams && !cagOk) conflicts.push('whitelisted-cag-mismatch')
 
   const reasons = []
   let eligible = false
@@ -60,7 +66,7 @@ export function eligibility ({ adGroup, zone }) {
     reasons.push('archived')
   } else if (inExcept) {
     reasons.push('blacklisted')
-  } else if (!cagMatch) {
+  } else if (!cagOk) {
     reasons.push('cag-mismatch')
   } else if (inParams || targetsZeroZones) {
     eligible = true
@@ -112,7 +118,9 @@ export function offerEligibility (
   if (has(adGroup.exceptParams?.zoneId, zoneId)) scoped_via.push('ad-group-blacklist')
   if (has(ad.params?.zoneId, zoneId)) scoped_via.push('ad-level-whitelist')
   if (has(ad.exceptParams?.zoneId, zoneId)) scoped_via.push('ad-level-blacklist')
-  if (zone.creativeAssetGroupId !== undefined && adGroup.creativeAssetGroupId === zone.creativeAssetGroupId) {
+  // Only a REAL shared CAG is a scoping path. A zone with no CAG lets every group
+  // through the filter, which is the absence of scoping, not zone-selection.
+  if (zone.creativeAssetGroupId && adGroup.creativeAssetGroupId === zone.creativeAssetGroupId) {
     scoped_via.push('zone-selection')
   }
 

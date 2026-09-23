@@ -421,7 +421,8 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
    * land here, each distinguishable by `reasons[]`. Asked live on 2026-08-04: every inert
    * row on Adnet came back `via: ["zone-selection"]`, which raised the question of whether
    * cag-mismatch was structurally unreachable rather than merely absent. It is reachable;
-   * Adnet has none.
+   * Adnet has none. It IS unreachable on a zone with no CAG, where no CAG filter applies —
+   * see the "zone without a CAG" block at the end of this file.
    */
   test('inert ad-level whitelist (dead config, the Adnet shape) > admits every ineligibility cause, distinguishable by reasons[]', t => {
     const wrongCag = { id: 'othercag', creativeAssetGroupId: 'different', params: { zoneId: ['z9'] } }
@@ -601,5 +602,84 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
   test('adGroupReach (group → zones it can serve/leak into) > a whitelisted group reaches only the zone it targets', t => {
     const r = adGroupReach({ id: 'ag', creativeAssetGroupId: CAG, params: { zoneId: ['zb'] } }, zones, [])
     t.deepEqual(r.map((e) => e.zoneId), ['zb'])
+  })
+}
+
+{ // zone without a CAG (the serving engine skips the filter entirely)
+  const openZone = { id: 'zopen' }
+  const nullCagZone = { id: 'znull', creativeAssetGroupId: null }
+  const otherCag = { id: 'ag-other', creativeAssetGroupId: 'different' }
+
+  test('zone without a CAG (the serving engine skips the filter entirely) > an untargeted group of any CAG is eligible', t => {
+    const e = eligibility({ adGroup: { ...otherCag, params: {} }, zone: openZone })
+    t.is(e.eligible, true)
+    t.deepEqual(e.reasons, [])
+    t.deepEqual(e.via, []) // no shared CAG to be selected by
+  })
+
+  test('zone without a CAG (the serving engine skips the filter entirely) > a null CAG counts as absent, like upstream', t => {
+    const e = eligibility({ adGroup: { ...otherCag, params: {} }, zone: nullCagZone })
+    t.is(e.eligible, true)
+    t.deepEqual(e.reasons, [])
+  })
+
+  test('zone without a CAG (the serving engine skips the filter entirely) > the other rules still apply: blacklist, archived, other zones', t => {
+    const black = eligibility({ adGroup: { ...otherCag, exceptParams: { zoneId: ['zopen'] } }, zone: openZone })
+    t.is(black.eligible, false)
+    t.deepEqual(black.reasons, ['blacklisted'])
+
+    const gone = eligibility({ adGroup: { ...otherCag, archived: true, params: {} }, zone: openZone })
+    t.deepEqual(gone.reasons, ['archived'])
+
+    const elsewhere = eligibility({ adGroup: { ...otherCag, params: { zoneId: ['zb'] } }, zone: openZone })
+    t.is(elsewhere.eligible, false)
+    t.deepEqual(elsewhere.reasons, ['targets-other-zones'])
+  })
+
+  test('zone without a CAG (the serving engine skips the filter entirely) > a whitelisted group is eligible with no cag-mismatch conflict', t => {
+    const e = eligibility({ adGroup: { ...otherCag, params: { zoneId: ['zopen'] } }, zone: openZone })
+    t.is(e.eligible, true)
+    t.deepEqual(e.via, ['ad-group-whitelist'])
+    t.deepEqual(e.conflicts, [])
+  })
+
+  test('zone without a CAG (the serving engine skips the filter entirely) > no group is bucketed as a cag-mismatch, and untargeted ones host free radicals', t => {
+    const groups = [
+      { id: 'wl', creativeAssetGroupId: 'different', params: { zoneId: ['zopen'] } },
+      { id: 'open', creativeAssetGroupId: 'different', params: {} }
+    ]
+    const b = zoneEligibility(groups, openZone, {})
+    t.deepEqual(b.directlyTargeted.map((e) => e.adGroupId), ['wl'])
+    t.deepEqual(b.freeRadicals.map((e) => e.adGroupId), ['open'])
+    t.deepEqual(b.inertWhitelists, [])
+  })
+
+  test('zone without a CAG (the serving engine skips the filter entirely) > zone-selection is not claimed at either grain', t => {
+    const adGroup = { id: 'open', creativeAssetGroupId: 'different', params: {} }
+    const group = eligibility({ adGroup, zone: openZone })
+    const o = offerEligibility(group, adGroup, { id: 'ad1' }, openZone)
+    t.is(o.serves, true)
+    t.false(o.scoped_via.includes('zone-selection'))
+    t.is(o.freeRadical, true)
+
+    const { groups } = rollupZoneTargeting({
+      zoneId: openZone.id,
+      zoneCag: undefined,
+      targeted: [adGroup],
+      conflicting: [],
+      campaigns: {},
+      adsByGroup: {},
+      creatives: {},
+      mode: 'all',
+      // Harmless here; keeps the call valid once #76 makes the clock required.
+      now: Date.parse('2026-06-15T12:00:00.000Z')
+    })
+    t.false(groups[0].scoped_via.includes('zone-selection'))
+  })
+
+  test('zone without a CAG (the serving engine skips the filter entirely) > reach counts CAG-less zones, not just zones sharing the CAG', t => {
+    const zones = [{ id: 'za', creativeAssetGroupId: CAG }, openZone, { id: 'zc', creativeAssetGroupId: 'other' }]
+    const r = adGroupReach({ id: 'ag', creativeAssetGroupId: CAG, params: {} }, zones, [])
+    t.deepEqual(r.map((e) => e.zoneId), ['za', 'zopen'])
   })
 }
