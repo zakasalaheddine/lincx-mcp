@@ -50,7 +50,7 @@ src/
 │   ├── tokenService.js       # AES-GCM wrap + HMAC-signed OAuth tokens
 │   ├── sessionManager.js     # unwrap bearer → auth context / validateSession
 │   ├── networkService.js     # fetchUserNetworks() → GET WORK_API_BASE_URL/api/networks
-│   └── workApi.js            # workApiRequest() — injects Bearer token; adds ?networkId to list GETs and networkId to child-entity POST/PUT bodies (passed via options.networkId)
+│   └── workApi.js            # workApiRequest() — injects Bearer token; adds ?networkId to list GETs (passed via options.networkId); the NO_NETWORK guard and the query param apply to GET only, so a create POST to a list path isn't refused. It never touches request bodies — a write tool puts networkId in its own body
 │
 └── tools/
     ├── authTools.js          # auth_login, auth_status, auth_logout
@@ -108,7 +108,7 @@ at most log the first 8 chars or a SHA hash. Same applies to the Lincx JWT
 
 ## Multi-tenancy model
 
-Work API list endpoints require `?networkId=<id>` in the query string. POST/PUT child-entity requests carry `networkId` in the JSON body. Get-by-id, parents, reports, clones, deletes, and network endpoints do not attach `networkId` at all.
+Work API list endpoints require `?networkId=<id>` in the query string. POST/PUT child-entity requests carry `networkId` in the JSON body — set by the write tool itself, NOT injected by `workApiRequest` (which only handles the query param; any future body injection must skip array bodies, or it corrupts JSON Patch payloads). Get-by-id, parents, reports, clones, deletes, and network endpoints do not attach `networkId` at all.
 There is no separate Network Service — networks are fetched from `WORK_API_BASE_URL/api/networks`.
 
 The caller passes `networkId` in the `options` object to `workApiRequest()`:
@@ -364,6 +364,7 @@ Deliberately NOT resources: dimension sets / event-stats keys stay as tools — 
 - `get_template` — `GET /api/templates/{id}` — includes HTML + CSS source; `include: ['parents']` adds parent hierarchy
 - `get_template_versions` — `GET /api/templates/{id}/versions`
 - `get_template_version` — `GET /api/templates/{id}/versions/{version}`
+- `create_template` (write) — `POST /api/templates`. Validates before anything is sent: ids via `entityId()` (every write-tool id — ids land in URL paths and `fetch` normalises `..`), non-blank html (upstream `minLength: 1` passes whitespace; `name` is trimmed by upstream's `name` format, the tool's own check just fails earlier), no `[elided: ` marker in html/css (`elidedField` — `get_template` elides a large template's html, and copying from that read would save the marker as the template), balanced mustache sections (`mustacheError` — upstream accepts any html, so a broken `{{#ads}}` would only fail at serve time), html+css ≤ 80k chars (`/mcp` bodies cap at 100kb), and `contentError` — what an LLM actually gets wrong: markdown code fence around the source, control characters / lone surrogates, placeholder comments (a comment whose WHOLE body is `rest unchanged` / `...` / `omitted` etc. — `/* fill remaining space */` passes, so a live template with ordinary comments stays editable; a heuristic regex) standing in for omitted code, and markup left open (`<!--`, `<script>`/`<style>` count mismatch, unbalanced css `{}` / `/*`, `</style` in css — each swallows the publisher's page). The name also rejects control characters/newlines. Then pre-flight GETs the publisher AND the CAG: each must exist, be in `network_id`, not be archived. The CAG check is the one upstream lacks — `integrity-check.js` drops `creativeAssetGroup` before matching ids, so without it a template binds to another network's CAG. `notes` is not accepted (extra history rules; not needed to ship a template). Returns `{ id, name, networkId, publisherId, creativeAssetGroupId, version }`, never the html/css. Content over 25k chars in one field can be created (cap is 80k total) but not edited through this server: `get_template part` refuses a field over `CHARACTER_LIMIT`. Not idempotent: a timeout or 5xx (upstream commits to Redis before GCS) says "may exist, check list_templates" rather than inviting a duplicate-creating retry.
 
 ### Creative Asset Groups (M1)
 - `list_creative_asset_groups` — `GET /api/creative-asset-groups` (paginated)

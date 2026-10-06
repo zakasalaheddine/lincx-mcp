@@ -75,3 +75,14 @@ test.serial('workApiRequest serializes options.body on request', async t => {
   t.is(t.context.calls[0].init.method, 'POST')
   t.is(t.context.calls[0].init.body, JSON.stringify({ name: 'New Campaign' }))
 })
+
+test.serial('a create POST to a list path is not network-guarded and sends its body as-is', async t => {
+  // /api/templates is a list path for GET; the old method-blind guard threw
+  // NO_NETWORK on every create_template before fetch ran.
+  const body = { networkId: 'n1', name: 'T', html: '<div/>' }
+  await workApiRequest(session(), 'POST', '/api/templates', { body })
+  const [call] = t.context.calls
+  t.regex(call.url, /\/api\/templates$/)
+  t.is(call.init.method, 'POST')
+  t.deepEqual(JSON.parse(call.init.body), body)
+})

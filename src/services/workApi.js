@@ -54,12 +54,16 @@ export async function workApiRequest (
 ) {
   const networkId = options.networkId ?? null
 
+  // Only a list READ is scoped by ?networkId. A POST to the same path (create)
+  // carries networkId in its body, set by the write tool — guarding it here
+  // threw "No network selected" on every create despite a valid network_id.
+  const isList = method === 'GET' && NETWORK_LIST_PATHS.has(path)
   const params = new URLSearchParams()
-  if (networkId && needsNetworkIdInQuery(path)) {
+  if (networkId && isList && needsNetworkIdInQuery(path)) {
     params.set('networkId', networkId)
   }
   appendQueryParams(params, options.params)
-  if (NETWORK_LIST_PATHS.has(path) && !networkId) {
+  if (isList && !networkId) {
     throw Object.assign(new Error("No network selected. Provide a network_id or call 'network_list' to find one."), { code: 'NO_NETWORK' })
   }
 

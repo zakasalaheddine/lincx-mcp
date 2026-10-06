@@ -24,7 +24,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 
 import { registerAuthTools } from './tools/authTools.js'
 import { registerNetworkTools } from './tools/networkTools.js'
-import { registerTemplateTools } from './tools/templateTools.js'
+import { registerTemplateTools, registerTemplateWriteTools } from './tools/templateTools.js'
 import { registerCreativeAssetGroupTools } from './tools/creativeAssetGroupTools.js'
 import { registerZoneTools } from './tools/zoneTools.js'
 import { registerAdTools } from './tools/adTools.js'
@@ -83,6 +83,7 @@ function createMcpServer () {
   registerZoneEligibilityTools(server)
   registerAnalysisTools(server)
   registerResources(server)
+  registerTemplateWriteTools(server)
 
   // Wrap every registered tool handler with the response-size guard + metrics
   // logging. Must run after all register*Tools() calls above.

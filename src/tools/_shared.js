@@ -27,6 +27,14 @@ export const requiredNetworkIdShape = {
 }
 
 /**
+ * A Lincx entity id. Write tools MUST use this for every id they take: ids are
+ * interpolated into URL paths, and `fetch` normalises `..`, so a bare z.string()
+ * id like `../zones/abcdef` would land the write on a different entity.
+ */
+export const entityId = (label) =>
+  z.string().regex(/^[a-z0-9]{6}$/, `${label} must be 6 lowercase letters or digits`)
+
+/**
  * `include[]` fragment for get-by-id tools that can pull related data in one
  * call — replaces the standalone `get_*_parents` tools (T1-2).
  */
