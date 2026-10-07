@@ -1,5 +1,6 @@
 import test from 'ava'
 import { selectTargeting, rollupZoneTargeting, fitZoneInventory } from '../tools/zoneInventoryTools.js'
+import { zoneRequest } from '../tools/eligibility.js'
 
 const ZONE = '8z7wzb'
 const CAG = '0bckt2'
@@ -158,6 +159,35 @@ test('rollupZoneTargeting > per-ad zone check: a sibling ad that DOES serve keep
   t.is(groups[0].has_live_viable_ad, true)
   t.is(groups[0].fully_live, true)
 })
+
+{ // ad-level targeting rules beyond zoneId (#81)
+  const zone = { id: ZONE, creativeAssetGroupId: CAG, templateId: 'T0', type: 'Display' }
+  const request = zoneRequest(zone, { type: 'Web' })
+
+  test('rollupZoneTargeting > #81: an ad whose params exclude the zone template does not make the group live', t => {
+    const { groups } = base({
+      request,
+      adsByGroup: { ag1: [{ id: 'ad1', enabled: true, creativeId: 'cr1', exceptParams: { templateId: ['T0'] } }] }
+    })
+    t.is(groups[0].has_live_viable_ad, false)
+    t.true(groups[0].off_reason.includes('no_live_viable_ad'))
+  })
+
+  test('rollupZoneTargeting > #81: a conditional ad (device whitelist) still counts — it serves on matching traffic', t => {
+    const { groups } = base({
+      request,
+      adsByGroup: { ag1: [{ id: 'ad1', enabled: true, creativeId: 'cr1', params: { device: ['mobile'] } }] }
+    })
+    t.is(groups[0].has_live_viable_ad, true)
+  })
+
+  test('rollupZoneTargeting > #81: without a request only zoneId is checked, so the row set and fully_live are unchanged', t => {
+    const { groups } = base({
+      adsByGroup: { ag1: [{ id: 'ad1', enabled: true, creativeId: 'cr1', exceptParams: { templateId: ['T0'] } }] }
+    })
+    t.is(groups[0].fully_live, true)
+  })
+}
 
 test('rollupZoneTargeting > summary counts are over the full targeted set regardless of mode filter', t => {
   const { summary } = base({

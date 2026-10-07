@@ -11,7 +11,7 @@ import { sessionMock } from './helpers/mockWorkApi.js'
 const DAY = 86400000
 const day = (n) => new Date(Date.now() + n * DAY).toISOString().slice(0, 10)
 
-const ZONE = { id: 'z1', name: 'Zone', networkId: 'net1', creativeAssetGroupId: 'cag' }
+const ZONE = { id: 'z1', name: 'Zone', networkId: 'net1', creativeAssetGroupId: 'cag', channelId: 'ch1' }
 const GROUP_LIVE = { id: 'ag_live', name: 'Live', networkId: 'net1', campaignId: 'c_live', creativeAssetGroupId: 'cag', enabled: true, params: { zoneId: ['z1'] } }
 const GROUP_EXPIRED = { id: 'ag_exp', name: 'Expired', networkId: 'net1', campaignId: 'c_exp', creativeAssetGroupId: 'cag', enabled: true, params: { zoneId: ['z1'] } }
 const GROUP_FREE_EXPIRED = { id: 'ag_free_exp', name: 'Free radical, expired', networkId: 'net1', campaignId: 'c_exp', creativeAssetGroupId: 'cag', enabled: true, params: {} }
@@ -31,6 +31,7 @@ async function setup () {
       workApiRequest: async (_s, _m, path) => {
         if (path === '/api/zones/z1') return ZONE
         if (path === '/api/zones') return { data: [ZONE] }
+        if (path === '/api/channels/ch1') return { id: 'ch1', type: 'Web' }
         if (path === '/api/ad-groups') return { data: [GROUP_LIVE, GROUP_EXPIRED, GROUP_FREE_EXPIRED] }
         if (path === '/api/campaigns') return { data: CAMPAIGNS }
         if (path === '/api/ads') return { data: ADS }

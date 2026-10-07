@@ -14,6 +14,7 @@ import { requiredNetworkIdShape } from './_shared.js'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
+import { adServesInZone, zoneRequest, refusesEveryVisit, segmentPickFlags } from './eligibility.js'
 // Type-only (erased at compile) — keeps the one shared scoped_via enum without a
 // runtime import cycle: eligibility.js imports the entity types from here.
 
@@ -88,6 +89,65 @@ export function archivedZoneText (zone) {
   return `Zone ${zone.name ?? zone.id} (${zone.id}) is ARCHIVED — the ad server refuses to serve an archived zone, so no ad group can serve here regardless of targeting. No eligibility evaluated. Unarchive the zone to get a meaningful answer.`
 }
 
+/**
+ * The one-line answer for a segments-on zone the ad server refuses on every visit:
+ * neither the zone nor any of its segments passes its own allow/block lists, so
+ * findTopAds throws before any ad group is considered. Shared by every zone-keyed
+ * tool, like archivedZoneText. Exported for tests.
+ */
+export function refusedZoneText (zone) {
+  return `Zone ${zone.name ?? zone.id} (${zone.id}) has segments on but no segments, and the zone itself fails its own allowlist/blocklist on every visit — the ad server answers every visit with "Zone or segments don't match allowlist/blocklist criteria", so no ad group can serve here regardless of targeting. No eligibility evaluated. Fix the zone's lists or add a segment to get a meaningful answer.`
+}
+
+/**
+ * Appended to every zone-keyed header when the rows describe only some visits:
+ * the visits that keep the zone's defaults get no candidate (the served ones all
+ * override the named defaults, which the rows therefore read as visit keys), or no
+ * unpinned visit gets one and only a visit pinning a segmentId is served.
+ * Exported for tests.
+ */
+export function segmentPickNote (zone) {
+  if (zone?.refusesDefaultVisits) {
+    const keys = zone.overriddenOnServedVisits ?? []
+    const named = keys.length === 1 ? `${keys[0]} is judged as a visit key` : `${keys.join(', ')} are judged as visit keys`
+    return ` — NOTE: the ad server refuses every visit that keeps this zone's defaults (no segment, and not the zone itself, passes its lists on them); only visits overriding ${keys.join(', ')} are served, so ${named} below`
+  }
+  if (zone?.servesOnlyPinnedVisits) {
+    return ' — NOTE: the ad server picks no segment for any visit that does not name a segmentId (no segment passes its lists with reachable allocation, and the zone itself does not either); only a visit pinning a segmentId — which skips those checks — is served, so the rows below describe that rare traffic'
+  }
+  return ''
+}
+
+/**
+ * The zone's channel, for the `channelType` the serving engine adds to every
+ * request — or null when it does not exist (a 404, or a zone with no channelId).
+ * xtendOptions looks the channel up with channel.get on every visit, which throws
+ * NotFound for a missing one, so such a zone serves nothing: callers answer that,
+ * as for an archived zone. Every other failure (401, 5xx, timeout) is rethrown —
+ * guessing a channelType would answer a different question than the one asked.
+ * `get` is the caller's own workApiRequest, so each tool module fetches through
+ * the client it imported.
+ */
+export async function fetchChannel (session, channelId, get = workApiRequest) {
+  if (!channelId) return null
+  try {
+    const c = asEntity(await get(session, 'GET', `/api/channels/${channelId}`))
+    return c.id ? c : null
+  } catch (e) {
+    if (e?.status === 404) return null
+    throw e
+  }
+}
+
+/**
+ * The one-line answer for a zone whose channel does not exist, shared by every
+ * zone-keyed tool like archivedZoneText. Exported for tests.
+ */
+export function missingChannelText (zone) {
+  const which = zone.channelId ? `points at channel ${zone.channelId}, which does not exist` : 'has no channel'
+  return `Zone ${zone.name ?? zone.id} (${zone.id}) ${which} — the ad server looks the zone's channel up on every visit and fails without it, so no ad group can serve here regardless of targeting. No eligibility evaluated. Give the zone an existing channel to get a meaningful answer.`
+}
+
 /** Is this ad itself live — enabled, not archived, and pointing at an existing,
  * non-archived creative? Zone-independent on purpose: the caller has already
  * decided the ad serves in the zone (adServesHere / adServesInZone). Shared with
@@ -118,23 +178,18 @@ export function selectTargeting (adGroups, zoneId) {
 export function rollupZoneTargeting (args
 
 ) {
-  const { zoneId, zoneCag, targeted, conflicting, campaigns, adsByGroup, creatives, mode, now } = args
+  const { zoneId, zoneCag, targeted, conflicting, campaigns, adsByGroup, creatives, mode, now, request } = args
   // Required, not defaulted: campaign liveness is time-dependent, and a silent
   // fallback to the real clock would let a test assert a window it never pinned.
   if (now === undefined) throw new TypeError('rollupZoneTargeting: `now` is required — campaign windows are time-dependent')
   const creativeResolves = (creativeId) =>
     creativeId !== undefined && creatives[creativeId] !== undefined
 
-  // Per-ad LAST targeting check: an ad is hidden in THIS zone if its own
-  // exceptParams blacklists the zone, or its own non-empty params whitelist omits
-  // it. One hidden ad doesn't sink the group — its siblings still serve.
-  const adServesHere = (a) => {
-    if (zoneId === undefined) return true
-    if (has(a.exceptParams?.zoneId, zoneId)) return false
-    const wl = a.params?.zoneId
-    if (Array.isArray(wl) && wl.length > 0 && !wl.includes(zoneId)) return false
-    return true
-  }
+  // Per-ad LAST targeting check (adServesInZone): an ad is hidden in THIS zone if
+  // its own zoneId whitelist/blacklist rules it out or, with a request, another of
+  // its params keys excludes it. One hidden ad doesn't sink the group — its siblings
+  // still serve. A conditional ad still counts: it serves on matching traffic.
+  const adServesHere = (a) => zoneId === undefined || adServesInZone(a, zoneId, request)
 
   const all = targeted.map((ag) => {
     const campaign = ag.campaignId !== undefined ? campaigns[ag.campaignId] : undefined
@@ -220,7 +275,7 @@ export function inventoryHeader (s
     : s.namesOmitted
       ? " — names omitted to fit; every ad group's id + flags are present"
       : ''
-  return `Zone ${s.zone.name} (${s.zone.id}) — ${flags}${degrade}`
+  return `Zone ${s.zone.name} (${s.zone.id}) — ${flags}${degrade}${segmentPickNote(s.zone)}`
 }
 
 /**
@@ -274,7 +329,7 @@ export function registerZoneInventoryTools (server) {
     title: 'Zone Targeting Inventory',
     description: `Audit which ad groups are DIRECTLY targeted to a zone (via the ad group's params.zoneId) and, for each, whether it is FULLY LIVE — campaign, ad group, and at least one ad all enabled (and not archived) with a viable creative attached, and the campaign inside its dateStart/dateEnd flight window (dateEnd inclusive, a missing bound open) — or where it is off. An enabled campaign whose window has passed is reported campaign_on:false with off_reason 'campaign-window', distinct from 'campaign' (switched off or archived). Exhaustive and server-side: it scans the whole network's ad groups/campaigns/ads/creatives internally and returns only the compact matched rollup, so nothing is paged through the model. exceptParams.zoneId is treated as an exclusion (a group that both targets and excepts the zone is reported under 'conflicting', not 'targeted').
 
-The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[], scoped_via[] }. scoped_via lists HOW the group is scoped to the zone (annotate-only, the row set is unchanged). It uses ONE shared enum across every tool that emits the field — 'ad-group-whitelist' (the group's params.zoneId names the zone — always present on a targeted row), 'ad-group-blacklist' (the group's exceptParams.zoneId excludes the zone; such a group is reported under 'conflicting' here, so this value is rare on a targeted row and common on the eligibility tool's conflicting rows), 'ad-level-whitelist' (one of its ads also whitelists the zone), 'ad-level-blacklist' (one of its ads excludes the zone via ad.exceptParams.zoneId — that ad is hidden here, siblings still serve), 'zone-selection' (the group shares the zone's creativeAssetGroupId — never set when the zone has no creativeAssetGroupId, since no CAG filter applies there). Same five values, same meaning, in get_zone_eligible_ad_groups and explain_serve. For per-(ad group × ad) offer-grain scoping and free-radical counts, use get_zone_eligible_ad_groups. If the zone is ARCHIVED the tool returns that verdict alone — the ad server refuses an archived zone, so a targeting rollup for it would describe config that cannot run. This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
+The result is the text content: a one-line header, then a blank line, then compact JSON { zone, mode, summary, groups[], conflicting[], scan }. Parse the JSON (everything after the first blank line) to render the table. Each groups[] row: { id, name, archived, campaign_on, adgroup_on, has_enabled_ad, creative_resolves, has_live_viable_ad, fully_live, off_reason[], scoped_via[] }. has_live_viable_ad counts only ads whose own targeting rules let them serve in this zone — zoneId and every other params / exceptParams key, checked against what the zone itself decides (e.g. an ad blacklisting the zone's template does not count); an ad that depends on the visit (device, geo, time) still counts, since it serves on matching traffic. fully_live does NOT check the GROUP's own rules beyond zoneId (e.g. exceptParams.templateId naming this zone's template, or a mobile-only params.device): a group those rules keep out, always or for some visitors, still reads fully_live here. get_zone_eligible_ad_groups applies them, so its summary.directlyTargetedLive (eligible groups only) can be LOWER than this tool's live count on the same zone; the gap is exactly the targeted groups it reports as verdict 'excluded' or 'conditional' — for those rules, and also for a creativeAssetGroupId that does not match the zone's, which this tool does not check either. Use that tool when the question is whether a group actually serves. scoped_via lists HOW the group is scoped to the zone (annotate-only, the row set is unchanged). It uses ONE shared enum across every tool that emits the field — 'ad-group-whitelist' (the group's params.zoneId names the zone — always present on a targeted row), 'ad-group-blacklist' (the group's exceptParams.zoneId excludes the zone; such a group is reported under 'conflicting' here, so this value is rare on a targeted row and common on the eligibility tool's conflicting rows), 'ad-level-whitelist' (one of its ads also whitelists the zone), 'ad-level-blacklist' (one of its ads excludes the zone via ad.exceptParams.zoneId — that ad is hidden here, siblings still serve), 'zone-selection' (the group shares the zone's creativeAssetGroupId — never set when the zone has no creativeAssetGroupId, since no CAG filter applies there). Same five values, same meaning, in get_zone_eligible_ad_groups and explain_serve. For per-(ad group × ad) offer-grain scoping and free-radical counts, use get_zone_eligible_ad_groups. The tool answers in one line, with no rollup, when the ad server refuses the zone on every visit: the zone is ARCHIVED, its channel does not exist (or it has none — the channel is looked up on every visit), or it has segments on with no segments and fails its own allowlist/blocklist — a targeting rollup for it would describe config that cannot run. When a segments zone serves only some visits, the rollup comes with a header NOTE and a flag on zone: refusesDefaultVisits + overriddenOnServedVisits[] (visits keeping the zone's defaults get no ad; the served ones override the named defaults), or servesOnlyPinnedVisits (only a visit naming a segmentId is served). This tool NEVER drops ad groups: the row set is always complete. If a mega-zone would overflow the response, it first omits the optional 'name' field (sets namesOmitted:true; ids + flags remain), and only as a last resort for pathological sizes returns ids-only with complete:false plus an instruction to re-run with mode:'off'/'live' — it never silently returns a partial list.`,
     inputSchema: z.object({
       ...requiredNetworkIdShape,
       zoneId: z.string().describe('Zone ID to audit targeting for'),
@@ -289,8 +344,11 @@ The result is the text content: a one-line header, then a blank line, then compa
     const session = v.session
     try {
       // Every list endpoint returns the full network set in one call; fetch in parallel.
-      const [zoneRaw, adGroupsRaw, campaignsRaw, adsRaw, creativesRaw] = await Promise.all([
-        workApiRequest(session, 'GET', `/api/zones/${zoneId}`),
+      // The channel hangs off the zone, so it chains on the zone fetch alone.
+      const zoneP = workApiRequest(session, 'GET', `/api/zones/${zoneId}`)
+      const [zoneRaw, channel, adGroupsRaw, campaignsRaw, adsRaw, creativesRaw] = await Promise.all([
+        zoneP,
+        zoneP.then((raw) => fetchChannel(session, asEntity(raw).channelId), () => null),
         workApiRequest(session, 'GET', '/api/ad-groups', { networkId: network_id }),
         workApiRequest(session, 'GET', '/api/campaigns', { networkId: network_id }),
         workApiRequest(session, 'GET', '/api/ads', { networkId: network_id }),
@@ -320,6 +378,9 @@ The result is the text content: a one-line header, then a blank line, then compa
         (adsByGroup[a.adGroupId] ??= []).push({ id: a.id, enabled: a.enabled, archived: a.archived, creativeId: a.creativeId, params: a.params, exceptParams: a.exceptParams })
       }
 
+      if (!channel) return { content: [{ type: 'text', text: missingChannelText(zone) }] }
+      const request = zoneRequest(zone, channel)
+      if (refusesEveryVisit(request)) return { content: [{ type: 'text', text: refusedZoneText(zone) }] }
       const { targeted, conflicting } = selectTargeting(adGroups, zoneId)
       const { groups, summary } = rollupZoneTargeting({
         zoneId,
@@ -330,7 +391,8 @@ The result is the text content: a one-line header, then a blank line, then compa
         adsByGroup,
         creatives,
         mode,
-        now: Date.now()
+        now: Date.now(),
+        request
       })
 
       const full = {
@@ -338,7 +400,8 @@ The result is the text content: a one-line header, then a blank line, then compa
           id: String(zone.id),
           name: String(zone.name ?? zone.id),
           creativeAssetGroupId: zone.creativeAssetGroupId,
-          templateId: zone.templateId
+          templateId: zone.templateId,
+          ...segmentPickFlags(request)
         },
         mode,
         summary,

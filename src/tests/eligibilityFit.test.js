@@ -43,31 +43,42 @@ const row = (id, targeted) => ({
   off_reason: [],
   scoped_via: targeted ? ['ad-group-whitelist', 'zone-selection'] : ['zone-selection'],
   eligible: true,
+  verdict: 'eligible',
   via: targeted ? ['ad-group-whitelist', 'zone-selection'] : ['zone-selection'],
   reasons: [],
   conflicts: [],
   offers: targeted ? offers() : offers({ freeRadical: 3, freeRadicalAdIds: ['ad000001', 'ad000002', 'ad000003'] })
 })
 
-const payload = (nDirect, nRadical, nConflict = 0, nInert = 0) => {
+const payload = (nDirect, nRadical, nConflict = 0, nInert = 0, nByDefault = 0) => {
   const direct = Array.from({ length: nDirect }, (_, i) => row(`d${i}`, true))
   const radicals = Array.from({ length: nRadical }, (_, i) => row(`r${i}`, false))
   const conflict = Array.from({ length: nConflict }, (_, i) => row(`c${i}`, true))
   const inert = Array.from({ length: nInert }, (_, i) => ({
     ...row(`i${i}`, false),
     eligible: false,
+    verdict: 'excluded',
     reasons: ['targets-other-zones'],
     conflicts: ['inert-ad-level-whitelist'],
     scoped_via: ['ad-level-whitelist', 'zone-selection'],
     offers: offers({ inScope: 0, adLevelTargeted: 1, inertWhitelisted: 1, inertWhitelistedAdIds: ['adX'] })
   }))
+  const byDefault = Array.from({ length: nByDefault }, (_, i) => ({
+    ...row(`x${i}`, false),
+    eligible: false,
+    verdict: 'excluded',
+    reasons: ['param-mismatch'],
+    paramBlocks: [{ path: 'params.s1', key: 's1', op: 'requires', values: ['xyz'], valuesTotal: 1, source: 'zone-default', actual: 'abc', overridable: true }],
+    offers: offers({ inScope: 0, live: 0 })
+  }))
   return {
     zone: { id: ZONE, name: 'Some Zone Name', creativeAssetGroupId: CAG, templateId: 'tpl1' },
-    summary: summarizeEligibility(direct, radicals, conflict, inert),
+    summary: summarizeEligibility(direct, radicals, conflict, inert, { excludedByDefault: byDefault }),
     directlyTargeted: direct,
     freeRadicals: radicals,
     conflicting: conflict,
     inertWhitelists: inert,
+    excludedByDefault: byDefault,
     scan: { zonesScanned: 300, adGroupsScanned: 900, campaignsScanned: 400, adsScanned: 3000, creativesScanned: 1344 }
   }
 }
@@ -86,7 +97,7 @@ function walk (full, bucket) {
   let pages = 0
   while (offset !== undefined) {
     const { json } = parse(fitEligibility(full, bucket, offset, LIMIT))
-    for (const k of ['directlyTargeted', 'freeRadicals', 'conflicting', 'inertWhitelists']) {
+    for (const k of ['directlyTargeted', 'freeRadicals', 'conflicting', 'inertWhitelists', 'excludedByDefault']) {
       if (Array.isArray(json[k])) rows.push(...(json[k]))
     }
     offset = json.page?.next_offset
@@ -111,7 +122,7 @@ const FIELDS = ['offers', 'scoped_via', 'via', 'reasons', 'conflicts', 'fully_li
 
   test('fitEligibility — small zone fits in one call (B1–B4) > B1/B2 — array lengths match the summary counts one-for-one', t => {
     t.is(json.directlyTargeted.length, json.summary.directlyTargeted)
-    t.is(json.freeRadicals.length, json.summary.freeRadicalHosts)
+    t.is(json.freeRadicals.length, json.summary.freeRadicalHosts + json.summary.freeRadicalHostsConditional)
     t.is(json.conflicting.length, json.summary.conflicting)
   })
 
@@ -159,6 +170,37 @@ const FIELDS = ['offers', 'scoped_via', 'via', 'reasons', 'conflicts', 'fully_li
   test('fitEligibility — the inertWhitelists bucket > says nothing in the header when there is no dead config', t => {
     const { header } = parse(fitEligibility(payload(5, 4, 1, 0), 'all', 0, LIMIT))
     t.false(header.includes('INERT'))
+  })
+}
+
+{ // fitEligibility — the excludedByDefault bucket and conditional rows (#81)
+  const full = payload(5, 4, 1, 3, 2)
+  full.freeRadicals[0] = { ...full.freeRadicals[0], eligible: false, verdict: 'conditional', conditional: true }
+  full.summary = summarizeEligibility(full.directlyTargeted, full.freeRadicals, full.conflicting, full.inertWhitelists, { excludedByDefault: full.excludedByDefault })
+
+  test('fitEligibility — the excludedByDefault bucket and conditional rows (#81) > pages last, after inertWhitelists', t => {
+    const { json } = parse(fitEligibility(full, 'all', 0, LIMIT))
+    t.is(json.page.total, 15) // 5 + 4 + 1 + 3 + 2
+    t.deepEqual(json.excludedByDefault.map((r) => r.id), ['x0', 'x1'])
+    const tail = parse(fitEligibility(full, 'all', 13, LIMIT)).json
+    t.deepEqual(tail.excludedByDefault.map((r) => r.id), ['x0', 'x1'])
+    t.deepEqual(tail.inertWhitelists, [])
+  })
+
+  test('fitEligibility — the excludedByDefault bucket and conditional rows (#81) > is selectable on its own and counted in the summary', t => {
+    const { header, json } = parse(fitEligibility(full, 'excludedByDefault', 0, LIMIT))
+    t.is(json.excludedByDefault.length, 2)
+    t.is(json.summary.excludedByDefault, 2)
+    t.is(json.directlyTargeted, undefined)
+    t.true(header.includes('2 excluded by a zone default'))
+  })
+
+  test('fitEligibility — the excludedByDefault bucket and conditional rows (#81) > a conditional free radical stays in the bucket, outside the eligible host count', t => {
+    const { header, json } = parse(fitEligibility(full, 'all', 0, LIMIT))
+    t.is(json.freeRadicals.length, 4)
+    t.is(json.summary.freeRadicalHosts, 3)
+    t.is(json.summary.freeRadicalHostsConditional, 1)
+    t.true(header.includes('3 free-radical hosts (3 live) · 1 conditional (1 live)'))
   })
 }
 

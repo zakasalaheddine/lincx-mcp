@@ -8,7 +8,8 @@ import { sessionMock } from './helpers/mockWorkApi.js'
 // These tests pin that the zone-keyed tools say so instead of answering normally.
 
 const ZONE_ARCHIVED = { id: 'z_arch', name: 'Retired Zone', networkId: 'svce6t', creativeAssetGroupId: 'cag', archived: true }
-const ZONE_LIVE = { id: 'z_live', name: 'Live Zone', networkId: 'svce6t', creativeAssetGroupId: 'cag' }
+const ZONE_LIVE = { id: 'z_live', name: 'Live Zone', networkId: 'svce6t', creativeAssetGroupId: 'cag', channelId: 'ch1' }
+const CHANNEL = { id: 'ch1', type: 'Web' }
 const AD_GROUP = { id: 'ag1', name: 'Group', networkId: 'svce6t', creativeAssetGroupId: 'cag', enabled: true, params: {} }
 // Whitelists the archived zone and nothing else: reach is 0, and without
 // archivedTargeted there is no way to tell WHICH stale whitelist caused it.
@@ -22,6 +23,8 @@ async function setup () {
       if (path === `/api/ad-groups/${AD_GROUP.id}`) return AD_GROUP
       if (path === `/api/ad-groups/${AD_GROUP_STALE.id}`) return AD_GROUP_STALE
       if (path === '/api/zones') return { data: [ZONE_LIVE, ZONE_ARCHIVED] }
+      if (path === '/api/channels/ch1') return CHANNEL
+      if (path === '/api/channels') return { data: [CHANNEL] }
       if (path === '/api/ad-groups') return { data: [AD_GROUP, AD_GROUP_STALE] }
       return { data: [] }
     },

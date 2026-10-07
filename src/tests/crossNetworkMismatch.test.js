@@ -19,8 +19,9 @@ async function setupServers () {
         return { id: 'ag_ok', networkId: 'svce6t' }
       }
       if (path === '/api/zones/z_ok') {
-        return { id: 'z_ok', networkId: 'svce6t' }
+        return { id: 'z_ok', networkId: 'svce6t', channelId: 'ch1' }
       }
+      if (path === '/api/channels/ch1') return { id: 'ch1', type: 'Web' }
       return []
     },
     handleWorkApiError: (err) => `Error: ${err.message}`
