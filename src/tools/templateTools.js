@@ -7,10 +7,12 @@
  * get_template_versions — GET /api/templates/{id}/versions
  * get_template_version  — GET /api/templates/{id}/versions/{version}
  * create_template   — POST /api/templates (write)
+ * update_template_content — POST /api/templates/{id}/patch (write)
  */
 
 import { z } from 'zod'
 import { validateSession, resolveLincxSession } from '../services/sessionManager.js'
+import { CHARACTER_LIMIT } from '../constants.js'
 import { workApiRequest, handleWorkApiError, fitEntityToText, stripListItems, buildListEnvelope, listEnvelopeToText } from '../services/workApi.js'
 import { paginationShape, includeShape, getEntityWithIncludes, requiredNetworkIdShape, entityId } from './_shared.js'
 
@@ -57,20 +59,28 @@ Pass publisherId to enumerate one publisher's templates exhaustively; without it
     title: 'Get Template',
     description: `Fetch full details of a single template by ID, including its HTML and CSS source.
 
-Returns the template object with id, name, html, css, creativeAssetGroupId, and version info.`,
+Returns the template object with id, name, html, css, creativeAssetGroupId, and version info.
+A large template's html comes back as "[elided: N chars]". Pass part: 'html' or 'css' to get that one field whole, as raw text — always do this before editing a template.`,
     inputSchema: z.object({
       ...requiredNetworkIdShape,
       id: z.string().describe('Template ID'),
-      ...includeShape
+      ...includeShape,
+      part: z.enum(['html', 'css']).optional().describe('Return only this field, raw and unelided (include is ignored)')
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ id, include, network_id }, extra) => {
+  }, async ({ id, include, part, network_id }, extra) => {
     const auth = await resolveLincxSession(extra)
     if (!auth) return { content: [{ type: 'text', text: "Error: Not authenticated. Use 'auth_login' first." }] }
 
     const v = await validateSession(auth)
     if (!v.valid || !v.session) return { content: [{ type: 'text', text: `Error: ${v.error}` }] }
     try {
+      if (part) {
+        const res = await workApiRequest(v.session, 'GET', `/api/templates/${id}`)
+        const field = (res?.data ?? res)?.[part] ?? ''
+        if (field.length > CHARACTER_LIMIT) return text(`Error: template ${id} ${part} is ${field.length} chars — over the ${CHARACTER_LIMIT}-char response limit, so it can't be returned whole and must not be edited through this server.`)
+        return text(field)
+      }
       const data = await getEntityWithIncludes(v.session, '/api/templates', id, include)
       return { content: [{ type: 'text', text: fitEntityToText(data) }] }
     } catch (err) {
@@ -340,4 +350,66 @@ Not idempotent: on a timeout, check 'list_templates' with publisherId for the na
       return text(handleWorkApiError(err))
     }
   })
+
+  server.registerTool('update_template_content', {
+    title: 'Update Template Content',
+    description: `Replace a template's html and/or css. The edit GOES LIVE IMMEDIATELY on every zone using the template (and in zone template tests) — there is no draft or publish step.
+
+Read the current source first with get_template part: 'html' / 'css' — never edit from a get_template response whose html shows "[elided: …]".
+Only html and css are editable here. Not editable: creativeAssetGroupId (changing it rewrites every zone using the template), tieringEnabled (changes what serving returns), networkId/publisherId (fixed upstream), name and notes (not content).
+Before sending, the server checks: at least one of html/css is given, ids are well-formed, html is non-blank with balanced mustache sections, neither field carries an "[elided: " marker, html/css are raw source (no code fence, control characters, placeholder comments, or unclosed comment/script/style/brace), and content is under ${MAX_CONTENT_CHARS} chars. The template must be in network_id — checked in the same atomic call.
+Returns { id, name, version }. Version is assigned upstream: new content gets a new number, but content identical to an earlier version reuses that version's number.`,
+    inputSchema: z.object({
+      ...requiredNetworkIdShape,
+      id: entityId('id').describe('Template ID (must be in network_id)'),
+      html: z.string().refine(s => s.trim() !== '', 'html must not be blank').optional().describe('New full template HTML — replaces the stored html'),
+      css: z.string().optional().describe('New full template CSS — replaces the stored css; empty string clears it')
+    }).strict(),
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
+  }, async ({ network_id, id, html, css }, extra) => {
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return text("Error: Not authenticated. Use 'auth_login' first.")
+
+    const v = await validateSession(auth)
+    if (!v.valid || !v.session) return text(`Error: ${v.error}`)
+
+    if (html === undefined && css === undefined) return text('Error: pass html, css, or both — there is nothing to update.')
+    const size = (html?.length ?? 0) + (css?.length ?? 0)
+    if (size > MAX_CONTENT_CHARS) return text(`Error: html + css is ${size} chars; the limit is ${MAX_CONTENT_CHARS}.`)
+    const elided = elidedField({ html, css })
+    if (elided) return text(`Error: ${elided} contains an "[elided: …]" marker — it was copied from a truncated get_template response, not the real source. Re-read it with get_template part: '${elided}'.`)
+    const broken = html !== undefined && mustacheError(html)
+    if (broken) return text(`Error: html mustache is invalid — ${broken}.`)
+    const unsound = contentError({ html, css })
+    if (unsound) return text(`Error: ${unsound}.`)
+
+    try {
+      const res = await workApiRequest(v.session, 'POST', `/api/templates/${id}/patch`, { body: templatePatch(network_id, { html, css }), timeoutMs: 30_000 })
+      const t = res?.data ?? res
+      return text(`Updated template ${t.id} — now version ${t.version}. Live on every zone using it.\n\n${JSON.stringify({ id: t.id, name: t.name, version: t.version })}`)
+    } catch (err) {
+      // fast-json-patch errors carry the operation and the whole stored doc in
+      // their message, and upstream returns it as `details` — passed through,
+      // that would dump the template (or another network's) into context.
+      const details = String(err.data?.details ?? '')
+      if (err.status === 422 && details.startsWith('Test operation failed')) return text(`Error: template ${id} is not in network ${network_id}.`)
+      if (err.status === 422 && details.includes('\n')) err.data = { ...err.data, details: details.split('\n')[0] }
+      // Redis is written before GCS upstream, so a 5xx can leave the edit applied
+      if (err.code === 'TIMEOUT' || err.status >= 500) return text(`Error: update ${err.code === 'TIMEOUT' ? 'timed out' : `failed (${err.status})`} — it MAY have been applied. Check 'get_template_versions' for ${id} before retrying.`)
+      return text(handleWorkApiError(err))
+    }
+  })
+}
+
+/**
+ * The JSON Patch update_template_content sends. Built here from a closed set
+ * of fields — raw ops from the model are never accepted. `test /networkId`
+ * scopes the edit to network_id atomically (no pre-flight GET); `add` for css
+ * because it is optional upstream and `replace` on a missing path throws.
+ */
+export function templatePatch (networkId, { html, css }) {
+  const ops = [{ op: 'test', path: '/networkId', value: networkId }]
+  if (html !== undefined) ops.push({ op: 'replace', path: '/html', value: html })
+  if (css !== undefined) ops.push({ op: 'add', path: '/css', value: css })
+  return ops
 }
