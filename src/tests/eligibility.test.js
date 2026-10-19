@@ -5,7 +5,7 @@ import {
 
 } from '../tools/eligibility.js'
 import { rollupZoneTargeting, selectTargeting } from '../tools/zoneInventoryTools.js'
-import { summarizeEligibility, conditionKeysOf } from '../tools/zoneEligibilityTools.js'
+import { summarizeEligibility, conditionKeysOf, eligibilityHeader, enrich } from '../tools/zoneEligibilityTools.js'
 import { visitRequest } from './helpers/visitRequest.js'
 
 const ZONE = '8z7wzb'
@@ -554,9 +554,9 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
    * and a dormant host contributes offers to freeRadicalOffers but none to Live. */
   test('summarizeEligibility (bucket grain in the tool summary) > freeRadicalOffersLive sums only the live free-radical offers', t => {
     const radicals = [
-      row('live', { freeRadical: 3, freeRadicalLive: 3 }),
+      row('live', { freeRadical: 3, freeRadicalLive: 3, live: 3 }),
       row('dormant', { freeRadical: 5, freeRadicalLive: 0 }, { fully_live: false, campaign_on: false, off_reason: ['campaign'] }),
-      row('partial', { freeRadical: 4, freeRadicalLive: 1 })
+      row('partial', { freeRadical: 4, freeRadicalLive: 1, live: 1 })
     ]
     const s = summarizeEligibility([], radicals, [])
     t.is(s.freeRadicalOffers, 12)
@@ -569,7 +569,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
   })
 
   test('summarizeEligibility (bucket grain in the tool summary) > config-broken targeted groups stay counted in directlyTargeted and are flagged ineligible', t => {
-    const direct = [row('ok', {}), row('broken', {}, { eligible: false, verdict: 'excluded', fully_live: false })]
+    const direct = [row('ok', { live: 1 }), row('broken', {}, { eligible: false, verdict: 'excluded', fully_live: false })]
     const s = summarizeEligibility(direct, [], [])
     t.is(s.directlyTargeted, 2)
     t.is(s.directlyTargetedIneligible, 1)
@@ -969,12 +969,59 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
     t.false(o.serves)
   })
 
+  { // live counts read from the offers (#91), through enrich() as the tool runs it
+    const req = zoneRequest(Z0, WEB)
+    const NOW = Date.parse('2026-06-15T12:00:00.000Z')
+    const targeted = { ...G.G00, params: { zoneId: [Z0.id] } }
+    const ad = (id, rules = {}) => ({ id, enabled: true, creativeId: 'cr1', ...rules })
+    const geoOnly = [ad('a1', { params: { geoPostal: ['90210'] } }), ad('a2', { params: { geoState: ['TX'] } })]
+    const complementary = [ad('b1', { params: { device: ['mobile'] } }), ad('b2', { exceptParams: { device: ['mobile'] } })]
+    const mixed = [ad('c1', { params: { geoState: ['TX'] } }), ad('c2')]
+    const rows = (specs) => {
+      const adGroups = specs.map(([id, base, , campaignId = 'on']) => ({ ...base, id, enabled: true, campaignId }))
+      const idx = {
+        adGroups,
+        campaigns: { on: { enabled: true }, off: { enabled: false } },
+        adsByGroup: Object.fromEntries(specs.map(([id, , ads]) => [id, ads.map((a) => ({ ...a, adGroupId: id }))])),
+        creatives: { cr1: {} }
+      }
+      const elig = adGroups.map((adGroup) => eligibility({ adGroup, zone: Z0, request: req }))
+      return new Map(enrich(elig, idx, Z0, req, NOW).map((r) => [r.id, r]))
+    }
+
+    test('targeting rules beyond zoneId (#81) > live counts (#91): a targeted group whose live ads all depend on the visit is not counted live', t => {
+      const byId = rows([['geoOnly', targeted, geoOnly], ['complementary', targeted, complementary], ['mixed', targeted, mixed], ['dormant', targeted, geoOnly, 'off']])
+      const direct = [...byId.values()]
+      t.true(direct.every((r) => r.verdict === 'eligible'))
+      t.deepEqual(direct.map((r) => [r.id, r.fully_live]), [['geoOnly', true], ['complementary', true], ['mixed', true], ['dormant', false]])
+      const s = summarizeEligibility(direct, [], [])
+      t.like(s, { directlyTargeted: 4, directlyTargetedLive: 1, directlyTargetedLiveOnConditionalAds: 2, directlyTargetedConditional: 0 })
+      t.true(eligibilityHeader(Z0, s).includes('4 targeted (1 live, 2 live only on conditional ads,'))
+    })
+
+    test('targeting rules beyond zoneId (#81) > live counts (#91): the same holds for free-radical hosts', t => {
+      const s = summarizeEligibility([], [...rows([['geoOnly', G.G00, geoOnly], ['mixed', G.G00, mixed]]).values()], [])
+      t.like(s, { freeRadicalHosts: 2, freeRadicalHostsLive: 1, freeRadicalHostsLiveOnConditionalAds: 1 })
+      t.true(eligibilityHeader(Z0, s).includes('2 free-radical hosts (1 live, 1 live only on conditional ads)'))
+    })
+
+    test('targeting rules beyond zoneId (#81) > live counts (#91): a conditional group is live only through an ad that can serve with it', t => {
+      const byId = rows([['clash', G.G05, [ad('d1', { exceptParams: { device: ['mobile'] } })]], ['fine', G.G05, [ad('d2')]], ['dormant', G.G05, [ad('d3')], 'off']])
+      t.true(byId.get('clash').fully_live)
+      t.is(byId.get('clash').verdict, 'conditional')
+      t.is(byId.get('dormant').verdict, 'conditional')
+      const s = summarizeEligibility([], [...byId.values()], [])
+      t.like(s, { freeRadicalHostsConditional: 3, freeRadicalHostsConditionalLive: 1 })
+      t.like(summarizeEligibility([...byId.values()], [], []), { directlyTargetedConditional: 3, directlyTargetedConditionalLive: 1 })
+    })
+  }
+
   test('targeting rules beyond zoneId (#81) > summary: conditional rows sit outside the eligible counts, with their own live twins', t => {
     const req = zoneRequest(Z0, WEB)
     const b = zoneEligibility(groups, Z0, adsByGroup, req)
     const enrich = (rows) => rows.map((e) => {
       const adGroup = G[e.adGroupId]
-      return { id: e.adGroupId, fully_live: true, verdict: e.verdict, eligible: e.eligible, conditions: e.conditions, offers: offerRollup({ group: e, adGroup, ads: adsByGroup[e.adGroupId], zone: Z0, isLive: LIVE, request: req }) }
+      return { id: e.adGroupId, verdict: e.verdict, eligible: e.eligible, conditions: e.conditions, offers: offerRollup({ group: e, adGroup, ads: adsByGroup[e.adGroupId], zone: Z0, isLive: LIVE, request: req }) }
     })
     const radicals = enrich(b.freeRadicals)
     const s = summarizeEligibility(enrich(b.directlyTargeted), radicals, [], [], {

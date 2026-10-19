@@ -175,7 +175,7 @@ const FIELDS = ['offers', 'scoped_via', 'via', 'reasons', 'conflicts', 'fully_li
 
 { // fitEligibility — the excludedByDefault bucket and conditional rows (#81)
   const full = payload(5, 4, 1, 3, 2)
-  full.freeRadicals[0] = { ...full.freeRadicals[0], eligible: false, verdict: 'conditional', conditional: true }
+  full.freeRadicals[0] = { ...full.freeRadicals[0], eligible: false, verdict: 'conditional', conditional: true, offers: offers({ inScope: 0, live: 0, conditional: 3, conditionalLive: 3 }) }
   full.summary = summarizeEligibility(full.directlyTargeted, full.freeRadicals, full.conflicting, full.inertWhitelists, { excludedByDefault: full.excludedByDefault })
 
   test('fitEligibility — the excludedByDefault bucket and conditional rows (#81) > pages last, after inertWhitelists', t => {
