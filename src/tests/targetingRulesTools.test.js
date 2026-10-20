@@ -17,6 +17,9 @@ const ZR = { id: 'zrefus', name: 'ZR', networkId: NET, publisherId: 'pub1', crea
 const ZD = { ...ZR, id: 'zdefau', name: 'ZD', allowlist: { s1: ['xyz'] }, segments: [{ id: 'sd', templateId: T1, trafficAllocation: 100, allowlist: { s1: ['xyz'] } }] }
 // No unpinned visit gets a segment, but a visit pinning segmentId 'sp' does.
 const ZP = { ...ZR, id: 'zpinnd', name: 'ZP', segments: [{ id: 'sp', templateId: T1, trafficAllocation: 100, allowlist: { zoneType: ['Other'] } }] }
+// The zone fails its own allowlist and its one segment covers 70%: 30% of unpinned
+// visits get no ad.
+const ZU = { ...ZR, id: 'zunsrv', name: 'ZU', segments: [{ id: 'su', templateId: T1, trafficAllocation: 70 }] }
 const group = (id, extra = {}) => ({ id, name: id, networkId: NET, campaignId: 'c1', creativeAssetGroupId: CAG, enabled: true, ...extra })
 const GROUPS = [
   group('G00'),
@@ -39,7 +42,7 @@ const ADS = [
   ad('T1-ad0', 'T1', { exceptParams: { templateId: [T0] } })
 ]
 
-async function setup ({ channel = true, channelError, hiddenFromList = false } = {}) {
+async function setup ({ channel = true, channelError, hiddenFromList = false, withZU = false } = {}) {
   const calls = []
   const byPath = new Map([
     [`/api/zones/${Z0.id}`, Z0],
@@ -48,7 +51,8 @@ async function setup ({ channel = true, channelError, hiddenFromList = false } =
     [`/api/zones/${ZR.id}`, ZR],
     [`/api/zones/${ZD.id}`, ZD],
     [`/api/zones/${ZP.id}`, ZP],
-    ['/api/zones', { data: [Z0, Z1, ZR] }],
+    [`/api/zones/${ZU.id}`, ZU],
+    ['/api/zones', { data: [Z0, Z1, ZR, ...(withZU ? [ZU] : [])] }],
     ['/api/ad-groups', { data: GROUPS }],
     ['/api/campaigns', { data: [{ id: 'c1', enabled: true }] }],
     ['/api/ads', { data: ADS }],
@@ -320,6 +324,27 @@ test('pinned-only zone > the zone tools return rows and say only pinned visits a
     await call(tools.explain_serve, { zoneId: ZP.id, adGroupId: 'G00' }),
     await call(tools.get_zone_targeting_inventory, { zoneId: ZP.id, mode: 'all' })
   ]) t.true(r.content[0].text.includes('only a visit pinning a segmentId'))
+})
+
+test('unserved share (#92) > the zone tools return rows, flag the share and say it in the header', async t => {
+  const tools = await setup({ withZU: true })
+  const { header, json } = parse(await call(tools.get_zone_eligible_ad_groups, eligible({ zoneId: ZU.id })))
+  t.like(json.zone.unservedShare, { min: 30, max: 30, atDefaults: 30, zoneRules: [{ key: 'zoneType', op: 'requires', values: ['Other'], source: 'zone', actual: 'Display' }] })
+  t.true(header.includes('NOTE: 30% of the visits that do not pin a segmentId get no ad at all. It happens only on visits where zoneType is Display (the zone sets it, and its allowlist needs Other — so every visit): on those the zone fails its own allowlist/blocklist'))
+  t.true(header.endsWith('the rows below describe only the served visits'))
+  t.true(json.freeRadicals.length > 0)
+  for (const r of [
+    await call(tools.explain_serve, { zoneId: ZU.id, adGroupId: 'G00' }),
+    await call(tools.get_zone_targeting_inventory, { zoneId: ZU.id, mode: 'all' })
+  ]) t.true(r.content[0].text.includes('30% of the visits that do not pin a segmentId get no ad at all'))
+  const explained = parse(await call(tools.explain_serve, { zoneId: ZU.id, adGroupId: 'G00' })).header
+  t.true(explained.endsWith('this answer describes only the served visits'))
+  const plain = parse(await call(tools.get_zone_eligible_ad_groups, eligible()))
+  t.is(plain.json.zone.unservedShare, undefined)
+  t.false(plain.header.includes('get no ad at all'))
+  const reach = parse(await call(tools.get_ad_group_zone_reach, { adGroupId: 'G00' })).json
+  t.like(reach.zones.find((z) => z.zoneId === ZU.id).unservedShare, { min: 30, max: 30, atDefaults: 30 })
+  t.is(reach.zones.find((z) => z.zoneId === Z0.id).unservedShare, undefined)
 })
 
 test('channel fetches > reach looks up a channel the list hides before calling it missing', async t => {

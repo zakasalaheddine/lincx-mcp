@@ -4,7 +4,7 @@ import {
   SCOPED_VIA, zoneRequest, paramsVerdict, refusesEveryVisit, refusesDefaultVisits, segmentPickFlags, contradiction, adVerdict
 
 } from '../tools/eligibility.js'
-import { rollupZoneTargeting, selectTargeting } from '../tools/zoneInventoryTools.js'
+import { rollupZoneTargeting, selectTargeting, segmentPickNote } from '../tools/zoneInventoryTools.js'
 import { summarizeEligibility, conditionKeysOf, eligibilityHeader, enrich } from '../tools/zoneEligibilityTools.js'
 import { visitRequest } from './helpers/visitRequest.js'
 
@@ -1142,6 +1142,11 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
   const g = (id, extra = {}) => ({ id, creativeAssetGroupId: CAG, ...extra })
   const seg = (id, templateId, trafficAllocation, extra = {}) => ({ id, templateId, trafficAllocation, ...extra })
   const segZone = (segments, extra = {}) => ({ ...Z0, id: 'zs', segmentsStatus: 'on', segments, ...extra })
+  const bounds = (share) => {
+    if (!share) return share
+    const { zoneRules, ...rest } = share
+    return rest
+  }
   const templates = (zone, supplied) => visitRequest(zone, WEB, supplied).segments?.map((c) => c.templateId) ?? null
   const offer = (zone, adGroup, ad) => {
     const req = zoneRequest(zone, WEB)
@@ -1299,6 +1304,97 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
     t.deepEqual(templates(segZone([seg('a', T0, 100), seg('b', T1, 50)])), [T0])
     t.deepEqual(templates(segZone([seg('a', T0, 60), seg('b', T1, 60)])), [T0, T1])
     t.deepEqual(templates(segZone([seg('a', T0, 100, { allowlist: { device: ['mobile'] } }), seg('b', T1, 50)])), [T0, T1, T0])
+  })
+
+  test('unserved share (#92) > a zone failing its own lists leaves the share its passing segments do not cover unserved', t => {
+    const fails = { allowlist: { zoneType: ['Other'] } }
+    const share = (z) => bounds(zoneRequest(z, WEB).unservedShare)
+    const exact = (n) => ({ min: n, max: n, atDefaults: n })
+    t.deepEqual(share(segZone([seg('a', T1, 70)], fails)), exact(30))
+    t.like(segmentPickFlags(zoneRequest(segZone([seg('a', T1, 70)], fails), WEB)), { unservedShare: exact(30) })
+    t.deepEqual(share(segZone([seg('a', T1, 40), seg('b', T0, 20)], fails)), exact(40))
+    t.deepEqual(share(segZone([seg('a', T1, 100, { personaTrafficAllocation: 50 })], fails)), exact(50))
+    t.is(share(segZone([seg('a', T1, 100)], fails)), undefined)
+    t.is(share(segZone([seg('a', T1, 60), seg('b', T0, 60)], fails)), undefined)
+    t.is(share(segZone([seg('a', T1, 70)])), undefined) // the zone passes on every visit and takes the rest
+    t.deepEqual(segmentPickFlags(zoneRequest(segZone([seg('a', T1, 70)]), WEB)), {})
+  })
+
+  test('unserved share (#92) > a share that depends on the visit is given as bounds', t => {
+    const fails = { allowlist: { zoneType: ['Other'] } }
+    const share = (z) => bounds(zoneRequest(z, WEB).unservedShare)
+    // a segment only some visits pass (live: desktop 57.8%, mobile 30.8%)
+    t.deepEqual(share(segZone([seg('a', T1, 40), seg('b', T0, 30, { allowlist: { device: ['mobile'] } })], fails)), { min: 30, max: 60 })
+    // the zone's own lists read a visit key: some visits let it take the rest (live: desktop 31%, mobile 0%)
+    t.deepEqual(share(segZone([seg('a', T1, 70)], { allowlist: { device: ['mobile'] } })), { min: 0, max: 30 })
+    // the zone fails only on its s1 default: a visit overriding s1 lets it pass
+    t.deepEqual(share(segZone([seg('a', T1, 70)], { blocklist: { s1: ['abc'] } })), { min: 0, max: 30, atDefaults: 30 })
+    // the zone passes only on its s1 default: a visit overriding s1 makes it fail
+    t.deepEqual(share(segZone([seg('a', T1, 70)], { allowlist: { s1: ['abc'] } })), { min: 0, max: 30, atDefaults: 0 })
+    // a segment passing only on the s1 default: an overriding visit loses it (live: s1=abc 27.5%, s1=xyz 100%)
+    t.deepEqual(share(segZone([seg('a', T1, 70, { allowlist: { s1: ['abc'] } })], fails)), { min: 30, max: 100, atDefaults: 30 })
+    // a segment failing only on the default counts toward min, not max
+    t.deepEqual(share(segZone([seg('a', T1, 70, { allowlist: { s1: ['xyz'] } }), seg('b', T0, 10)], fails)), { min: 20, max: 90, atDefaults: 90 })
+  })
+
+  test('unserved share (#92) > segments that never pass together leave the bounds loose (known limit)', t => {
+    const fails = { allowlist: { zoneType: ['Other'] } }
+    const z = segZone([seg('m', T1, 40, { allowlist: { device: ['mobile'] } }), seg('d', T0, 40, { allowlist: { device: ['desktop'] } })], fails)
+    // live: desktop 63.5%, mobile 57% — every visit gets 60%, inside the bounds
+    t.deepEqual(bounds(zoneRequest(z, WEB).unservedShare), { min: 20, max: 100 })
+    for (const device of ['desktop', 'mobile']) t.deepEqual(bounds(visitRequest(z, WEB, { device }, { complete: true }).unservedShare), { min: 60, max: 60, atDefaults: 60 })
+  })
+
+  test('unserved share (#92) > a known visit gets an exact share, and a pinned one none', t => {
+    const z = segZone([seg('a', T1, 70)], { allowlist: { device: ['mobile'] } })
+    t.deepEqual(bounds(visitRequest(z, WEB, { device: 'desktop' }, { complete: true }).unservedShare), { min: 30, max: 30, atDefaults: 30 })
+    t.is(visitRequest(z, WEB, { device: 'mobile' }, { complete: true }).unservedShare, undefined)
+    t.is(visitRequest(z, WEB, { device: 'desktop', segmentId: 'a' }, { complete: true }).unservedShare, undefined)
+  })
+
+  test('unserved share (#92) > names the rules in the zone lists that the unserved visits fail', t => {
+    const rules = (extra) => zoneRequest(segZone([seg('a', T1, 70)], extra), WEB).unservedShare.zoneRules
+    t.deepEqual(rules({ allowlist: { zoneType: ['Other'] } }), [{ path: 'allowlist.zoneType', key: 'zoneType', op: 'requires', values: ['Other'], valuesTotal: 1, source: 'zone', actual: Z0.type }])
+    t.deepEqual(rules({ allowlist: { zoneType: [Z0.type], device: ['mobile'] } }), [{ path: 'allowlist.device', key: 'device', op: 'requires', values: ['mobile'], valuesTotal: 1, source: 'request' }])
+    t.deepEqual(rules({ blocklist: { s1: ['abc'] } }), [{ path: 'blocklist.s1', key: 's1', op: 'excludes', values: ['abc'], valuesTotal: 1, source: 'zone-default', actual: 'abc' }])
+    t.deepEqual(rules({ allowlist: { s1: ['abc'] } }), [{ path: 'allowlist.s1', key: 's1', op: 'requires', values: ['abc'], valuesTotal: 1, source: 'zone-default', actual: 'abc' }])
+    t.deepEqual(rules({ params: { device: ['mobile'] }, exceptParams: { zoneType: [Z0.type] } }).map((r) => r.path), ['params.device', 'exceptParams.zoneType'])
+    t.deepEqual(visitRequest(segZone([seg('a', T1, 70)], { allowlist: { device: ['mobile'] } }), WEB, { device: 'desktop' }, { complete: true }).unservedShare.zoneRules, [{ path: 'allowlist.device', key: 'device', op: 'requires', values: ['mobile'], valuesTotal: 1, source: 'request', actual: 'desktop' }])
+  })
+
+  test('unserved share (#92) > leaves out a rule no visit fails, caps long lists, and reads allowlist before params', t => {
+    const rules = (extra, visit) => (visit ? visitRequest(segZone([seg('a', T1, 70)], extra), WEB, visit, { complete: true }) : zoneRequest(segZone([seg('a', T1, 70)], extra), WEB)).unservedShare.zoneRules
+    t.deepEqual(rules({ allowlist: { zoneType: [Z0.type], device: ['mobile'] } }).map((r) => r.key), ['device'])
+    t.deepEqual(rules({ allowlist: { device: ['mobile'] }, blocklist: { geoPostal: ['90210'] } }, { device: 'desktop' }).map((r) => r.key), ['device'])
+    const long = Array.from({ length: 25 }, (_, i) => `v${i}`)
+    t.like(rules({ allowlist: { geoPostal: long } })[0], { values: long.slice(0, 20), valuesTotal: 25 })
+    t.deepEqual(rules({ allowlist: {}, params: { zoneType: ['Other'] }, blocklist: { device: ['mobile'] } }).map((r) => r.path), ['blocklist.device'])
+  })
+
+  test('unserved share (#92) > the header names each rule as the condition the unserved visits meet', t => {
+    const note = (extra) => segmentPickNote({ unservedShare: zoneRequest(segZone([seg('a', T1, 70)], extra), WEB).unservedShare })
+    t.true(note({ allowlist: { geoState: ['TX'] } }).includes('up to 30% of the visits that do not pin a segmentId get no ad at all, depending on the visit; segments whose lists exclude each other can leave the real share well inside these bounds. It happens only on visits where geoState is not TX: on those the zone fails'))
+    t.false(note({ allowlist: { zoneType: ['Other'] } }).includes('inside these bounds'))
+    t.true(segmentPickNote({ unservedShare: zoneRequest({ ...segZone([seg('a', T1, 70)], { allowlist: { creativeAssetGroupId: ['abc'] } }), creativeAssetGroupId: undefined }, WEB).unservedShare }).includes('where creativeAssetGroupId is not set (the zone sets it, and its allowlist needs abc — so every visit):'))
+    t.true(note({ allowlist: { device: ['mobile'] }, blocklist: { geoState: ['CA', 'NY'] } }).includes('where device is not mobile, or geoState is one of [CA, NY]:'))
+    t.true(note({ allowlist: { geoState: ['TX', 'CA'] } }).includes('where geoState is none of [TX, CA]:'))
+    t.true(note({ blocklist: { s1: ['abc'] } }).includes('where s1 is abc (true at the zone default abc):'))
+    t.true(note({ allowlist: { s1: ['abc'] } }).includes('where s1 is not abc (only when a visit overrides the zone default abc):'))
+    t.true(note({ allowlist: { s1: ['xyz'] } }).includes('where s1 is not xyz (true at the zone default abc):'))
+    t.true(note({ blocklist: { s1: ['xyz'] } }).includes('where s1 is xyz (only when a visit overrides the zone default abc):'))
+    t.true(note({ allowlist: { zoneType: ['Other'] } }).includes('where zoneType is Display (the zone sets it, and its allowlist needs Other — so every visit):'))
+    t.true(note({ allowlist: { geoPostal: Array.from({ length: 25 }, (_, i) => `v${i}`) } }).includes('geoPostal is none of [v0, v1,'))
+    t.true(note({ allowlist: { geoPostal: Array.from({ length: 25 }, (_, i) => `v${i}`) } }).includes('v19, …]:'))
+    t.true(note({ blocklist: { zoneType: [Z0.type] } }).includes('where zoneType is Display (the zone sets it, and its blocklist names it — so every visit):'))
+    t.true(segmentPickNote({ unservedShare: zoneRequest({ ...segZone([seg('a', T1, 70)], { allowlist: { s1: [0] } }), dataAttributesDefault: { s1: 0 } }, WEB).unservedShare }).includes('(30% of the visits keeping the zone\'s defaults); segments whose lists exclude each other can leave the real share well inside these bounds. It happens only on visits where s1 is not 0 (true at the zone default 0):'))
+  })
+
+  test('unserved share (#92) > the refused-default and pinned-only fallbacks keep their own flags', t => {
+    const zd = segZone([seg('s', T1, 100, { allowlist: { s1: ['xyz'] } })], { allowlist: { s1: ['xyz'] } })
+    t.deepEqual(segmentPickFlags(zoneRequest(zd, WEB)), { refusesDefaultVisits: true, overriddenOnServedVisits: ['s1'] })
+    t.is(zoneRequest(zd, WEB).unservedShare, undefined)
+    const zp = segZone([seg('s', T1, 100, { allowlist: { zoneType: ['Other'] } })], { allowlist: { zoneType: ['Other'] } })
+    t.deepEqual(segmentPickFlags(zoneRequest(zp, WEB)), { servesOnlyPinnedVisits: true })
   })
 
   test('re-review fixes on #81 > a template contradiction a visit templateId can satisfy is overridable', t => {

@@ -119,6 +119,7 @@ export function pickSegments (zone, request, { pinnedSegmentId } = {}) {
     // reads the zone's (overridable) template, not the segment pick being built.
     candidates = segmentCandidates(zone, request)
     if (candidates.length === 0) candidates = fallbackCandidates(zone, request, segments)
+    else request.unservedShare = unservedShare(zone, request)
   }
   if (!request.refused && candidates) request.segments = candidates
   return request
@@ -159,15 +160,18 @@ function fallbackCandidates (zone, request, segments) {
  * (`xs.includes(value)` / `_.isEqual`), unlike the params index, which compares
  * strings — so a numeric zone default never matches a '5' in a segment list.
  */
-function listsVerdict (x, request, { defaultsOverridable = false } = {}) {
+function listsVerdict (x, request, { defaultsOverridable = false, defaultsVary = false } = {}) {
   let unknown = false
   // With defaultsOverridable, a value the zone only defaults is not settled: a
-  // visit can override it, so a list failing on it is possible, not out.
+  // visit can override it, so a list failing on it is possible, not out. With
+  // defaultsVary a list passing on it is only possible too: the visit can set any
+  // value, so only lists decided by keys the zone fixes are certain either way.
   const settled = (r) => !(defaultsOverridable && r.source === 'zone-default')
+  const varies = (r) => defaultsVary && r.kind === 'value' && r.source === 'zone-default'
   for (const [k, xs] of Object.entries(x.allowlist || x.params || {})) {
     if (!nonEmpty(xs)) continue
     const r = resolveKey(request, k)
-    if (r.kind === 'unknown') unknown = true
+    if (r.kind === 'unknown' || varies(r)) unknown = true
     else if (r.kind === 'absent' || !r.value || !xs.includes(r.value)) {
       if (r.kind === 'value' && !settled(r)) unknown = true
       else return 'out'
@@ -176,7 +180,7 @@ function listsVerdict (x, request, { defaultsOverridable = false } = {}) {
   for (const [k, xs] of Object.entries(x.blocklist || x.exceptParams || {})) {
     if (!nonEmpty(xs)) continue
     const r = resolveKey(request, k)
-    if (r.kind === 'unknown') unknown = true
+    if (r.kind === 'unknown' || varies(r)) unknown = true
     else if (r.kind === 'value' && xs.includes(r.value)) {
       if (!settled(r)) unknown = true
       else return 'out'
@@ -214,7 +218,6 @@ function listRejectedDefaults (zone, request) {
  * toward the allocation that can shut the zone out.
  */
 function segmentCandidates (zone, request, opts) {
-  const alloc = (s) => (s.personaTrafficAllocation ? s.personaTrafficAllocation / 100 : 1) * (Number(s.trafficAllocation) || 0)
   const segments = (zone.segments ?? []).map((s) => ({ s, v: listsVerdict(s, request, opts) })).filter(({ v }) => v !== 'out')
   // The draw is over a total of 100 and walks the segments in order, so a segment
   // starting past a cumulative 100 is never reached. Only segments certain to pass
@@ -229,6 +232,85 @@ function segmentCandidates (zone, request, opts) {
     candidates.push({ segmentId: null, segmentName: zone.name, templateId: zone.templateId })
   }
   return candidates
+}
+
+/** A segment's share of the draw, scaled by its persona allocation (selectNextSegment). */
+const alloc = (s) => (s.personaTrafficAllocation ? s.personaTrafficAllocation / 100 : 1) * (Number(s.trafficAllocation) || 0)
+
+/**
+ * The share of unpinned visits a segments zone answers with no ad at all, as
+ * percent bounds { min, max, atDefaults?, zoneRules }, or undefined when no visit gets none
+ * (zone-set keys taken as fixed, as everywhere here: a request sending zoneType
+ * would override them).
+ * selectNextSegment draws over 100: the segments that pass their lists take their
+ * allocation, and the zone takes the rest only when it passes its own lists. When
+ * it fails them, a draw past the passing segments' total matches nothing and
+ * findTopAds throws NotFound. Lists reading a visit key or a zone default (which a
+ * visit can override) make the share depend on the visit, so:
+ * - max: no visit gets more — only the segments passing on every visit count.
+ * - min: no visit gets less — 0 when some visit lets the zone itself pass, else
+ *   every segment that can pass counts.
+ * - atDefaults: the exact share for visits keeping the zone's defaults, set only
+ *   when no list there reads a visit key.
+ * Segments whose lists exclude each other (one mobile-only, one desktop-only, as
+ * persona splits usually are) never pass together, so the real share can sit well
+ * inside the bounds; telling them apart would mean judging visit-key combinations.
+ */
+function unservedShare (zone, request) {
+  const vary = { defaultsVary: true }
+  const loose = { defaultsOverridable: true }
+  if (listsVerdict(zone, request, vary) === 'in') return undefined
+  let always = 0
+  let possible = 0
+  let atDefaults = 0
+  let decided = listsVerdict(zone, request) !== 'unknown'
+  for (const s of zone.segments ?? []) {
+    if (listsVerdict(s, request, vary) === 'in') always += alloc(s)
+    if (listsVerdict(s, request, loose) !== 'out') possible += alloc(s)
+    const v = listsVerdict(s, request)
+    if (v === 'in') atDefaults += alloc(s)
+    if (v === 'unknown') decided = false
+  }
+  const pct = (x) => Math.round(Math.max(0, 100 - x) * 100) / 100
+  const max = pct(always)
+  if (max === 0) return undefined
+  const share = { min: listsVerdict(zone, request, loose) === 'out' ? pct(possible) : 0, max }
+  if (decided) share.atDefaults = listsVerdict(zone, request) === 'in' ? 0 : pct(atDefaults)
+  share.zoneRules = zoneListRules(zone, request)
+  return share
+}
+
+/**
+ * The rules in the zone's own lists that some visit fails — what an unserved visit
+ * fails on: a visit key, a default the visit can override, or a zone-set value the
+ * list rejects (source 'zone', failing on every visit). Same lists and comparisons
+ * as listsVerdict.
+ */
+function zoneListRules (zone, request) {
+  const rules = []
+  const rule = (path, key, op, xs, r) => rules.push({
+    path,
+    key,
+    op,
+    ...capped(xs),
+    source: r.kind === 'value' ? r.source : 'request',
+    ...(r.kind === 'value' ? { actual: r.value } : {})
+  })
+  const allow = zone.allowlist ? 'allowlist' : 'params'
+  for (const [k, xs] of Object.entries(zone[allow] || {})) {
+    if (!nonEmpty(xs)) continue
+    const r = resolveKey(request, k)
+    const passes = r.kind === 'value' && r.source !== 'zone-default' && r.value && xs.includes(r.value)
+    if (!passes) rule(`${allow}.${k}`, k, 'requires', xs, r)
+  }
+  const block = zone.blocklist ? 'blocklist' : 'exceptParams'
+  for (const [k, xs] of Object.entries(zone[block] || {})) {
+    if (!nonEmpty(xs)) continue
+    const r = resolveKey(request, k)
+    const passes = r.kind === 'absent' || (r.kind === 'value' && r.source !== 'zone-default' && !xs.includes(r.value))
+    if (!passes) rule(`${block}.${k}`, k, 'excludes', xs, r)
+  }
+  return rules
 }
 
 /** A segment as a pick candidate: what the pick writes onto the request. */
@@ -253,11 +335,13 @@ export function refusesDefaultVisits (request) {
 /**
  * The segment-pick facts a zone view carries, so every tool can say when the rows
  * describe only some visits: the default visit is refused (and which defaults the
- * served visits override), or only visits pinning a segmentId are served.
+ * served visits override), only visits pinning a segmentId are served, or a share of
+ * unpinned visits gets no ad (unservedShare).
  */
 export function segmentPickFlags (request) {
   if (request?.refusesDefaultVisits) return { refusesDefaultVisits: true, overriddenOnServedVisits: request.overriddenOnServedVisits }
   if (request?.servesOnlyPinnedVisits) return { servesOnlyPinnedVisits: true }
+  if (request?.unservedShare) return { unservedShare: request.unservedShare }
   return {}
 }
 
