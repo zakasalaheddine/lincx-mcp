@@ -15,8 +15,8 @@ const zone = { id: ZONE, creativeAssetGroupId: CAG }
 // offerRollup's liveness predicate is injected (it needs campaign/creative rows this
 // module never reads). LIVE/DARK pin the two ends so a count can't pass by default:
 // the targeting-grain tests below use LIVE, and the live-axis tests use both.
-const LIVE = () => true
-const DARK = () => false
+const LIVE = () => []
+const DARK = () => ['ad-disabled']
 
 const input = (adGroup, ads = []) => ({
   adGroup: { id: 'ag1', creativeAssetGroupId: CAG, ...adGroup },
@@ -211,7 +211,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
   const v = eligibility({ adGroup: untargeted, zone, ads: [] })
 
   test('offerRollup (the over-count the group grain hides) > untargeted group whose ONLY ad is zone-whitelisted → free-radical GROUP but 0 free-radical offers', t => {
-    const r = offerRollup({ group: v, adGroup: untargeted, ads: [{ id: 'ad1', params: { zoneId: [ZONE] } }], zone, isLive: LIVE })
+    const r = offerRollup({ group: v, adGroup: untargeted, ads: [{ id: 'ad1', params: { zoneId: [ZONE] } }], zone, offReasons: LIVE })
     t.is(v.eligible, true) // group grain still counts it
     t.is(r.freeRadical, 0)
     t.is(r.adLevelTargeted, 1)
@@ -227,7 +227,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
       { id: 'bl', exceptParams: { zoneId: [ZONE] } }, // ad-level blacklisted
       { id: 'elsewhere', params: { zoneId: ['other'] } }// confined elsewhere
     ]
-    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, isLive: LIVE })
+    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, offReasons: LIVE })
     t.is(r.total, 5)
     t.is(r.inScope, 3)
     t.is(r.freeRadical, 2)
@@ -261,7 +261,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
 
   test('D3 — the host row survives, the offer count does not > all three ads are ad-level-TARGETED, so zero free-radical offers', t => {
     const v = eligibility({ adGroup: untargeted, zone, ads: allWhitelisted })
-    const r = offerRollup({ group: v, adGroup: untargeted, ads: allWhitelisted, zone, isLive: LIVE })
+    const r = offerRollup({ group: v, adGroup: untargeted, ads: allWhitelisted, zone, offReasons: LIVE })
     t.is(r.total, 3)
     t.is(r.inScope, 3)
     t.is(r.freeRadical, 0)
@@ -288,7 +288,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
       via: v.via,
       reasons: v.reasons,
       conflicts: v.conflicts,
-      offers: offerRollup({ group: v, adGroup: untargeted, ads: allWhitelisted, zone, isLive: LIVE })
+      offers: offerRollup({ group: v, adGroup: untargeted, ads: allWhitelisted, zone, offReasons: LIVE })
     }
     const s = summarizeEligibility([], [host], [])
     t.is(s.freeRadicalHosts, 1)
@@ -302,7 +302,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
       { id: 'bl', exceptParams: { zoneId: [ZONE] } }, { id: 'away', params: { zoneId: ['other'] } }
     ]
     const v = eligibility({ adGroup: untargeted, zone, ads })
-    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, isLive: LIVE })
+    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, offReasons: LIVE })
     // D2: the disjoint-ish buckets never exceed the ad count
     t.true(r.freeRadical + r.adLevelTargeted + r.adLevelBlacklisted + r.confinedElsewhere <= r.total)
     // D4: the id list is the free-radical count, not a superset
@@ -335,7 +335,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
   const ads = [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }, { id: 'a4' }]
 
   test('free-radical offers have a live axis (the dr0xp2 shape) > campaign off → 4 free-radical offers, 0 of them live (standing trap, not exposure)', t => {
-    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, isLive: DARK })
+    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, offReasons: DARK })
     t.is(r.freeRadical, 4)
     t.is(r.freeRadicalLive, 0)
     t.is(r.inScope, 4) // targeting passes at both levels…
@@ -343,27 +343,27 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
   })
 
   test('free-radical offers have a live axis (the dr0xp2 shape) > campaign on → the same 4 offers are live exposure', t => {
-    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, isLive: LIVE })
+    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, offReasons: LIVE })
     t.is(r.freeRadicalLive, 4)
     t.is(r.live, 4)
   })
 
   test('free-radical offers have a live axis (the dr0xp2 shape) > liveness is per ad, not per group', t => {
-    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, isLive: (ad) => ad.id === 'a1' || ad.id === 'a3' })
+    const r = offerRollup({ group: v, adGroup: untargeted, ads, zone, offReasons: (ad) => ad.id === 'a1' || ad.id === 'a3' ? [] : ['ad-disabled'] })
     t.is(r.freeRadical, 4)
     t.is(r.freeRadicalLive, 2)
   })
 
   test('free-radical offers have a live axis (the dr0xp2 shape) > live counts never exceed their targeting counts', t => {
-    for (const isLive of [LIVE, DARK, (ad) => ad.id === 'a2']) {
-      const r = offerRollup({ group: v, adGroup: untargeted, ads: [...ads, { id: 'bl', exceptParams: { zoneId: [ZONE] } }], zone, isLive })
+    for (const offReasons of [LIVE, DARK, (ad) => ad.id === 'a2' ? [] : ['ad-disabled']]) {
+      const r = offerRollup({ group: v, adGroup: untargeted, ads: [...ads, { id: 'bl', exceptParams: { zoneId: [ZONE] } }], zone, offReasons })
       t.true(r.freeRadicalLive <= r.freeRadical)
       t.true(r.live <= r.inScope)
     }
   })
 
   test('free-radical offers have a live axis (the dr0xp2 shape) > an ad-level-targeted ad is live but never a live FREE RADICAL', t => {
-    const r = offerRollup({ group: v, adGroup: untargeted, ads: [{ id: 'wl', params: { zoneId: [ZONE] } }], zone, isLive: LIVE })
+    const r = offerRollup({ group: v, adGroup: untargeted, ads: [{ id: 'wl', params: { zoneId: [ZONE] } }], zone, offReasons: LIVE })
     t.is(r.live, 1)
     t.is(r.freeRadicalLive, 0)
   })
@@ -455,7 +455,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
       { id: 'plain' } // nothing
     ]
     const v = eligibility({ adGroup: roofing, zone, ads })
-    const r = offerRollup({ group: v, adGroup: roofing, ads, zone, isLive: LIVE })
+    const r = offerRollup({ group: v, adGroup: roofing, ads, zone, offReasons: LIVE })
     t.is(r.total, 4)
     t.is(r.inScope, 0) // group can't reach the zone — nothing serves
     t.is(r.inertWhitelisted, 2)
@@ -944,7 +944,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
     const o = offerEligibility({ group: v, adGroup: G.G13, ad: blocked, zone: Z0, request: req })
     t.is(o.verdict, 'excluded')
     t.deepEqual(o.reasons, ['ad-param-blacklisted'])
-    const r = offerRollup({ group: v, adGroup: G.G13, ads: adsByGroup.G13, zone: Z0, isLive: LIVE, request: req })
+    const r = offerRollup({ group: v, adGroup: G.G13, ads: adsByGroup.G13, zone: Z0, offReasons: LIVE, request: req })
     t.like(r, { total: 2, inScope: 1, freeRadical: 1, conditional: 0 })
     t.deepEqual(r.freeRadicalAdIds, ['G13-ad0'])
   })
@@ -956,7 +956,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
   test('targeting rules beyond zoneId (#81) > offers: a conditional group makes its offers conditional, counted in their own twins', t => {
     const req = zoneRequest(Z0, WEB)
     const v = eligibility({ adGroup: G.G05, zone: Z0, request: req })
-    const r = offerRollup({ group: v, adGroup: G.G05, ads: [{ id: 'a1' }, { id: 'a2' }], zone: Z0, isLive: (ad) => ad.id === 'a1', request: req })
+    const r = offerRollup({ group: v, adGroup: G.G05, ads: [{ id: 'a1' }, { id: 'a2' }], zone: Z0, offReasons: (ad) => ad.id === 'a1' ? [] : ['ad-disabled'], request: req })
     t.like(r, { inScope: 0, live: 0, freeRadical: 0, conditional: 2, conditionalLive: 1, freeRadicalConditional: 2, freeRadicalConditionalLive: 1 })
   })
 
@@ -1021,7 +1021,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
     const b = zoneEligibility(groups, Z0, adsByGroup, req)
     const enrich = (rows) => rows.map((e) => {
       const adGroup = G[e.adGroupId]
-      return { id: e.adGroupId, verdict: e.verdict, eligible: e.eligible, conditions: e.conditions, offers: offerRollup({ group: e, adGroup, ads: adsByGroup[e.adGroupId], zone: Z0, isLive: LIVE, request: req }) }
+      return { id: e.adGroupId, verdict: e.verdict, eligible: e.eligible, conditions: e.conditions, offers: offerRollup({ group: e, adGroup, ads: adsByGroup[e.adGroupId], zone: Z0, offReasons: LIVE, request: req }) }
     })
     const radicals = enrich(b.freeRadicals)
     const s = summarizeEligibility(enrich(b.directlyTargeted), radicals, [], [], {
@@ -1099,17 +1099,88 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
     t.is(verdictOf(g('u', { exceptParams: { dateTimeUTC: ['mon2'] } }), {}, true).verdict, 'conditional')
   })
 
-  test('review fixes on #81 > offers name the ads whose own rules depend on the visit', t => {
+  test('review fixes on #81 > offers list every ad, with the conditions of those whose own rules depend on the visit', t => {
     const req = zoneRequest(Z0, WEB)
     const host = g('host')
     const ads = [{ id: 'plain' }, { id: 'ios', params: { deviceOs: ['ios'] } }, { id: 'noMobile', exceptParams: { device: ['mobile'] } }]
-    const r = offerRollup({ group: eligibility({ adGroup: host, zone: Z0, request: req }), adGroup: host, ads, zone: Z0, isLive: LIVE, request: req })
+    const r = offerRollup({ group: eligibility({ adGroup: host, zone: Z0, request: req }), adGroup: host, ads, zone: Z0, offReasons: LIVE, request: req })
     t.like(r, { inScope: 1, conditional: 2 })
-    t.deepEqual(r.conditionalAds.map((a) => [a.adId, a.conditions[0].key, a.conditions[0].op]), [['ios', 'deviceOs', 'requires'], ['noMobile', 'device', 'excludes']])
+    t.deepEqual(r.ads.map((a) => [a.adId, a.verdict, a.live, a.conditions?.[0].key, a.conditions?.[0].op]), [
+      ['plain', 'eligible', true, undefined, undefined],
+      ['ios', 'conditional', true, 'deviceOs', 'requires'],
+      ['noMobile', 'conditional', true, 'device', 'excludes']
+    ])
+    t.deepEqual(r.ads[0], { adId: 'plain', verdict: 'eligible', live: true })
+  })
+
+  test('#97 > ads[] is uncapped and tells live conditional ads from switched-off ones', t => {
+    const req = zoneRequest(Z0, WEB)
+    const host = g('host')
     const many = Array.from({ length: 12 }, (_, i) => ({ id: `a${i}`, params: { device: ['mobile'] } }))
-    const capped = offerRollup({ group: eligibility({ adGroup: host, zone: Z0, request: req }), adGroup: host, ads: many, zone: Z0, isLive: LIVE, request: req })
-    t.is(capped.conditional, 12)
-    t.is(capped.conditionalAds.length, 10)
+    const offReasons = (ad) => Number(ad.id.slice(1)) < 6 ? ['ad-disabled'] : []
+    const r = offerRollup({ group: eligibility({ adGroup: host, zone: Z0, request: req }), adGroup: host, ads: many, zone: Z0, offReasons, request: req })
+    t.like(r, { conditional: 12, conditionalLive: 6 })
+    t.is(r.ads.length, 12)
+    t.deepEqual(r.ads.filter((a) => a.live).map((a) => a.adId), ['a6', 'a7', 'a8', 'a9', 'a10', 'a11'])
+    t.deepEqual(r.ads[0].off, ['ad-disabled'])
+    t.is(r.ads[6].off, undefined)
+  })
+
+  test('#97 > an ad that does not serve carries its own reason, including a block on a zone-set key', t => {
+    const req = zoneRequest(Z0, WEB)
+    const host = g('host')
+    const ads = [
+      { id: 'bl', exceptParams: { zoneId: [Z0.id] } },
+      { id: 'other', params: { zoneId: ['elsewh'] } },
+      { id: 'native', params: { zoneType: ['Native'] } }
+    ]
+    const r = offerRollup({ group: eligibility({ adGroup: host, zone: Z0, request: req }), adGroup: host, ads, zone: Z0, offReasons: LIVE, request: req })
+    t.like(r, { total: 3, inScope: 0, adLevelBlacklisted: 1, confinedElsewhere: 1 })
+    t.deepEqual(r.ads.map((a) => [a.adId, a.verdict, a.reasons]), [
+      ['bl', 'excluded', ['ad-blacklisted']],
+      ['other', 'excluded', ['ad-targets-other-zones']],
+      ['native', 'excluded', ['ad-param-mismatch']]
+    ])
+    t.like(r.ads[2].paramBlocks[0], { key: 'zoneType', op: 'requires', values: ['Native'], source: 'zone' })
+  })
+
+  test('#97 > under a group excluded by a zone default, each ad keeps its own reasons', t => {
+    const req = zoneRequest(Z0, WEB)
+    const byDefault = g('byDefault', { params: { s1: ['xyz'] } })
+    const v = eligibility({ adGroup: byDefault, zone: Z0, request: req })
+    t.true(v.excludedByDefault)
+    const ads = [{ id: 'bl', exceptParams: { zoneId: [Z0.id] } }, { id: 'pb', params: { zoneType: ['Native'] } }, { id: 'ok' }]
+    const r = offerRollup({ group: v, adGroup: byDefault, ads, zone: Z0, offReasons: LIVE, request: req })
+    t.deepEqual(r.ads.map((a) => [a.adId, a.verdict, a.reasons]), [
+      ['bl', 'excluded', ['ad-blacklisted']],
+      ['pb', 'excluded', ['ad-param-mismatch']],
+      ['ok', 'excluded', undefined]
+    ])
+  })
+
+  test('#97 > a pair-only contradiction is the ad entry\'s reason', t => {
+    const req = zoneRequest(Z0, WEB)
+    const mobile = g('mobile', { params: { device: ['mobile'] } })
+    const v = eligibility({ adGroup: mobile, zone: Z0, request: req })
+    const r = offerRollup({ group: v, adGroup: mobile, ads: [{ id: 'never', exceptParams: { device: ['mobile'] } }], zone: Z0, offReasons: LIVE, request: req })
+    t.like(r.ads[0], { verdict: 'excluded', reasons: ['conditions-contradict'], contradiction: 'device' })
+  })
+
+  test('#97 > a group whose own rules contradict keeps that reason off its ads', t => {
+    const req = zoneRequest(Z0, WEB)
+    const never = g('never', { params: { device: ['mobile'] }, exceptParams: { device: ['mobile'] } })
+    const v = eligibility({ adGroup: never, zone: Z0, request: req })
+    t.deepEqual(v.reasons, ['conditions-contradict'])
+    const r = offerRollup({ group: v, adGroup: never, ads: [{ id: 'clean' }], zone: Z0, offReasons: LIVE, request: req })
+    t.deepEqual(r.ads, [{ adId: 'clean', verdict: 'excluded', live: true }])
+  })
+
+  test('#97 > under an excluded group the ads carry no reasons of their own', t => {
+    const req = zoneRequest(Z0, WEB)
+    const blocked = g('blocked', { exceptParams: { zoneId: [Z0.id] } })
+    const v = eligibility({ adGroup: blocked, zone: Z0, request: req })
+    const r = offerRollup({ group: v, adGroup: blocked, ads: [{ id: 'a' }], zone: Z0, offReasons: DARK, request: req })
+    t.deepEqual(r.ads, [{ adId: 'a', verdict: 'excluded', live: false, off: ['ad-disabled'] }])
   })
 
   test('review fixes on #81 > an ad whitelisting the zone under a default-blocked group is not flagged inert', t => {
@@ -1119,7 +1190,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
     const v = eligibility({ adGroup: blockedByDefault, zone: Z0, request: req })
     t.true(v.excludedByDefault)
     t.deepEqual(offerEligibility({ group: v, adGroup: blockedByDefault, ad, zone: Z0, request: req }).conflicts, [])
-    const r = offerRollup({ group: v, adGroup: blockedByDefault, ads: [ad], zone: Z0, isLive: LIVE, request: req })
+    const r = offerRollup({ group: v, adGroup: blockedByDefault, ads: [ad], zone: Z0, offReasons: LIVE, request: req })
     t.is(r.inertWhitelisted, 0)
     const fixedBlock = g('fix', { params: { zoneType: ['Other'] } })
     const fv = eligibility({ adGroup: fixedBlock, zone: Z0, request: req })
@@ -1160,7 +1231,7 @@ test('adServesInZone (per-ad last targeting check) > ad whitelisting this zone s
     t.true(o.reasons.includes('conditions-contradict'))
     const req = zoneRequest(Z0, WEB)
     const host = g('mob', { params: { device: ['mobile'] } })
-    const r = offerRollup({ group: eligibility({ adGroup: host, zone: Z0, request: req }), adGroup: host, ads: [{ id: 'a', exceptParams: { device: ['mobile'] } }, { id: 'b' }], zone: Z0, isLive: LIVE, request: req })
+    const r = offerRollup({ group: eligibility({ adGroup: host, zone: Z0, request: req }), adGroup: host, ads: [{ id: 'a', exceptParams: { device: ['mobile'] } }, { id: 'b' }], zone: Z0, offReasons: LIVE, request: req })
     t.like(r, { conditional: 1, freeRadicalConditional: 1 })
   })
 

@@ -20,7 +20,7 @@ import { validateSession, resolveLincxSession } from '../services/sessionManager
 import { workApiRequest, handleWorkApiError } from '../services/workApi.js'
 import { RESPONSE_SIZE_LIMIT } from '../constants.js'
 import {
-  asRows, asEntity, rollupZoneTargeting, adLiveViable, archivedZoneText, refusedZoneText, missingChannelText, fetchChannel,
+  asRows, asEntity, rollupZoneTargeting, adOffReasons, chainState, archivedZoneText, refusedZoneText, missingChannelText, fetchChannel,
   segmentPickNote
 
 } from './zoneInventoryTools.js'
@@ -42,6 +42,17 @@ async function guard (extra, networkId) {
 }
 
 ;
+
+/** One entity by id, or null when it does not exist (a 404 or an empty body). */
+async function fetchOrNull (session, path) {
+  try {
+    const e = asEntity(await workApiRequest(session, 'GET', path))
+    return e.id ? e : null
+  } catch (e) {
+    if (e?.status === 404) return null
+    throw e
+  }
+}
 
 /** One GET per entity — each returns the whole network set (documented in workApi). */
 async function fetchIndex (session, network_id) {
@@ -104,6 +115,13 @@ function pack (header, payload, rowKeys) {
 
 ;
 
+/** What keeps an ad dark: its group's chain (named once, on the row's off_reason)
+ * and the ad's own causes. Empty when the ad is live. */
+const offOf = (chain, ad, creatives) => [
+  ...(chain.campaign_on && chain.adgroup_on ? [] : ['campaign-or-ad-group']),
+  ...adOffReasons(ad, creatives)
+]
+
 /** Merge each group's live rollup row with its join verdict (eligible/verdict/via/
  * reasons/conflicts/conditions/paramBlocks/matchedKeys) and its offer-grain
  * (ad group × ad) counts. Exported for tests. */
@@ -128,8 +146,8 @@ export function enrich (elig, idx, zone, request, now) {
     // Offer-grain liveness = the group's own chain (campaign + ad group) AND this ad.
     // Same predicate the inventory rollup uses for has_live_viable_ad, per ad instead
     // of "some ad", so a dormant free-radical host reports freeRadicalLive: 0.
-    const isLive = (ad) => r.campaign_on && r.adgroup_on && adLiveViable(ad, idx.creatives)
-    const offers = offerRollup({ group: e, adGroup: groupById.get(r.id), ads: idx.adsByGroup[r.id] ?? [], zone, isLive, request })
+    const offReasons = (ad) => offOf(r, ad, idx.creatives)
+    const offers = offerRollup({ group: e, adGroup: groupById.get(r.id), ads: idx.adsByGroup[r.id] ?? [], zone, offReasons, request })
     return {
       ...r,
       eligible: e.eligible,
@@ -204,6 +222,15 @@ const zoneView = (zone, channel, request) => ({
   ...segmentPickFlags(request)
 })
 
+/** Row filters for get_zone_eligible_ad_groups. liveOnlyOnConditionalAds is also
+ * what summarizeEligibility counts as …LiveOnConditionalAds, so the filter and the
+ * count cannot drift: the eligible groups whose live ads all depend on the visit.
+ * hasLiveConditionalAd is any group with a live conditional offer. */
+export const ROW_FILTERS = {
+  liveOnlyOnConditionalAds: (r) => r.verdict === 'eligible' && r.offers.live === 0 && r.offers.conditionalLive > 0,
+  hasLiveConditionalAd: (r) => r.offers.conditionalLive > 0
+}
+
 /**
  * Counts for get_zone_eligible_ad_groups, exported for tests. Grain matters:
  * `freeRadical*` is summed over the free-radical bucket ONLY — a directly-targeted
@@ -227,8 +254,8 @@ export function summarizeEligibility (
   // one serving is enough — which the group's AND-ed conditions[] cannot carry,
   // so the verdict stays and the group gets its own count instead.
   const liveEveryVisit = (r) => r.offers.live > 0
-  const liveOnConditionalAds = (r) => r.offers.live === 0 && r.offers.conditionalLive > 0
-  const liveConditional = (r) => r.offers.conditionalLive > 0
+  const liveOnConditionalAds = ROW_FILTERS.liveOnlyOnConditionalAds
+  const liveConditional = ROW_FILTERS.hasLiveConditionalAd
   return {
     directlyTargeted: direct.length,
     directlyTargetedLive: directEligible.filter(liveEveryVisit).length,
@@ -269,6 +296,8 @@ export function summarizeEligibility (
 }
 
 ;
+const OVERSIZED_NOTE = 'One ad-group row exceeds the response budget on its own, so it is returned as a stub ({ id, name, verdict, omitted }); page on with next_offset for the rows after it. Use explain_serve on that (zone, ad group) pair, or on one of its ads, for its detail. Summary counts are exact.'
+
 const BUCKETS = ['directlyTargeted', 'freeRadicals', 'conflicting', 'inertWhitelists', 'excludedByDefault']
 
 /** One-line human header: exact counts always, plus the page state when paged. */
@@ -288,14 +317,17 @@ export function eligibilityHeader (zone, s, page) {
   // slice, it starts at a non-zero offset) with no next_offset. Two reviewers have
   // now filed that as "complete is broken", so the header says it outright rather
   // than leaving the flag to be inferred.
-  const rows = page ? `rows ${page.offset}–${page.offset + page.returned - 1} of ${page.total} for bucket '${page.bucket}'` : ''
+  const filtered = page?.filter ? ` matching filter '${page.filter}'` : ''
+  const rows = page ? `rows ${page.offset}–${page.offset + page.returned - 1} of ${page.total} for bucket '${page.bucket}'${filtered}` : ''
   const paged = page === undefined
     ? ''
     : page.next_offset !== undefined
       ? ` — PARTIAL PAGE: ${rows}; re-run with offset:${page.next_offset} (same bucket) for the rest. Summary counts above are exact for the WHOLE set.`
       : page.offset > 0
         ? ` — FINAL PAGE: ${rows}; no next_offset, so paging is done. complete is false BY DESIGN here — it means "this one response is not the whole slice", not "more pages remain". Page on the absence of next_offset, never on complete. Summary counts above are exact for the WHOLE set.`
-        : ''
+        : page.filter
+          ? ` — FILTERED: ${page.total} rows${filtered}. Summary counts above are exact for the WHOLE set.`
+          : ''
   return `Zone ${zone.name} (${zone.id}) — ${counts}${segmentPickNote(zone)}${paged}`
 }
 
@@ -311,14 +343,16 @@ export function eligibilityHeader (zone, s, page) {
  * order — so `offset`/`next_offset` is a single unambiguous index even for
  * bucket:'all'. Rows are re-split into their named arrays for the response.
  *
- * Last resort only (a single row larger than the whole budget): ids-only with
- * complete:false. Never a silent partial: `complete` and `page.next_offset` say so.
+ * Last resort only (a single row larger than the whole budget): that row as a stub,
+ * with complete:false, and next_offset past it. Never a silent partial: `complete`
+ * and `page.next_offset` say so.
  */
-export function fitEligibility (full, bucket, offset, limit) {
+export function fitEligibility (full, bucket, offset, limit, filter) {
+  const keep = filter ? ROW_FILTERS[filter] : () => true
   const flat = []
   for (const b of BUCKETS) {
     if (bucket !== 'all' && bucket !== b) continue
-    for (const row of full[b] ?? []) flat.push({ bucket: b, row })
+    for (const row of full[b] ?? []) if (keep(row)) flat.push({ bucket: b, row })
   }
   const window = flat.slice(Math.max(0, offset))
 
@@ -330,6 +364,7 @@ export function fitEligibility (full, bucket, offset, limit) {
     const slice = window.slice(0, n)
     const page = {
       bucket,
+      ...(filter ? { filter } : {}),
       offset,
       returned: slice.length,
       total: flat.length,
@@ -363,16 +398,28 @@ export function fitEligibility (full, bucket, offset, limit) {
   }
   if (best) return best
 
-  // Pathological: even one full row overflows the budget. Ids only, flagged.
-  return render({
-    zone: full.zone,
-    summary: full.summary,
+  // Pathological: the row at `offset` alone overflows the budget. Return a stub for
+  // that one row and page past it — returning ids for the whole window instead
+  // would leave every row after it unreachable in full.
+  const [first] = window
+  // Nothing to stub (an offset past the end): the empty page is the answer.
+  if (!first) return whole.result
+  const stub = { id: first.row.id, name: first.row.name, verdict: first.row.verdict, omitted: 'row exceeds the response budget' }
+  const page = {
     bucket,
-    complete: false,
-    note: "A single ad-group row exceeds the response budget, so only ids are returned. Re-run with bucket:'freeRadicals' | 'directlyTargeted' | 'conflicting' to narrow, or use explain_serve for one (zone, ad group) pair. Summary counts are exact.",
-    ids: window.map((s) => s.row.id),
-    scan: full.scan
-  })
+    ...(filter ? { filter } : {}),
+    offset,
+    returned: 1,
+    total: flat.length,
+    ...(offset + 1 < flat.length ? { next_offset: offset + 1 } : {})
+  }
+  const body = { zone: full.zone, summary: full.summary, page, complete: false, note: OVERSIZED_NOTE }
+  for (const b of BUCKETS) {
+    if (bucket !== 'all' && bucket !== b) continue
+    body[b] = first.bucket === b ? [stub] : []
+  }
+  body.scan = full.scan
+  return render(body, page)
 }
 
 /**
@@ -380,11 +427,11 @@ export function fitEligibility (full, bucket, offset, limit) {
  * cannot drift apart on the semantics.
  */
 const VERDICT_DOC = `TARGETING RULES BEYOND zoneId. The ad server checks every params / exceptParams key (and an ad group's legacy geo / devices fields), not just zoneId, against the request it builds for each visit. Every row (and explain_serve) carries verdict: 'eligible' | 'conditional' | 'excluded', with conditional (bool), conditions[], paramBlocks[] and matchedKeys[]; eligible stays a boolean and is true only for verdict 'eligible'.
-- ELIGIBLE: serves on every visit that does not override a zone default, as far as the GROUP's own targeting goes — whether one of its ads serves every visit is a separate question: the ad server judges each ad on its own, so a group whose ads are all geo-only stays eligible, and offers.live (an ad serving every visit) vs offers.conditionalLive with offers.conditionalAds tells them apart. When matchedKeys[] holds an entry with source 'zone-default' or 'segment', the row is eligible BECAUSE of that default: a visit overriding that key with another value drops it (e.g. a group requiring s1=abc on a zone defaulting s1 to abc does not serve an s1=xyz visit). EXCLUDED: serves on no visit that leaves the zone's defaults alone; paramBlocks[] names each blocking rule { path, key, op, values, source: 'zone' | 'zone-default' | 'segment' | 'always', actual, overridable } — overridable:true means a visit overriding that key could let it through. CONDITIONAL: serves on some visits only, and conditions[] says which. A block wins over a condition, and conditions that can never all hold on one visit (a group that requires device mobile with an ad that excludes it) are excluded with reason 'conditions-contradict' and contradiction naming the key; contradictionOverridable:true marks one only the segment pick causes (no segment's template meets every rule, but a template a visit could name would), which lands in excludedByDefault like any overridable block. The tools never assume a visit: they report what config decides and leave the rest as conditions for you to read.
+- ELIGIBLE: serves on every visit that does not override a zone default, as far as the GROUP's own targeting goes — whether one of its ads serves every visit is a separate question: the ad server judges each ad on its own, so a group whose ads are all geo-only stays eligible, and offers.live (an ad serving every visit) vs offers.conditionalLive with offers.ads[] tells them apart. When matchedKeys[] holds an entry with source 'zone-default' or 'segment', the row is eligible BECAUSE of that default: a visit overriding that key with another value drops it (e.g. a group requiring s1=abc on a zone defaulting s1 to abc does not serve an s1=xyz visit). EXCLUDED: serves on no visit that leaves the zone's defaults alone; paramBlocks[] names each blocking rule { path, key, op, values, source: 'zone' | 'zone-default' | 'segment' | 'always', actual, overridable } — overridable:true means a visit overriding that key could let it through. CONDITIONAL: serves on some visits only, and conditions[] says which. A block wins over a condition, and conditions that can never all hold on one visit (a group that requires device mobile with an ad that excludes it) are excluded with reason 'conditions-contradict' and contradiction naming the key; contradictionOverridable:true marks one only the segment pick causes (no segment's template meets every rule, but a template a visit could name would), which lands in excludedByDefault like any overridable block. The tools never assume a visit: they report what config decides and leave the rest as conditions for you to read.
 - Keys the ZONE sets: zoneId, networkId, creativeAssetGroupId, publisherId, zoneType (zone.type), channelType (the type of the zone's channel). The tools treat these as fixed (source 'zone', overridable:false): a real ad tag does not send them. Strictly, a tag that did — as a data-* attribute or prefixed page param — would override them too, since the ad server applies the visit's values last. ZONE DEFAULTS: templateId and every zone.dataAttributesDefault key. A visit overrides a default with a data-* attribute on the ad tag, a page query param prefixed lincx- / adverse- / tgt- (e.g. ?lincx-templateId=…), or — for keys the network maps from the page URL (its pageUrlKeys, e.g. ?sub=… → article) — the page URL itself. So a block on a default is overridable:true, an untargeted group it blocks is listed in excludedByDefault instead of dropped, and an eligible row that matched a default (matchedKeys source 'zone-default') holds only while visits leave that key alone.
 - TEMPLATE ON A SEGMENTS ZONE: per visit the ad server picks one candidate — a segment that passes its own allow/block lists and has allocation, or the zone itself, which competes only when it passes its own lists and those segments leave allocation under 100 — unless the visit names a templateId (it wins) or a segmentId (it pins that segment). The draw is over 100 and walks the segments in order, so a segment starting past a cumulative 100% is never a candidate. If the zone itself fails its lists while the segments that pass total under 100%, the remaining share of unpinned visits gets no ad at all: zone.unservedShare gives it in percent as bounds { min, max, atDefaults? }: no unpinned visit gets less than min or more than max (zone-set keys taken as fixed, as everywhere in these tools), atDefaults is the exact share for visits keeping the zone's defaults (set when no list there reads a visit key), and zoneRules[] { path, key, op: 'requires' | 'excludes', values, valuesTotal, source: 'request' | 'zone-default' | 'zone', actual? } names the rules in the zone's own lists that some visit fails — an unserved visit fails at least one of them, and a visit passing all of them is served (source 'zone': a value the zone sets, failing every visit) — and the header NOTE words each as the condition those visits meet; min === max means every unpinned visit gets that share. Lists reading a visit key or a zone default make the share depend on the visit. Segments whose lists exclude each other (one mobile-only, one desktop-only, as persona splits usually are) never pass together, so the real share can sit well inside the bounds. The header says so. When the candidates disagree on a templateId rule, the row is conditional with source 'segment' and the condition lists candidates[] { segmentId (null = the zone itself), templateId, passes }: the row serves on visits that land on a candidate with passes:true.
 - VISIT keys — device, deviceOs, geoState, geoRegion, geoPostal, geoCity, geoCountry, geoCountryName, geoIP, the dateTime* keys, page-URL keys, custom keys — only the visit decides. A params (whitelist) rule on one is a condition with op 'requires': the row serves only on visits whose key holds one of values[]. An exceptParams (blacklist) rule is a condition with op 'excludes': it serves on every visit EXCEPT those whose key holds one of values[]. A row with several conditions needs all of them to hold, and an offer needs its group's and its ad's. What a visit carries: device (desktop | mobile | tablet | smarttv | console | wearable | embedded) and deviceOs (ios | android | other), both from the user agent — desktop / other when it says nothing — and never settable by a query param; geoState — the tag's data-geo-state when set, else the visitor's geo-lookup region code (uppercase, e.g. TX); a visitor whose geo lookup returns no region is sent with an empty geoState (as is a direct API call that sends none), and an empty geoState fails every geoState / geo whitelist; and every dateTime* key as a lowercase weekday plus unpadded hour (dateTimeUTC: 'mon13'), taken from the visit's timestamp — the tag sends the browser's local time, so dateTimeVisitor is the visitor's own clock (its UTC offset, not its geo), and a visit with no timestamp gets the server's UTC time, making dateTimeVisitor equal dateTimeUTC. A visit's own parameters can set geoState and the dateTime* keys directly. A key a visit does not carry fails every whitelist on it and fires no blacklist. Values compare as exact strings: params.geoState is CASE-SENSITIVE — a lowercase rule like 'tx' never matches a lookup-derived TX — while the legacy geo field is matched uppercased.
-- Conditional rows are counted on their own (…Conditional / …ConditionalLive), in neither the eligible nor the excluded counts. summary.conditionKeys names every visit key the zone's conditional rows depend on — { requires: { values }, excludes: { values }, groups, segment? }: requires lists the values whitelists need, excludes the values blacklists refuse, and segment:true marks a key the segment pick decides rather than a value the visit carries; offers.conditionalAds lists (up to 10) ads whose OWN rules depend on the visit. get_event_stats_keys shows real values for custom keys.
+- Conditional rows are counted on their own (…Conditional / …ConditionalLive), in neither the eligible nor the excluded counts. summary.conditionKeys names every visit key the zone's conditional rows depend on — { requires: { values }, excludes: { values }, groups, segment? }: requires lists the values whitelists need, excludes the values blacklists refuse, and segment:true marks a key the segment pick decides rather than a value the visit carries; offers.ads[] gives each ad's own conditions. get_event_stats_keys shows real values for custom keys.
 - matchedKeys[] lists the keys a whitelist matched (e.g. a free radical whose params.templateId names the zone's template) — it stays a free radical: free radical means no params.zoneId, open within the CAG.
 - exceptParams.position / zoneId-position / templateId-position are slot rules the ad server applies AFTER selecting an ad (where it may be placed), so they say nothing about whether a group serves and are not reported. segmentId, on a segments zone, is set by the segment pick like templateId and read per candidate; elsewhere it is a visit key.
 - A list naming every value a key can take — all 168 dateTime* day-hours, all seven devices, all three deviceOs values — matches every visit: as a whitelist it counts as no rule, as a blacklist it excludes the row on every visit (source 'always'). Empty lists are no rule.
@@ -486,23 +533,27 @@ FREE RADICALS ARE REPORTED AT TWO GRAINS. The 'freeRadicals' row set is HOST gra
 
 BOTH GRAINS HAVE A LIVE AXIS, AND ONLY THE LIVE ONE IS EXPOSURE. summary.freeRadicalOffers sums across dormant hosts (a host whose campaign is off still contributes offers), so on its own it reads as live leak and is not; summary.freeRadicalOffersLive counts only offers whose whole chain is on (campaign + ad group + ad + viable creative) — that is what is leaking into the zone right now. The gap between them is standing-trap volume: config that lands in the zone the moment one toggle flips, most often the campaign. Per row, offers.freeRadical > 0 with offers.freeRadicalLive === 0 identifies exactly those hosts.
 
-Every row carries offers: { total, inScope, live, conditional, conditionalLive, freeRadical, freeRadicalLive, freeRadicalConditional, freeRadicalConditionalLive, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, inertWhitelisted, freeRadicalAdIds[], inertWhitelistedAdIds[], conditionalAds[] } so a pure free-radical subset is derivable. offers.inScope is TARGETING ONLY — the group is eligible and this ad passes its own rules on every visit — and says nothing about on/off state; offers.live is the same set with the whole chain on; offers.conditional counts the pairs that depend on the visit, and offers.conditionalAds names (up to 10) ads whose own rules do. summary also totals adLevelTargetedOffers, adLevelBlacklistedOffers, inertWhitelistGroups, inertWhitelistOffers and excludedByDefault.
+Every row carries offers: { total, inScope, live, conditional, conditionalLive, freeRadical, freeRadicalLive, freeRadicalConditional, freeRadicalConditionalLive, adLevelTargeted, adLevelBlacklisted, confinedElsewhere, inertWhitelisted, freeRadicalAdIds[], inertWhitelistedAdIds[], ads[] } so a pure free-radical subset is derivable. offers.inScope is TARGETING ONLY — the group is eligible and this ad passes its own rules on every visit — and says nothing about on/off state; offers.live is the same set with the whole chain on; offers.conditional counts the pairs that depend on the visit.
+
+EVERY AD IS LISTED. offers.ads[] has one entry per ad in the group: { adId, verdict, live, off?, conditions?, reasons?, paramBlocks?, contradiction?, contradictionOverridable? }, empty fields left out. verdict is the pair's (group and ad together — the verdict the counts use); conditions / reasons / paramBlocks are the ad's OWN (the group's are on the row): conditions say which visits a conditional ad serves on, and reasons + paramBlocks name what blocks an excluded one (e.g. 'ad-blacklisted', 'ad-targets-other-zones', 'ad-param-mismatch' with the rule). They are kept even when the group is excluded, so on an excludedByDefault row they say which ads would still be blocked once a visit lifts the group's default; an excluded ad with no reasons of its own is out because its group is. live is the whole chain (campaign, ad group, ad, creative) whatever the verdict; off names what keeps a not-live ad dark: 'campaign-or-ad-group' (the row's off_reason says which), 'ad-disabled' or 'ad-archived', 'creative-missing' or 'creative-archived'. A campaign or creative hidden from your permissions is left out of the lists this tool reads, so it reads as off ('campaign-or-ad-group' / 'creative-missing'); explain_serve on that ad says the lookup failed instead. So the ads that can render on a visit keeping the zone's defaults are verdict 'eligible' and live:true; verdict 'conditional' and live:true render on the visits their conditions name. filter narrows the rows: 'liveOnlyOnConditionalAds' (eligible groups whose live ads all depend on the visit) or 'hasLiveConditionalAd' (any row with offers.conditionalLive > 0); with a filter the arrays no longer match the summary counts. summary also totals adLevelTargetedOffers, adLevelBlacklistedOffers, inertWhitelistGroups, inertWhitelistOffers and excludedByDefault.
 
 Each row also carries the same live rollup as get_zone_targeting_inventory (campaign_on — enabled, not archived AND inside the campaign's flight window; adgroup_on, has_live_viable_ad, fully_live, off_reason[] — 'campaign' vs 'campaign-window' tell a switched-off campaign from an expired one — scoped_via[]) plus eligible, verdict, conditional, via[], reasons[], conflicts[], conditions[], paramBlocks[], matchedKeys[]. scoped_via uses the SAME five-value enum as get_zone_targeting_inventory and explain_serve ('ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection').
 
-LIVE GROUP COUNTS ARE READ FROM THE OFFERS, NOT FROM fully_live. A row's fully_live is the inventory tool's flag: it counts any live ad that is not excluded on its own, so a group whose only live ads are geo-only reads fully_live:true. The summary does not: directlyTargetedLive and freeRadicalHostsLive count an eligible group only when it has a live ad that serves every visit that keeps the zone's defaults (offers.live > 0 — the same caveat as 'eligible': an ad that matched only a zone default drops on a visit overriding it, and on a zone with refusesDefaultVisits, servesOnlyPinnedVisits or unservedShare 'every visit' means the visits that zone serves); an eligible group whose live ads ALL depend on the visit (offers.live === 0, offers.conditionalLive > 0) is counted in directlyTargetedLiveOnConditionalAds / freeRadicalHostsLiveOnConditionalAds instead, and its verdict stays 'eligible' — the group's own rules pass, and its ads are alternatives (the ad server judges each ad on its own, so any one serving is enough), which conditions[] (all must hold on one visit) cannot express; offers.conditionalAds lists those ads with their conditions. The …ConditionalLive counts likewise need offers.conditionalLive > 0. A group whose conditional ads together cover every visit (one ad mobile-only, another never-mobile) still lands in …LiveOnConditionalAds, so that count can include groups that in fact serve everyone. Counting rows with fully_live:true can therefore exceed these counts.
+LIVE GROUP COUNTS ARE READ FROM THE OFFERS, NOT FROM fully_live. A row's fully_live is the inventory tool's flag: it counts any live ad that is not excluded on its own, so a group whose only live ads are geo-only reads fully_live:true. The summary does not: directlyTargetedLive and freeRadicalHostsLive count an eligible group only when it has a live ad that serves every visit that keeps the zone's defaults (offers.live > 0 — the same caveat as 'eligible': an ad that matched only a zone default drops on a visit overriding it, and on a zone with refusesDefaultVisits, servesOnlyPinnedVisits or unservedShare 'every visit' means the visits that zone serves); an eligible group whose live ads ALL depend on the visit (offers.live === 0, offers.conditionalLive > 0) is counted in directlyTargetedLiveOnConditionalAds / freeRadicalHostsLiveOnConditionalAds instead, and its verdict stays 'eligible' — the group's own rules pass, and its ads are alternatives (the ad server judges each ad on its own, so any one serving is enough), which conditions[] (all must hold on one visit) cannot express; offers.ads[] lists those ads with their conditions. filter:'liveOnlyOnConditionalAds' returns just these groups. The …ConditionalLive counts likewise need offers.conditionalLive > 0. A group whose conditional ads together cover every visit (one ad mobile-only, another never-mobile) still lands in …LiveOnConditionalAds, so that count can include groups that in fact serve everyone. Counting rows with fully_live:true can therefore exceed these counts.
 
-EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A zone with too many groups for one response is PAGED, not degraded: use bucket to select one bucket (e.g. bucket:'freeRadicals' for a pure free-radical subset) and offset to walk the rest. The response carries page: { bucket, offset, returned, total, next_offset? } and complete (true only when this ONE response holds the entire selected slice — offset 0 and no next_offset). summary is ALWAYS exact over the full set, regardless of bucket/offset — so with bucket:'all' and complete:true the arrays match the summary counts one-for-one (freeRadicals = freeRadicalHosts + freeRadicalHostsConditional). The only case where a row body is not returned is pathological (a single ad group whose row alone exceeds the whole response budget): then ids are returned with complete:false and a note, never a silent partial. Whole-network scan server-side; compact result in the content text (header + compact JSON).`,
+EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A zone with too many groups for one response is PAGED, not degraded: use bucket to select one bucket (e.g. bucket:'freeRadicals' for a pure free-radical subset) and offset to walk the rest. The response carries page: { bucket, offset, returned, total, next_offset? } and complete (true only when this ONE response holds the entire selected slice — offset 0 and no next_offset). summary is ALWAYS exact over the full set, regardless of bucket/offset — so with bucket:'all' and complete:true the arrays match the summary counts one-for-one (freeRadicals = freeRadicalHosts + freeRadicalHostsConditional). The only case where a row body is not returned is pathological (a single ad group whose row alone exceeds the whole response budget, e.g. a group with hundreds of ads): that one row comes back as a stub { id, name, verdict, omitted } with complete:false and a note, and next_offset still walks on to the rows after it — never a silent partial. Whole-network scan server-side; compact result in the content text (header + compact JSON).`,
     inputSchema: z.object({
       ...requiredNetworkIdShape,
       zoneId: z.string().describe('Zone ID to list eligible ad groups for'),
       bucket: z.enum(['all', 'directlyTargeted', 'freeRadicals', 'conflicting', 'inertWhitelists', 'excludedByDefault']).default('all')
         .describe("Which bucket(s) to return rows for. Summary counts always cover the full set; this only narrows the ROWS so a large zone fits in one response (e.g. 'freeRadicals' for a pure free-radical subset, 'inertWhitelists' for ads whose zone whitelist is dead because their group cannot reach the zone, or 'excludedByDefault' for groups only a zone default keeps out)."),
       offset: z.number().int().min(0).default(0)
-        .describe('Row offset within the selected bucket(s) — pass the next_offset from a previous call to continue.')
+        .describe('Row offset within the selected bucket(s) — pass the next_offset from a previous call to continue.'),
+      filter: z.enum(['liveOnlyOnConditionalAds', 'hasLiveConditionalAd']).optional()
+        .describe("Return only the rows matching this, within the selected bucket(s): 'liveOnlyOnConditionalAds' = eligible groups whose live ads ALL depend on the visit (offers.live 0, offers.conditionalLive > 0 — the groups summary.directlyTargetedLiveOnConditionalAds / freeRadicalHostsLiveOnConditionalAds count); 'hasLiveConditionalAd' = any group with a live conditional offer (offers.conditionalLive > 0). Paging (offset / next_offset / page.total) runs over the filtered rows; summary stays exact over the whole zone.")
     }).strict(),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  }, async ({ zoneId, bucket, offset, network_id }, extra) => {
+  }, async ({ zoneId, bucket, offset, filter, network_id }, extra) => {
     const g = await guard(extra, network_id)
     if (!g.ok) return g.result
     try {
@@ -530,7 +581,7 @@ EVERY RETURNED ROW IS COMPLETE — the offer payload is never stripped to fit. A
       })
       return fitEligibility(
         { zone: zoneLite, summary, directlyTargeted: direct, freeRadicals: radicals, conflicting: conflict, inertWhitelists: inert, excludedByDefault: byDefault, scan: idx.scan },
-        bucket, offset, RESPONSE_SIZE_LIMIT
+        bucket, offset, RESPONSE_SIZE_LIMIT, filter
       )
     } catch (e) { return err(handleWorkApiError(e)) }
   })
@@ -621,7 +672,7 @@ ${VERDICT_DOC}`,
   // 3) (zone, adGroup|ad) pair → why did/didn't X serve here
   server.registerTool('explain_serve', {
     title: 'Explain Serve',
-    description: `Explain, for a single (zone, ad group OR ad) pair, whether it is eligible to serve in the zone, by what path (via[]), and if not, why not (reasons[], paramBlocks[]) — the "why did X serve in this zone?" direction of the eligibility join. Pass exactly one of adGroupId or adId (an adId is resolved to its ad group; its own ad-level whitelist/blacklist for the zone and its other params keys are also reported). The header reads 'IS eligible' (adding '; holds only while the visit leaves <key> at its zone default <value>' when the verdict rests on a default), 'is CONDITIONAL … only for visits where <key> ∈ [values]' (or '… serves except for visits where …'), or 'is NOT eligible' naming each blocked rule and whether a visit overriding a zone default would change it. With an adId the answer is at the OFFER grain (ad group × ad): the top-level verdict, conditions[], paramBlocks[], matchedKeys[], contradiction and excludedByDefault are the PAIR's (the group's rules and the ad's together, as the header reads them), and it adds offer: { verdict, conditional, conditions[], paramBlocks[], matchedKeys[] (the ad's own rules alone), scoped_via[] — 'ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection' — freeRadical, true only when the pair reaches the zone without any direct targeting — via the shared CAG, or via no CAG filter at all on a zone with no CAG (untargeted group AND untargeted ad, net of blacklists at both levels), and conflicts[], which carries 'inert-ad-level-whitelist' when this ad whitelists the zone but its group cannot reach it, so the whitelist is dead config that never fires }; the top-level verdict is then the pair's. If the zone itself is archived the answer is that alone: the ad server refuses archived zones, so nothing serves there at any targeting. Whole-network scan server-side.
+    description: `Explain, for a single (zone, ad group OR ad) pair, whether it is eligible to serve in the zone, by what path (via[]), and if not, why not (reasons[], paramBlocks[]) — the "why did X serve in this zone?" direction of the eligibility join. Pass exactly one of adGroupId or adId (an adId is resolved to its ad group; its own ad-level whitelist/blacklist for the zone and its other params keys are also reported). The header reads 'IS eligible' (adding '; holds only while the visit leaves <key> at its zone default <value>' when the verdict rests on a default), 'is CONDITIONAL … only for visits where <key> ∈ [values]' (or '… serves except for visits where …'), or 'is NOT eligible' naming each blocked rule and whether a visit overriding a zone default would change it. With an adId the answer is at the OFFER grain (ad group × ad): the top-level verdict, conditions[], paramBlocks[], matchedKeys[], contradiction and excludedByDefault are the PAIR's (the group's rules and the ad's together, as the header reads them), and it adds offer: { verdict, conditional, conditions[], paramBlocks[], matchedKeys[] (the ad's own rules alone), scoped_via[] — 'ad-group-whitelist' | 'ad-group-blacklist' | 'ad-level-whitelist' | 'ad-level-blacklist' | 'zone-selection' — freeRadical, true only when the pair reaches the zone without any direct targeting — via the shared CAG, or via no CAG filter at all on a zone with no CAG (untargeted group AND untargeted ad, net of blacklists at both levels), and conflicts[], which carries 'inert-ad-level-whitelist' when this ad whitelists the zone but its group cannot reach it, so the whitelist is dead config that never fires, reasons? (the ad's own, kept even when its group is what excludes the pair), plus live, off?, campaign_on and adgroup_on — the same liveness get_zone_eligible_ad_groups gives each ad in offers.ads[]: live is the whole chain (campaign on and inside its flight window, ad group, ad, creative), and off names what keeps it dark ('campaign-or-ad-group' — campaign_on / adgroup_on say which — 'ad-disabled' or 'ad-archived', 'creative-missing' or 'creative-archived'); when the campaign or creative cannot be read (e.g. hidden from your permissions) liveUnknown says which, and live is false if what was read already shows the ad off (off lists only those causes), else null (campaign_on / adgroup_on stay when they were read); the eligibility answer is unaffected; the header ends '; the ad is live', '; the ad is switched on, but not eligible here (see reasons)' (live, verdict excluded), '; the ad is NOT live (off: …)' or '; whether the ad is live is unknown (…)' }; the top-level verdict is then the pair's. If the zone itself is archived the answer is that alone: the ad server refuses archived zones, so nothing serves there at any targeting. Whole-network scan server-side.
 
 ${VERDICT_DOC}`,
     inputSchema: z.object({
@@ -670,6 +721,36 @@ ${VERDICT_DOC}`,
       // whether this pair is a free radical (reaches the zone with no direct targeting:
       // shared CAG, or no CAG filter at all when the zone has no CAG).
       const offer = ad ? offerEligibility({ group: verdict, adGroup, ad, zone, request: req }) : undefined
+      // With an adId, the same liveness the eligibility rows carry per ad: the
+      // campaign → ad group chain, then the ad and its creative.
+      let liveness
+      if (ad) {
+        // A lookup failing for any reason but a 404 (e.g. a 403 on a campaign hidden
+        // from this user) leaves liveness unknown; the targeting answer still stands.
+        const read = (path) => fetchOrNull(g.session, path).then((e) => ({ e }), (failure) => ({ failure }))
+        const [campaign, creative] = await Promise.all([
+          agE.campaignId ? read(`/api/campaigns/${agE.campaignId}`) : { e: null },
+          ad.creativeId ? read(`/api/creatives/${ad.creativeId}`) : { e: null }
+        ])
+        const unread = [campaign.failure ? 'campaign' : '', creative.failure ? 'creative' : ''].filter(Boolean)
+        const chain = chainState(campaign.e ?? undefined, agE, Date.now())
+        // Only what was read counts: an unread campaign says nothing about the
+        // chain, an unread creative nothing about the creative. Anything read that
+        // is off makes the ad NOT live even when another lookup failed.
+        const chainOff = !chain.adgroup_on || (!campaign.failure && !chain.campaign_on)
+        const creatives = creative.e ? { [ad.creativeId]: { archived: creative.e.archived } } : {}
+        const off = [
+          ...(chainOff ? ['campaign-or-ad-group'] : []),
+          ...adOffReasons(ad, creatives).filter((r) => !creative.failure || !r.startsWith('creative-'))
+        ]
+        liveness = {
+          live: off.length ? false : unread.length ? null : true,
+          ...(off.length ? { off } : {}),
+          ...(unread.length ? { liveUnknown: `its ${unread.join(' and ')} could not be read` } : {}),
+          ...(campaign.failure ? {} : { campaign_on: chain.campaign_on }),
+          adgroup_on: chain.adgroup_on
+        }
+      }
       const reasons = offer ? offer.reasons : verdict.reasons
       const effective = offer ? offer.verdict : verdict.verdict
 
@@ -685,7 +766,16 @@ ${VERDICT_DOC}`,
         conditions: [...verdict.conditions, ...(offer?.conditions ?? [])],
         paramBlocks: [...verdict.paramBlocks, ...(offer?.paramBlocks ?? [])]
       })
-      return pack(`${header}${segmentPickNote(zoneLite, 'this answer describes')}`, {
+      // live is the chain alone, so an excluded ad can still be live; the header says
+      // so rather than read "NOT eligible …; the ad is live".
+      const live = !liveness
+        ? ''
+        : liveness.live === null
+          ? `; whether the ad is live is unknown (${liveness.liveUnknown})`
+          : !liveness.live
+              ? `; the ad is NOT live (off: ${liveness.off.join(', ')}${liveness.liveUnknown ? `; ${liveness.liveUnknown}` : ''})`
+              : effective === 'excluded' ? '; the ad is switched on, but not eligible here (see reasons)' : '; the ad is live'
+      return pack(`${header}${live}${segmentPickNote(zoneLite, 'this answer describes')}`, {
         zone: zoneLite,
         subject: ad ? { adId: ad.id, adGroupId: adGroup.id } : { adGroupId: adGroup.id },
         ...verdict,
@@ -717,7 +807,9 @@ ${VERDICT_DOC}`,
                 ...(offer.contradictionOverridable ? { contradictionOverridable: true } : {}),
                 scoped_via: offer.scoped_via,
                 freeRadical: offer.freeRadical,
-                conflicts: offer.conflicts
+                conflicts: offer.conflicts,
+                ...(offer.adReasons.length ? { reasons: offer.adReasons } : {}),
+                ...liveness
               }
             }
           : {})

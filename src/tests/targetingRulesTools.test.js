@@ -42,7 +42,29 @@ const ADS = [
   ad('T1-ad0', 'T1', { exceptParams: { templateId: [T0] } })
 ]
 
-async function setup ({ channel = true, channelError, hiddenFromList = false, withZU = false } = {}) {
+// Ads whose liveness is what differs: L01's only live ad is geo-only, L02's ads are
+// each dark for a different reason, and L03 sits under a switched-off campaign.
+const LIVENESS = {
+  groups: [group('L01'), group('L02'), group('L03', { campaignId: 'c2' }), group('L04')],
+  ads: [
+    ad('L01-tx', 'L01', { params: { geoState: ['TX'] } }),
+    ad('L01-ca', 'L01', { params: { geoState: ['CA'] }, enabled: false }),
+    ad('L02-off', 'L02', { enabled: false }),
+    ad('L02-arch', 'L02', { creativeId: 'cr2' }),
+    ad('L02-nocr', 'L02', { creativeId: 'crX' }),
+    ad('L02-native', 'L02', { params: { zoneType: ['Native'] } }),
+    ad('L02-adarch', 'L02', { archived: true }),
+    ad('L03-ad0', 'L03'),
+    ad('L04-plain', 'L04'),
+    ad('L04-tx', 'L04', { params: { geoState: ['TX'] }, enabled: false })
+  ]
+}
+
+async function setup ({ channel = true, channelError, hiddenFromList = false, withZU = false, liveness = false, forbidden } = {}) {
+  const groups = liveness ? [...GROUPS, ...LIVENESS.groups] : GROUPS
+  const ads = liveness ? [...ADS, ...LIVENESS.ads] : ADS
+  const campaigns = [{ id: 'c1', enabled: true }, { id: 'c2', enabled: false }]
+  const creatives = [{ id: 'cr1' }, { id: 'cr2', archived: true }]
   const calls = []
   const byPath = new Map([
     [`/api/zones/${Z0.id}`, Z0],
@@ -53,12 +75,14 @@ async function setup ({ channel = true, channelError, hiddenFromList = false, wi
     [`/api/zones/${ZP.id}`, ZP],
     [`/api/zones/${ZU.id}`, ZU],
     ['/api/zones', { data: [Z0, Z1, ZR, ...(withZU ? [ZU] : [])] }],
-    ['/api/ad-groups', { data: GROUPS }],
-    ['/api/campaigns', { data: [{ id: 'c1', enabled: true }] }],
-    ['/api/ads', { data: ADS }],
-    ['/api/creatives', { data: [{ id: 'cr1' }] }],
-    ...GROUPS.map((g) => [`/api/ad-groups/${g.id}`, g]),
-    ...ADS.map((a) => [`/api/ads/${a.id}`, a])
+    ['/api/ad-groups', { data: groups }],
+    ['/api/campaigns', { data: liveness ? campaigns : campaigns.slice(0, 1) }],
+    ['/api/ads', { data: ads }],
+    ['/api/creatives', { data: liveness ? creatives : creatives.slice(0, 1) }],
+    ...groups.map((g) => [`/api/ad-groups/${g.id}`, g]),
+    ...ads.map((a) => [`/api/ads/${a.id}`, a]),
+    ...campaigns.map((c) => [`/api/campaigns/${c.id}`, c]),
+    ...creatives.map((c) => [`/api/creatives/${c.id}`, c])
   ])
   const mocks = {
     '../services/workApi.js': {
@@ -66,6 +90,7 @@ async function setup ({ channel = true, channelError, hiddenFromList = false, wi
         calls.push({ method, path, networkId: opts?.networkId })
         const status = (code) => Object.assign(new Error(`HTTP ${code}`), { status: code })
         if (channelError && path.startsWith('/api/channels/')) throw status(channelError)
+        if (forbidden && path === forbidden) throw status(403)
         if (!byPath.has(path) && path.startsWith('/api/channels/')) throw status(404)
         return byPath.get(path) ?? { data: [] }
       },
@@ -111,13 +136,106 @@ test('get_zone_eligible_ad_groups > conditional rows counted apart, the visit ke
   t.true(header.includes('conditional on: device, deviceOs, geoState'))
 })
 
-test('get_zone_eligible_ad_groups > a row carries its own conditions and names its conditional ads', async t => {
+test('get_zone_eligible_ad_groups > a row carries its own conditions and lists every ad', async t => {
   const tools = await setup()
   const { json } = parse(await call(tools.get_zone_eligible_ad_groups, eligible()))
   const byId = new Map(json.freeRadicals.map((r) => [r.id, r]))
   t.deepEqual(byId.get('G05').conditions, [{ path: 'params.device', key: 'device', op: 'requires', values: ['mobile'], valuesTotal: 1, source: 'request' }])
   t.like(byId.get('G00').offers, { total: 2, inScope: 1, conditional: 1 })
-  t.deepEqual(byId.get('G00').offers.conditionalAds, [{ adId: 'G00-ad1', conditions: [{ path: 'params.deviceOs', key: 'deviceOs', op: 'requires', values: ['ios'], valuesTotal: 1, source: 'request' }] }])
+  t.is(byId.get('G00').offers.conditionalAds, undefined)
+  t.deepEqual(byId.get('G00').offers.ads, [
+    { adId: 'G00-ad0', verdict: 'eligible', live: true },
+    { adId: 'G00-ad1', verdict: 'conditional', live: true, conditions: [{ path: 'params.deviceOs', key: 'deviceOs', op: 'requires', values: ['ios'], valuesTotal: 1, source: 'request' }] }
+  ])
+})
+
+test('get_zone_eligible_ad_groups > each dark ad says what is off', async t => {
+  const tools = await setup({ liveness: true })
+  const { json } = parse(await call(tools.get_zone_eligible_ad_groups, eligible()))
+  const byId = new Map(json.freeRadicals.map((r) => [r.id, r]))
+  t.deepEqual(byId.get('L02').offers.ads.map((a) => [a.adId, a.verdict, a.live, a.off, a.reasons]), [
+    ['L02-off', 'eligible', false, ['ad-disabled'], undefined],
+    ['L02-arch', 'eligible', false, ['creative-archived'], undefined],
+    ['L02-nocr', 'eligible', false, ['creative-missing'], undefined],
+    ['L02-native', 'excluded', true, undefined, ['ad-param-mismatch']],
+    ['L02-adarch', 'eligible', false, ['ad-archived'], undefined]
+  ])
+  const l03 = byId.get('L03')
+  t.deepEqual(l03.off_reason, ['campaign'])
+  t.deepEqual(l03.offers.ads, [{ adId: 'L03-ad0', verdict: 'eligible', live: false, off: ['campaign-or-ad-group'] }])
+})
+
+test('get_zone_eligible_ad_groups > filter liveOnlyOnConditionalAds returns the groups the summary only counts', async t => {
+  const tools = await setup({ liveness: true })
+  const { header, json } = parse(await call(tools.get_zone_eligible_ad_groups, eligible({ filter: 'liveOnlyOnConditionalAds' })))
+  t.deepEqual([...json.directlyTargeted, ...json.freeRadicals].map((r) => r.id), ['L01'])
+  t.is(json.summary.freeRadicalHostsLiveOnConditionalAds + json.summary.directlyTargetedLiveOnConditionalAds, 1)
+  t.like(json.page, { filter: 'liveOnlyOnConditionalAds', total: 1, returned: 1 })
+  t.true(json.complete)
+  t.true(header.includes("FILTERED: 1 rows matching filter 'liveOnlyOnConditionalAds'"))
+  const l01 = json.freeRadicals[0]
+  t.deepEqual(l01.offers.ads.map((a) => [a.adId, a.verdict, a.live]), [['L01-tx', 'conditional', true], ['L01-ca', 'conditional', false]])
+})
+
+test('get_zone_eligible_ad_groups > filter hasLiveConditionalAd keeps every row with a live conditional offer, and pages over them', async t => {
+  const tools = await setup({ liveness: true })
+  const all = parse(await call(tools.get_zone_eligible_ad_groups, eligible())).json
+  t.like(all.freeRadicals.find((r) => r.id === 'L04').offers, { conditional: 1, conditionalLive: 0 })
+  const { json } = parse(await call(tools.get_zone_eligible_ad_groups, eligible({ filter: 'hasLiveConditionalAd' })))
+  const ids = [...json.directlyTargeted, ...json.freeRadicals, ...json.conflicting, ...json.inertWhitelists, ...json.excludedByDefault].map((r) => r.id)
+  t.deepEqual([...ids].sort(), ['G00', 'G05', 'G06', 'G11', 'L01'])
+  t.deepEqual(json.summary, all.summary)
+  const tail = parse(await call(tools.get_zone_eligible_ad_groups, eligible({ filter: 'hasLiveConditionalAd', offset: 1 }))).json
+  t.like(tail.page, { offset: 1, total: 5, returned: 4 })
+})
+
+test('explain_serve > a campaign or creative it cannot read leaves liveness unknown and keeps the answer', async t => {
+  for (const [forbidden, which] of [['/api/campaigns/c1', 'campaign'], ['/api/creatives/cr1', 'creative']]) {
+    const tools = await setup({ forbidden })
+    const { header, json } = parse(await call(tools.explain_serve, { zoneId: Z0.id, adId: 'G13-ad0' }))
+    t.true(header.includes('IS eligible'), which)
+    t.true(header.endsWith(`; whether the ad is live is unknown (its ${which} could not be read)`), which)
+    t.like(json.offer, { verdict: 'eligible', live: null, liveUnknown: `its ${which} could not be read`, adgroup_on: true })
+    t.is(json.offer.off, undefined)
+    t.is(json.offer.campaign_on, which === 'creative' ? true : undefined)
+  }
+})
+
+test('explain_serve > a failed lookup does not hide what was read showing the ad off', async t => {
+  const tools = await setup({ liveness: true, forbidden: '/api/creatives/cr1' })
+  const off = parse(await call(tools.explain_serve, { zoneId: Z0.id, adId: 'L02-off' }))
+  t.like(off.json.offer, { live: false, off: ['ad-disabled'], liveUnknown: 'its creative could not be read', campaign_on: true })
+  t.true(off.header.endsWith('; the ad is NOT live (off: ad-disabled; its creative could not be read)'))
+  const dormant = parse(await call(tools.explain_serve, { zoneId: Z0.id, adId: 'L03-ad0' }))
+  t.like(dormant.json.offer, { live: false, off: ['campaign-or-ad-group'], campaign_on: false })
+  const hidden = await setup({ liveness: true, forbidden: '/api/campaigns/c2' })
+  const unknown = parse(await call(hidden.explain_serve, { zoneId: Z0.id, adId: 'L03-ad0' }))
+  t.like(unknown.json.offer, { live: null, liveUnknown: 'its campaign could not be read', adgroup_on: true })
+  t.is(unknown.json.offer.off, undefined)
+})
+
+test('explain_serve > with an adId it says whether the ad is live, and what is off', async t => {
+  const tools = await setup({ liveness: true })
+  const live = parse(await call(tools.explain_serve, { zoneId: Z0.id, adId: 'G13-ad0' }))
+  t.true(live.header.includes('; the ad is live'))
+  t.like(live.json.offer, { live: true, campaign_on: true, adgroup_on: true })
+  t.is(live.json.offer.off, undefined)
+  const arch = parse(await call(tools.explain_serve, { zoneId: Z0.id, adId: 'L02-arch' }))
+  t.true(arch.header.includes('IS eligible'))
+  t.true(arch.header.includes('; the ad is NOT live (off: creative-archived)'))
+  t.like(arch.json.offer, { verdict: 'eligible', live: false, off: ['creative-archived'] })
+  const missing = parse(await call(tools.explain_serve, { zoneId: Z0.id, adId: 'L02-nocr' }))
+  t.deepEqual(missing.json.offer.off, ['creative-missing'])
+  const dormant = parse(await call(tools.explain_serve, { zoneId: Z0.id, adId: 'L03-ad0' }))
+  t.like(dormant.json.offer, { live: false, off: ['campaign-or-ad-group'], campaign_on: false, adgroup_on: true })
+  const native = parse(await call(tools.explain_serve, { zoneId: Z0.id, adId: 'L02-native' }))
+  t.true(native.header.includes('is NOT eligible'))
+  t.true(native.header.endsWith('; the ad is switched on, but not eligible here (see reasons)'))
+  t.like(native.json.offer, { verdict: 'excluded', live: true })
+  t.deepEqual(native.json.offer.reasons, ['ad-param-mismatch'])
+  const group = parse(await call(tools.explain_serve, { zoneId: Z0.id, adGroupId: 'L02' }))
+  t.is(group.json.offer, undefined)
+  t.false(group.header.includes('the ad is'))
 })
 
 test('get_zone_eligible_ad_groups > the ad excluded by template params is not an in-scope offer', async t => {

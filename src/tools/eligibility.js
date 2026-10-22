@@ -733,6 +733,10 @@ export function offerEligibility ({ group, adGroup, ad, zone, request }) {
     scoped_via,
     freeRadical,
     reasons,
+    // The ad's OWN reasons, which `reasons` drops when the group is excluded
+    // (combineVerdicts stops at the group), plus a clash only the pair causes — an
+    // excluded group's own clash stays the group's.
+    adReasons: [...av.reasons, ...(groupVerdict !== 'excluded' && reasons.includes('conditions-contradict') ? ['conditions-contradict'] : [])],
     conflicts,
     conditions: av.conditions,
     paramBlocks: av.paramBlocks,
@@ -741,22 +745,49 @@ export function offerEligibility ({ group, adGroup, ad, zone, request }) {
   }
 }
 
-const CONDITIONAL_ADS_CAP = 10
+/**
+ * One entry per ad, so a row says what can render down to the ad and why each ad
+ * does or does not. `verdict` is the PAIR's (group and ad together, as the counts
+ * read it); `conditions` / `paramBlocks` / `reasons` are the ad's OWN — the group's
+ * are on the row itself, and the ad's reasons are kept even under an excluded group,
+ * where a visit lifting the group's block would still meet them. `off` says what
+ * keeps a not-live ad dark:
+ * 'campaign-or-ad-group' (the row's off_reason says which) and/or the ad's own
+ * causes from `adOffReasons`. Empty fields are left out to keep rows small.
+ */
+function adEntry (o) {
+  const own = o.adReasons
+  return {
+    adId: o.adId,
+    verdict: o.verdict,
+    live: o.live,
+    ...(o.off.length ? { off: o.off } : {}),
+    ...(o.conditions.length ? { conditions: o.conditions } : {}),
+    ...(own.length ? { reasons: own } : {}),
+    ...(o.paramBlocks.length ? { paramBlocks: o.paramBlocks } : {}),
+    ...(o.contradiction ? { contradiction: o.contradiction } : {}),
+    ...(o.contradictionOverridable ? { contradictionOverridable: true } : {})
+  }
+}
 
 /**
  * Per-group offer-grain counts, so a pure free-radical subset is derivable. The
  * existing counts are CERTAIN offers only (verdict 'eligible'); conditional offers
  * have their own twins and sit in neither the certain nor the excluded counts, and
- * `conditionalAds` names the ads whose own rules depend on the visit.
+ * `ads` lists every ad with its verdict, liveness and rules.
  *
- * `isLive(ad)` is injected rather than derived here: liveness needs the campaign
+ * `offReasons(ad)` is injected rather than derived here: liveness needs the campaign
  * and creative rows, which this module deliberately never reads (it stays pure and
- * network-agnostic). Callers pass `campaign_on && adgroup_on && adLiveViable(ad,
+ * network-agnostic). It returns what keeps the ad dark, empty when it is live;
+ * callers pass the group's chain (campaign + ad group) plus `adOffReasons(ad,
  * creatives)`. Required, not defaulted — a default would make a wrong count look
  * like a passing assertion.
  */
-export function offerRollup ({ group, adGroup, ads, zone, isLive, request }) {
-  const offers = ads.map((ad) => ({ ...offerEligibility({ group, adGroup, ad, zone, request }), live: isLive(ad) }))
+export function offerRollup ({ group, adGroup, ads, zone, offReasons, request }) {
+  const offers = ads.map((ad) => {
+    const off = offReasons(ad)
+    return { ...offerEligibility({ group, adGroup, ad, zone, request }), live: off.length === 0, off }
+  })
   const certain = offers.filter((o) => o.serves)
   const conditional = offers.filter((o) => o.conditional)
   const freeRadicals = certain.filter((o) => o.freeRadical)
@@ -778,12 +809,7 @@ export function offerRollup ({ group, adGroup, ads, zone, isLive, request }) {
     inertWhitelisted: inert.length,
     freeRadicalAdIds: freeRadicals.map((o) => o.adId).filter(Boolean),
     inertWhitelistedAdIds: inert.map((o) => o.adId).filter(Boolean),
-    // The ads whose OWN rules make them depend on the visit (capped; `conditional`
-    // is the full count). Group-level conditions are on the row itself.
-    conditionalAds: conditional
-      .filter((o) => o.conditions.length > 0)
-      .slice(0, CONDITIONAL_ADS_CAP)
-      .map((o) => ({ adId: o.adId, conditions: o.conditions }))
+    ads: offers.map(adEntry)
   }
 }
 

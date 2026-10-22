@@ -320,12 +320,69 @@ const FIELDS = ['offers', 'scoped_via', 'via', 'reasons', 'conflicts', 'fully_li
 }
 
 // fitEligibility — pathological single oversize row
-test('fitEligibility — pathological single oversize row > falls back to ids-only with complete:false and a re-run note, never a silent partial', t => {
+test('fitEligibility — pathological single oversize row > returns that row as a stub with complete:false and a note, never a silent partial', t => {
   const full = payload(1, 0)
   full.directlyTargeted[0].offers.freeRadicalAdIds = Array.from({ length: 5000 }, (_, i) => `ad${i}`)
   const { json } = parse(fitEligibility(full, 'all', 0, LIMIT))
   t.is(json.complete, false)
-  t.deepEqual(json.ids, ['d0'])
-  t.true(json.note.includes('bucket'))
+  t.deepEqual(json.directlyTargeted, [{ id: 'd0', name: full.directlyTargeted[0].name, verdict: 'eligible', omitted: 'row exceeds the response budget' }])
+  t.like(json.page, { offset: 0, returned: 1, total: 1 })
+  t.is(json.page.next_offset, undefined)
+  t.true(json.note.includes('explain_serve'))
   t.is(json.summary.directlyTargeted, 1)
+})
+
+test('fitEligibility — pathological single oversize row > a group with too many ads for one response falls back the same way', t => {
+  const full = payload(1, 1)
+  full.freeRadicals[0].offers.ads = Array.from({ length: 600 }, (_, i) => ({ adId: `ad${i}`, verdict: 'conditional', live: true, conditions: [{ path: 'params.geoState', key: 'geoState', op: 'requires', values: ['TX'], valuesTotal: 1, source: 'request' }] }))
+  const first = parse(fitEligibility(full, 'all', 0, LIMIT)).json
+  t.deepEqual(first.directlyTargeted.map((r) => r.id), ['d0'])
+  t.is(first.page.next_offset, 1)
+  const { json } = parse(fitEligibility(full, 'all', 1, LIMIT))
+  t.is(json.complete, false)
+  t.deepEqual(json.freeRadicals.map((r) => [r.id, r.omitted]), [['r0', 'row exceeds the response budget']])
+  t.is(json.page.next_offset, undefined)
+})
+
+test('fitEligibility — pathological single oversize row > the rows after it stay reachable in full', t => {
+  const full = payload(0, 5)
+  full.freeRadicals[2].offers.ads = Array.from({ length: 900 }, (_, i) => ({ adId: `ad${i}`, verdict: 'eligible', live: true }))
+  const rows = []
+  let offset = 0
+  while (offset !== undefined) {
+    const { json } = parse(fitEligibility(full, 'all', offset, LIMIT))
+    t.false(json.complete)
+    rows.push(...json.freeRadicals)
+    offset = json.page.next_offset
+  }
+  t.deepEqual(rows.map((r) => r.id), ['r0', 'r1', 'r2', 'r3', 'r4'])
+  t.deepEqual(rows.filter((r) => r.omitted).map((r) => r.id), ['r2'])
+  t.truthy(rows[4].offers)
+})
+
+test('fitEligibility — filter > pages over the matching rows only, summary unchanged', t => {
+  const full = payload(10, 60)
+  for (const r of full.freeRadicals.filter((_, i) => i % 2 === 0)) r.offers = { ...r.offers, live: 0, conditionalLive: 1 }
+  const matching = full.freeRadicals.filter((r) => r.offers.conditionalLive > 0).map((r) => r.id)
+  const rows = []
+  let offset = 0
+  while (offset !== undefined) {
+    const { header, json } = parse(fitEligibility(full, 'all', offset, 6_000, 'liveOnlyOnConditionalAds'))
+    t.is(json.page.filter, 'liveOnlyOnConditionalAds')
+    t.is(json.page.total, matching.length)
+    t.deepEqual(json.summary, full.summary)
+    t.true(header.includes("matching filter 'liveOnlyOnConditionalAds'"))
+    rows.push(...json.directlyTargeted, ...json.freeRadicals)
+    offset = json.page.next_offset
+  }
+  t.deepEqual(rows.map((r) => r.id), matching)
+})
+
+test('fitEligibility — pathological single oversize row > an offset past the end never crashes, even over budget', t => {
+  const full = payload(0, 1)
+  full.summary = { ...full.summary, pad: 'x'.repeat(40_000) }
+  const { json } = parse(fitEligibility(full, 'all', 5, LIMIT))
+  t.like(json.page, { offset: 5, returned: 0, total: 1 })
+  t.deepEqual(json.freeRadicals, [])
+  t.false(json.complete)
 })

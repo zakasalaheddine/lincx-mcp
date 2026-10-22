@@ -177,15 +177,32 @@ export function missingChannelText (zone) {
   return `Zone ${zone.name ?? zone.id} (${zone.id}) ${which} — the ad server looks the zone's channel up on every visit and fails without it, so no ad group can serve here regardless of targeting. No eligibility evaluated. Give the zone an existing channel to get a meaningful answer.`
 }
 
+/** What keeps this ad itself from being live: the ad switched off or archived, or
+ * its creative missing or archived. Empty when the ad is live. Zone-independent on
+ * purpose: the caller has already decided the ad serves in the zone (adServesHere /
+ * adServesInZone). Shared with the offer grain so "live" means the same thing in
+ * both tools, and so the offer grain can say WHAT is off. */
+export function adOffReasons (ad, creatives) {
+  const off = []
+  if (ad.archived === true) off.push('ad-archived')
+  else if (ad.enabled !== true) off.push('ad-disabled')
+  const c = ad.creativeId === undefined ? undefined : creatives[ad.creativeId]
+  if (c === undefined) off.push('creative-missing')
+  else if (c.archived === true) off.push('creative-archived')
+  return off
+}
+
 /** Is this ad itself live — enabled, not archived, and pointing at an existing,
- * non-archived creative? Zone-independent on purpose: the caller has already
- * decided the ad serves in the zone (adServesHere / adServesInZone). Shared with
- * the offer grain so "live" means the same thing in both tools. */
+ * non-archived creative? */
 export function adLiveViable (ad, creatives) {
-  if (!on(ad)) return false
-  if (ad.creativeId === undefined) return false
-  const c = creatives[ad.creativeId]
-  return c !== undefined && c.archived !== true
+  return adOffReasons(ad, creatives).length === 0
+}
+
+/** The campaign → ad group half of the chain: the campaign enabled, not archived and
+ * inside its flight window, the ad group enabled and not archived. */
+export function chainState (campaign, adGroup, now) {
+  const campaign_enabled = on(campaign)
+  return { campaign_enabled, campaign_on: campaign_enabled && campaignInWindow(campaign, now), adgroup_on: on(adGroup) }
 }
 
 /** Split ad groups into those directly targeting the zone and those that both
@@ -229,9 +246,7 @@ export function rollupZoneTargeting (args
     // campaign filter checks enabled + window only; the `archived` term is ours, and it
     // cannot disagree in practice (archiving a campaign writes enabled:false in the same
     // op and cascades to its ad groups), so it only guards inconsistent data.
-    const campaign_enabled = on(campaign)
-    const campaign_on = campaign_enabled && campaignInWindow(campaign, now)
-    const adgroup_on = on(ag)
+    const { campaign_enabled, campaign_on, adgroup_on } = chainState(campaign, ag, now)
     const has_enabled_ad = ads.some(on)
     const creative_resolves = ads.some((a) => creativeResolves(a.creativeId))
     // Live-viable is zone-specific: only ads that actually serve in this zone count.
