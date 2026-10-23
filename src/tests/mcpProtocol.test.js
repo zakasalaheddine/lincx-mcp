@@ -88,6 +88,17 @@ test.serial('MCP > initialize, tools/list, tools/call, DELETE', async t => {
   t.true(Array.isArray(result.content))
   t.is(result.content[0].type, 'text')
 
+  // Input schemas are .strict(): an unknown key is rejected, never silently dropped
+  // (pins the zod major — a validator that stripped it would unscope a call).
+  const stray = await client.callTool({ name: 'list_zones', arguments: { network_id: 'abc123', bogus: 1 } })
+    .then((r) => (r.isError ? r.content[0].text : 'accepted'), (e) => e.message)
+  t.regex(stray, /bogus|unrecognized/i)
+
+  // report_query's outputSchema survives the schema -> JSON Schema conversion
+  const rq = tools.find((x) => x.name === 'report_query')
+  t.is(rq.outputSchema?.type, 'object')
+  t.is(rq.outputSchema.properties.total.type, 'object')
+
   await transport.terminateSession()
   await client.close()
   await close(server)

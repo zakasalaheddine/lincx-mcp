@@ -118,10 +118,10 @@ export function registerReportingTools (server) {
       // Set when the answer is a legitimate zero (a filter that matched no row) —
       // carries the values that DO exist so a typo is recoverable. Not an error.
       note: z.string().optional(),
-      total: z.record(z.number()).optional(),
-      groups: z.array(z.record(z.unknown())).optional(),
+      total: z.record(z.string(), z.number()).optional(),
+      groups: z.array(z.record(z.string(), z.unknown())).optional(),
       groupsTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional(),
-      raw: z.array(z.record(z.unknown())).optional(),
+      raw: z.array(z.record(z.string(), z.unknown())).optional(),
       rawTruncated: z.object({ returned: z.number(), total: z.number(), note: z.string() }).optional()
     }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
