@@ -41,6 +41,7 @@ import { registerAuditTools } from './tools/auditTools.js'
 import { registerZoneInventoryTools } from './tools/zoneInventoryTools.js'
 import { registerZoneEligibilityTools } from './tools/zoneEligibilityTools.js'
 import { registerAnalysisTools } from './tools/analysisTools.js'
+import { registerDimensionSetWriteTools } from './tools/dimensionSetTools.js'
 import { registerResources } from './tools/resources.js'
 import { installToolGuards } from './middleware/toolGuard.js'
 import { mcpIpLimiter, mcpUserLimiter, userKey } from './middleware/rateLimit.js'
@@ -84,6 +85,7 @@ function createMcpServer () {
   registerAnalysisTools(server)
   registerResources(server)
   registerTemplateWriteTools(server)
+  registerDimensionSetWriteTools(server)
 
   // Wrap every registered tool handler with the response-size guard + metrics
   // logging. Must run after all register*Tools() calls above.
