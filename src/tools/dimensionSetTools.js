@@ -3,6 +3,7 @@
  * tools/dimensionSetTools.js
  *
  * create_dimension_set — POST /api/dimension-sets
+ * add_dimensions_to_set — PUT /api/dimension-sets/{id}
  *
  * A dimension set is a "report" in Reports Center: report_query reads one, and
  * can only group/filter by the dimensions the set carries.
@@ -64,6 +65,10 @@ async function listSets (session, networkId) {
   return res?.data ?? res
 }
 
+// lincx-core's id pattern for a dimension set: older reports have a `xxxxxx-xxxxxx` id. Anchored and
+// limited to [a-z0-9-], so it is still safe to interpolate into a URL path.
+const dimensionSetId = z.string().regex(/^([a-z0-9]{6}|[a-z0-9]{6}-[a-z0-9]{6})$/, 'id must look like abc123 or abc123-def456')
+
 const summary = (s) => ({ id: s.id, name: s.name, dimensions: s.dimensions })
 
 export function registerDimensionSetWriteTools (server) {
@@ -104,6 +109,49 @@ Returns { id, name, dimensions } — run report_query with that id next. Not ide
     } catch (err) {
       if (err.code === 'TIMEOUT' || err.status >= 500) return text(`Error: create ${err.code === 'TIMEOUT' ? 'timed out' : `failed (${err.status})`} — the report MAY have been created. Check 'list_dimension_sets' for "${name}" before retrying.`)
       if (err.status === 403) return text(`Error: Forbidden — your user can't create reports on network ${network_id}.`)
+      return text(handleWorkApiError(err))
+    }
+  })
+
+  server.registerTool('add_dimensions_to_set', {
+    title: 'Add Dimensions To Dimension Set',
+    description: `Add dimensions (e.g. 'hour') to an EXISTING report. Only adds — never removes. Prefer create_dimension_set: editing changes a report other people use (its row count and what their exports show), so ask the user before calling this.
+Same ordering, pairing and new-dimension rules as create_dimension_set. If the report already has every dimension, nothing is written. If the result would equal another active report, upstream refuses and names it — use that one.
+Adding 'hour' makes rows about 24x more numerous. Last write wins: a concurrent edit of the same report is overwritten.
+Returns { id, name, dimensions }.`,
+    inputSchema: z.object({
+      ...requiredNetworkIdShape,
+      id: dimensionSetId.describe('Dimension set ID (must be in network_id); older reports look like abc123-def456'),
+      ...dimensionsShape
+    }).strict(),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+  }, async ({ network_id, id, dimensions, allowNewDimensions }, extra) => {
+    const auth = await resolveLincxSession(extra)
+    if (!auth) return text("Error: Not authenticated. Use 'auth_login' first.")
+
+    const v = await validateSession(auth)
+    if (!v.valid || !v.session) return text(`Error: ${v.error}`)
+
+    try {
+      const res = await workApiRequest(v.session, 'GET', `/api/dimension-sets/${id}`)
+      const set = res?.data ?? res
+      if (set.networkId !== network_id) return text(`Error: dimension set ${id} belongs to network ${set.networkId}, not ${network_id}.`)
+      if (set.archived) return text(`Error: dimension set ${id} is archived — it can't be edited.`)
+
+      const merged = normalizeDimensions([...set.dimensions, ...dimensions])
+      if (sameDimensions(set.dimensions, merged)) return text(`Report ${id} already has these dimensions. Nothing changed.\n\n${JSON.stringify(summary(set))}`)
+
+      if (!allowNewDimensions) {
+        const unknown = unknownDimensions(merged, await listSets(v.session, network_id))
+        if (unknown.length) return text(unknownDimensionsError(unknown))
+      }
+
+      const put = await workApiRequest(v.session, 'PUT', `/api/dimension-sets/${id}`, { body: { networkId: network_id, name: set.name, dimensions: merged }, timeoutMs: 30_000 })
+      const s = put?.data ?? put
+      return text(`Updated report ${s.id} "${s.name}" — added ${merged.filter(d => !set.dimensions.includes(d)).join(', ')}.\n\n${JSON.stringify(summary(s))}`)
+    } catch (err) {
+      if (err.code === 'TIMEOUT' || err.status >= 500) return text(`Error: update ${err.code === 'TIMEOUT' ? 'timed out' : `failed (${err.status})`} — it MAY have been applied. Check 'get_dimension_set' for ${id} before retrying.`)
+      if (err.status === 403) return text(`Error: Forbidden — your user can't edit reports on network ${network_id}.`)
       return text(handleWorkApiError(err))
     }
   })
